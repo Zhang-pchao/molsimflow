@@ -76,6 +76,34 @@ def _cmd_config_resolve_path(args: argparse.Namespace) -> int:
     return config_main(workflow_args)
 
 
+def _cmd_workflow_double_bubble_microstate(args: argparse.Namespace) -> int:
+    from molsimflow.workflows.double_bubble_merge.microstate import main as microstate_main
+
+    workflow_args = [
+        "--frame-index",
+        str(args.frame_index),
+        "--water-trace",
+        str(args.water_trace),
+        "--ion-trace",
+        str(args.ion_trace),
+        "--output-dir",
+        str(args.output_dir),
+        "--bridge-rho-max-A",
+        str(args.bridge_rho_max_A),
+        "--bridge-s-min-A",
+        str(args.bridge_s_min_A),
+        "--bridge-s-max-A",
+        str(args.bridge_s_max_A),
+    ]
+    if args.ion_positions is not None:
+        workflow_args.extend(["--ion-positions", str(args.ion_positions)])
+    if args.water_positions is not None:
+        workflow_args.extend(["--water-positions", str(args.water_positions)])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    return microstate_main(workflow_args)
+
+
 def _print_build_result(result) -> None:
     plan = result.plan
     print(result.output_dir)
@@ -1454,6 +1482,25 @@ def build_parser() -> argparse.ArgumentParser:
     config_resolve.add_argument("--key", required=True)
     config_resolve.add_argument("--must-exist", action="store_true")
     config_resolve.set_defaults(func=_cmd_config_resolve_path)
+
+    workflow = subparsers.add_parser("workflow", help="Project-specific workflow adapters")
+    workflow_subparsers = workflow.add_subparsers(dest="workflow_command", required=True)
+
+    double_bubble_microstate = workflow_subparsers.add_parser(
+        "double-bubble-microstate",
+        help="Build double-bubble bridge microstate tables from frame and trace CSV files",
+    )
+    double_bubble_microstate.add_argument("--frame-index", type=Path, required=True)
+    double_bubble_microstate.add_argument("--water-trace", type=Path, required=True)
+    double_bubble_microstate.add_argument("--ion-trace", type=Path, required=True)
+    double_bubble_microstate.add_argument("--output-dir", type=Path, required=True)
+    double_bubble_microstate.add_argument("--bridge-rho-max-A", type=float, default=8.0)
+    double_bubble_microstate.add_argument("--bridge-s-min-A", type=float, default=-10.0)
+    double_bubble_microstate.add_argument("--bridge-s-max-A", type=float, default=10.0)
+    double_bubble_microstate.add_argument("--ion-positions", type=Path)
+    double_bubble_microstate.add_argument("--water-positions", type=Path)
+    double_bubble_microstate.add_argument("--max-frames", type=int)
+    double_bubble_microstate.set_defaults(func=_cmd_workflow_double_bubble_microstate)
 
     structure = subparsers.add_parser("structure", help="Structure preparation utilities")
     structure_subparsers = structure.add_subparsers(dest="structure_command", required=True)

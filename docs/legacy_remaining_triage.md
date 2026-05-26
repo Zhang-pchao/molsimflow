@@ -123,7 +123,9 @@ sensitivity/reporting adapters.
 - `analysis/ion_effect_water_topology_stage02.py`
   - Bridge microstate frame table, ion-position table, species-region summaries,
     and water-position QC.
-  - Suggested target: split into bridge microstate and region-position helpers.
+  - Migrated target:
+    `molsimflow.workflows.double_bubble_merge.microstate`.
+  - Residual trajectory extraction and plotting remain optional adapters.
 
 ### Optional Low-Level Trajectory Utilities
 

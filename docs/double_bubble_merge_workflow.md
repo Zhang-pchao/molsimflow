@@ -71,9 +71,36 @@ Current residual adapter categories:
 - H-bond edge-table generation for `hbond-network`;
 - contact-edge and local-environment sample generation for `contact-graph` and
   `local-environment`;
-- microstate / region-QC tables for double-bubble diagnostics;
+- microstate / region-QC tables for double-bubble diagnostics, implemented by
+  `molsimflow.workflows.double_bubble_merge.microstate`;
 - publication and case-synthesis scripts, which should not be migrated
   directly.
+
+## Microstate Adapter
+
+The Stage 02 microstate table builder is workflow-specific because it joins
+double-bubble frame-index, bridge-water trace, bridge-ion trace, and optional
+tracked-position tables:
+
+```bash
+molsimflow workflow double-bubble-microstate \
+  --frame-index frame_index.csv \
+  --water-trace bridge_water_trace_metrics.csv \
+  --ion-trace bridge_ion_trace_metrics.csv \
+  --output-dir bridge_microstate \
+  --bridge-rho-max-A 8 \
+  --bridge-s-min-A -10 \
+  --bridge-s-max-A 10 \
+  --ion-positions tracked_bridge_ion_positions.csv \
+  --water-positions tracked_water_positions.csv
+```
+
+Generated files:
+
+- `bridge_microstate_frame_table.csv`;
+- `bridge_species_position_table.csv`;
+- `bridge_species_region_summary.csv`;
+- `bridge_microstate_qc.csv`.
 
 ## Migration Rule
 

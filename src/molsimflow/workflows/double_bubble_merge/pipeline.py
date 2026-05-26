@@ -130,6 +130,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Local-environment class summaries and persistent-entity transition matrices.",
         ),
         DoubleBubbleMergeStage(
+            name="bridge_microstate",
+            command_group="workflow",
+            reusable_module="molsimflow.workflows.double_bubble_merge.microstate",
+            status="migrated_workflow_adapter",
+            notes="Double-bubble-specific frame microstate, species-region, and QC table builder.",
+        ),
+        DoubleBubbleMergeStage(
             name="species_transitions",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.transitions",
@@ -215,9 +222,9 @@ def residual_adapter_plan() -> Tuple[DoubleBubbleResidualAdapter, ...]:
             name="microstate_and_region_qc_tables",
             legacy_source="analysis/ion_effect_water_topology_stage02.py",
             target_module="molsimflow.workflows.double_bubble_merge",
-            status="optional_workflow_adapter",
+            status="migrated_workflow_adapter",
             expected_output="bridge_microstate_frame_table.csv and region/QC tables",
-            notes="Useful for this project family, but not required by the public core package.",
+            notes="Implemented by molsimflow.workflows.double_bubble_merge.microstate.",
         ),
         DoubleBubbleResidualAdapter(
             name="publication_and_case_synthesis",

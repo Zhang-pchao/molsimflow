@@ -14,6 +14,7 @@ def test_double_bubble_merge_stage_plan_has_migrated_core_stages():
     assert by_name["hbond_network"].status == "migrated"
     assert by_name["contact_graph"].status == "migrated"
     assert by_name["local_environment"].status == "migrated"
+    assert by_name["bridge_microstate"].status == "migrated_workflow_adapter"
     assert "molsimflow.postprocess.coalescence_state" in by_name["coalescence_state"].reusable_module
 
 
@@ -25,4 +26,5 @@ def test_double_bubble_merge_residual_adapters_are_optional_or_rejected():
     assert by_name["hbond_edges_from_trajectory"].expected_output.endswith(
         "molsimflow.postprocess.hbond_network"
     )
+    assert by_name["microstate_and_region_qc_tables"].status == "migrated_workflow_adapter"
     assert by_name["publication_and_case_synthesis"].status == "do_not_migrate_directly"
