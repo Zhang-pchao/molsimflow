@@ -41,6 +41,7 @@ These legacy areas have first-pass engineered replacements:
   - bridge-water entry/exit flux and seed-survival trace-table summaries;
   - bridge-water seed escape-direction analysis from explicit position and
     membership tables;
+  - H-bond network summaries from explicit edge tables;
   - generic transition-event detection and event-aligned table summaries;
   - bridge liquid-film state, barrier, residence, and coordination table
     summaries;
@@ -70,11 +71,14 @@ These are strong candidates for future engineering into reusable APIs and CLIs.
     table API.
   - Suggested targets: adapter in `molsimflow.postprocess.bridge_water_escape`
     or double-bubble workflow code if the case layout remains project-specific.
-- `analysis/bridge_hbond_network.py`
-  - Hydrogen-bond graph/network descriptors, lifetimes, motifs, and gap-bin
-    summaries.
-  - Suggested target: `molsimflow.postprocess.hbond_network`.
-  - Keep MDAnalysis as an optional dependency.
+- residual `analysis/bridge_hbond_network.py` trajectory adapters
+  - H-bond detection from trajectories, hydration motif construction,
+    MDAnalysis-backed execution, case discovery, and plotting around the
+    now-migrated explicit edge-table network summaries.
+  - Suggested targets: optional adapter in
+    `molsimflow.postprocess.hbond_network`, plotting through generic
+    `molsimflow.plotting`.
+  - Keep MDAnalysis as an optional dependency for trajectory-backed detection.
 - residual `analysis/water_orientation_shell.py` trajectory adapters
   - Atom selection, bubble-center lookup, hydrogen assignment, COLVAR
     alignment, and optional plotting around the now-migrated orientation

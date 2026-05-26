@@ -57,6 +57,10 @@ analysis and the first ion-analysis core:
   - classifies retained/exited seed waters and escape directions;
   - writes per-seed escape events, direction summaries, and optional gap-bin
     summaries.
+- `molsimflow.postprocess.hbond_network`
+  - reads explicit H-bond edge tables;
+  - computes per-frame graph connectivity, bridge-spanning flags, H-bond type
+    counts, lifetime summaries, and gap-binned network summaries.
 - `molsimflow.postprocess.events`
   - detects connectivity, water-count drop, and dewetting-jump events from a
     feature CSV;
@@ -168,6 +172,16 @@ molsimflow postprocess bridge-water-escape \
   --output-dir bridge_water_escape \
   --case-label caseA \
   --in-bridge-column in_bridge_region \
+  --gap-column surface_gap_A
+```
+
+```bash
+molsimflow postprocess hbond-network \
+  --input hbond_edges.csv \
+  --output-dir hbond_network \
+  --case-label caseA \
+  --donor-s-column donor_s_A \
+  --acceptor-s-column acceptor_s_A \
   --gap-column surface_gap_A
 ```
 

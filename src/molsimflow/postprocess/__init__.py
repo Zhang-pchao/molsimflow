@@ -20,6 +20,12 @@ from molsimflow.postprocess.coalescence_state import CoalescenceStateConfig
 from molsimflow.postprocess.coupling import CouplingConfig
 from molsimflow.postprocess.events import TransitionEventConfig
 from molsimflow.postprocess.fes_analysis import FesCurve, FesCurveSpec
+from molsimflow.postprocess.hbond_network import (
+    HbondEdgeRow,
+    HbondNetworkConfig,
+    build_frame_network_summary,
+    classify_hbond_type,
+)
 from molsimflow.postprocess.ion_distribution import AtomRecord, IonZDistribution
 from molsimflow.postprocess.ion_species import (
     IonSpeciesConfig,
@@ -63,6 +69,8 @@ __all__ = [
     "FesCurve",
     "FesCurveSpec",
     "FrameDistanceResult",
+    "HbondEdgeRow",
+    "HbondNetworkConfig",
     "IonSpeciesConfig",
     "IonSpeciesFrameResult",
     "IonZDistribution",
@@ -78,8 +86,10 @@ __all__ = [
     "angle_to_axis_deg",
     "assign_hydrogen_to_nearest_oxygen",
     "build_seed_escape_events",
+    "build_frame_network_summary",
     "build_species_transition_matrix",
     "classify_escape_direction",
+    "classify_hbond_type",
     "classify_ion_species",
     "classify_oxygen_species_indices",
     "compute_s_rho",

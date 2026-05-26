@@ -87,6 +87,9 @@ Reasoning:
   - bridge-water escape direction: explicit seed-position/membership table
     core migrated for retained/exited status, displacement vectors, direction
     labels, and gap-bin summaries;
+  - H-bond networks: explicit edge-table core migrated for per-frame graph
+    connectivity, bridge-spanning flags, H-bond type counts, lifetimes, and
+    gap-bin summaries;
   - transition-event analysis: first generic feature-table core migrated for
     event detection, event-aligned summaries, lag correlations, and pre/post
     change-point summaries;
