@@ -46,6 +46,7 @@ These legacy areas have first-pass engineered replacements:
     feature-table summaries;
   - first shared LAMMPS dump reader, PBC geometry helpers, and nearest-time
     alignment helpers;
+  - periodic O-H assignment and oxygen species grouping.
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -101,9 +102,6 @@ These are useful but large and should be split before migration.
 These should be migrated before more trajectory-heavy modules reuse duplicate
 logic.
 
-- `species/hydrogen_oxygen_assignment.py`
-  - Periodic O-H assignment and oxygen species classification.
-  - Suggested target: `molsimflow.postprocess.species_assignment`.
 - `transitions/species_transition_matrix.py`
   - Species transition counting and transition-matrix utilities.
   - Suggested target: `molsimflow.postprocess.transitions`.

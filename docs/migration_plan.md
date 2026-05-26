@@ -95,6 +95,8 @@ Reasoning:
   - shared trajectory utilities: first orthorhombic LAMMPS dump reader,
     periodic geometry helpers, and nearest-time alignment helpers extracted
     from bridge-water dewetting for trajectory-heavy migrations;
+  - species assignment: periodic O-H nearest-neighbor assignment and oxygen
+    species grouping migrated into a reusable NumPy-based helper;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

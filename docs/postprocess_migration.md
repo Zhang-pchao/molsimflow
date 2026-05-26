@@ -21,6 +21,10 @@ analysis and the first ion-analysis core:
 - `molsimflow.postprocess.ion_species`
   - classifies TiO2/surface/solution ion species from atomistic frames;
   - writes classified species XYZ files and per-frame statistics.
+- `molsimflow.postprocess.species_assignment`
+  - assigns hydrogens to nearest oxygens under orthorhombic PBC;
+  - groups oxygen indices by assigned hydrogen count for OH/H2O/H3O-style
+    species classification.
 - `molsimflow.postprocess.ion_distribution`
   - reads classified species XYZ files;
   - computes relative ion z-distribution summaries and density tables.

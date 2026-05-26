@@ -15,6 +15,8 @@ from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequ
 
 import numpy as np
 
+from molsimflow.postprocess.species_assignment import assign_hydrogen_to_nearest_oxygen
+
 
 DEFAULT_TYPE_TO_ELEMENT: Dict[str, str] = {
     "1": "H",
@@ -146,17 +148,17 @@ def find_nearest_oxygen_hydrogens(
     from local oxygen index to local hydrogen indices.
     """
 
-    o_h_bonds: Dict[int, List[int]] = {}
     if len(h_positions) == 0 or len(o_positions) == 0:
-        return {}, o_h_bonds
+        return {}, {}
 
-    for h_local_index, h_pos in enumerate(h_positions):
-        distances = periodic_distances(o_positions, h_pos, box_dims)
-        nearest_o = int(np.argmin(distances))
-        if float(distances[nearest_o]) <= oh_cutoff:
-            o_h_bonds.setdefault(nearest_o, []).append(h_local_index)
-
-    return {o_index: len(h_list) for o_index, h_list in o_h_bonds.items()}, o_h_bonds
+    assignment = assign_hydrogen_to_nearest_oxygen(
+        oxygen_coords=np.asarray(o_positions, dtype=float),
+        hydrogen_coords=np.asarray(h_positions, dtype=float),
+        bounds_or_lengths=box_dims,
+        oh_cutoff=oh_cutoff,
+    )
+    o_h_bonds = assignment.hydrogen_indices_by_oxygen
+    return {o_index: int(count) for o_index, count in enumerate(assignment.h_count_per_oxygen) if int(count) > 0}, o_h_bonds
 
 
 def find_surface_oxygen_mask(
