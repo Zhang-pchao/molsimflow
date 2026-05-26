@@ -687,6 +687,54 @@ def _cmd_postprocess_hbond_network(args: argparse.Namespace) -> int:
     return hbond_main(workflow_args)
 
 
+def _cmd_postprocess_contact_graph(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.contact_graph import main as contact_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--case-label",
+        args.case_label,
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+        "--source-column",
+        args.source_column,
+        "--target-column",
+        args.target_column,
+        "--edge-type-column",
+        args.edge_type_column,
+        "--source-role-column",
+        args.source_role_column,
+        "--target-role-column",
+        args.target_role_column,
+        "--source-region-column",
+        args.source_region_column,
+        "--target-region-column",
+        args.target_region_column,
+        "--bridge-s-min-A",
+        str(args.bridge_s_min_A),
+        "--bridge-s-max-A",
+        str(args.bridge_s_max_A),
+        "--side-thickness-A",
+        str(args.side_thickness_A),
+        "--gap-bin-width-A",
+        str(args.gap_bin_width_A),
+        "--min-bin-count",
+        str(args.min_bin_count),
+    ]
+    if args.source_s_column is not None:
+        workflow_args.extend(["--source-s-column", args.source_s_column])
+    if args.target_s_column is not None:
+        workflow_args.extend(["--target-s-column", args.target_s_column])
+    if args.gap_column is not None:
+        workflow_args.extend(["--gap-column", args.gap_column])
+    return contact_main(workflow_args)
+
+
 def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.events import main as events_main
 
@@ -1159,6 +1207,29 @@ def _add_hbond_network_postprocess_args(parser: argparse.ArgumentParser) -> None
     parser.add_argument("--acceptor-species-column", default="acceptor_species")
     parser.add_argument("--donor-s-column")
     parser.add_argument("--acceptor-s-column")
+    parser.add_argument("--gap-column")
+    parser.add_argument("--bridge-s-min-A", type=float, default=-10.0)
+    parser.add_argument("--bridge-s-max-A", type=float, default=10.0)
+    parser.add_argument("--side-thickness-A", type=float, default=1.0)
+    parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--min-bin-count", type=int, default=1)
+
+
+def _add_contact_graph_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input contact edge CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--case-label", default="")
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--time-column", default="time")
+    parser.add_argument("--source-column", default="source_id")
+    parser.add_argument("--target-column", default="target_id")
+    parser.add_argument("--edge-type-column", default="edge_type")
+    parser.add_argument("--source-role-column", default="source_role")
+    parser.add_argument("--target-role-column", default="target_role")
+    parser.add_argument("--source-region-column", default="source_region")
+    parser.add_argument("--target-region-column", default="target_region")
+    parser.add_argument("--source-s-column")
+    parser.add_argument("--target-s-column")
     parser.add_argument("--gap-column")
     parser.add_argument("--bridge-s-min-A", type=float, default=-10.0)
     parser.add_argument("--bridge-s-max-A", type=float, default=10.0)
@@ -1657,6 +1728,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_hbond_network_postprocess_args(hbond_network)
     hbond_network.set_defaults(func=_cmd_postprocess_hbond_network)
+
+    contact_graph = postprocess_subparsers.add_parser(
+        "contact-graph",
+        help="Summarize contact graph topology from explicit edge tables",
+    )
+    _add_contact_graph_postprocess_args(contact_graph)
+    contact_graph.set_defaults(func=_cmd_postprocess_contact_graph)
 
     transition_events = postprocess_subparsers.add_parser(
         "transition-events",

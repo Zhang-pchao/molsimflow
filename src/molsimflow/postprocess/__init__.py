@@ -17,6 +17,11 @@ from molsimflow.postprocess.bridge_water_escape import (
 )
 from molsimflow.postprocess.case_comparison import CasePairSpec, DescriptorTableSpec
 from molsimflow.postprocess.coalescence_state import CoalescenceStateConfig
+from molsimflow.postprocess.contact_graph import (
+    ContactEdgeRow,
+    ContactGraphConfig,
+    build_contact_graph_summary,
+)
 from molsimflow.postprocess.coupling import CouplingConfig
 from molsimflow.postprocess.events import TransitionEventConfig
 from molsimflow.postprocess.fes_analysis import FesCurve, FesCurveSpec
@@ -64,6 +69,8 @@ __all__ = [
     "BubbleSurfaceDistanceAnalyzer",
     "CasePairSpec",
     "CoalescenceStateConfig",
+    "ContactEdgeRow",
+    "ContactGraphConfig",
     "CouplingConfig",
     "DescriptorTableSpec",
     "FesCurve",
@@ -86,6 +93,7 @@ __all__ = [
     "angle_to_axis_deg",
     "assign_hydrogen_to_nearest_oxygen",
     "build_seed_escape_events",
+    "build_contact_graph_summary",
     "build_frame_network_summary",
     "build_species_transition_matrix",
     "classify_escape_direction",

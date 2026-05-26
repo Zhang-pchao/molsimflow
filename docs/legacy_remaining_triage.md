@@ -42,6 +42,7 @@ These legacy areas have first-pass engineered replacements:
   - bridge-water seed escape-direction analysis from explicit position and
     membership tables;
   - H-bond network summaries from explicit edge tables;
+  - generic contact graph topology summaries from explicit edge tables;
   - generic transition-event detection and event-aligned table summaries;
   - bridge liquid-film state, barrier, residence, and coordination table
     summaries;
@@ -94,7 +95,7 @@ These are useful but large and should be split before migration.
 - `analysis/ion_effect_water_topology.py`
   - Contains multiple stages in one large file:
     - bridge atom membership;
-    - contact graph topology;
+    - residual contact graph topology adapters;
     - cycle analysis;
     - local water environment classification;
     - environment similarity;
@@ -102,7 +103,7 @@ These are useful but large and should be split before migration.
     - topology sensitivity.
   - Suggested targets:
     - `molsimflow.postprocess.bridge_membership`;
-    - `molsimflow.postprocess.contact_graph`;
+    - residual adapters around `molsimflow.postprocess.contact_graph`;
     - `molsimflow.postprocess.local_environment`;
     - `molsimflow.postprocess.sensitivity`.
   - Keep `networkx` optional.

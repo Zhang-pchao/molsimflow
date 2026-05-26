@@ -90,6 +90,9 @@ Reasoning:
   - H-bond networks: explicit edge-table core migrated for per-frame graph
     connectivity, bridge-spanning flags, H-bond type counts, lifetimes, and
     gap-bin summaries;
+  - contact graph topology: explicit edge-table core migrated for generic graph
+    metrics, role-mediated edges, articulation proxies, cycle rank, and
+    gap-bin summaries;
   - transition-event analysis: first generic feature-table core migrated for
     event detection, event-aligned summaries, lag correlations, and pre/post
     change-point summaries;

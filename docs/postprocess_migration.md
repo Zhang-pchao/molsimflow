@@ -61,6 +61,11 @@ analysis and the first ion-analysis core:
   - reads explicit H-bond edge tables;
   - computes per-frame graph connectivity, bridge-spanning flags, H-bond type
     counts, lifetime summaries, and gap-binned network summaries.
+- `molsimflow.postprocess.contact_graph`
+  - reads explicit contact edge tables;
+  - computes generic graph topology metrics, role-mediated edge fractions,
+    articulation-node proxies, cycle rank, bridge-spanning flags, and gap-bin
+    summaries.
 - `molsimflow.postprocess.events`
   - detects connectivity, water-count drop, and dewetting-jump events from a
     feature CSV;
@@ -182,6 +187,16 @@ molsimflow postprocess hbond-network \
   --case-label caseA \
   --donor-s-column donor_s_A \
   --acceptor-s-column acceptor_s_A \
+  --gap-column surface_gap_A
+```
+
+```bash
+molsimflow postprocess contact-graph \
+  --input contact_edges.csv \
+  --output-dir contact_graph \
+  --case-label caseA \
+  --source-s-column source_s_A \
+  --target-s-column target_s_A \
   --gap-column surface_gap_A
 ```
 
