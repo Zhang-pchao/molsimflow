@@ -505,6 +505,54 @@ def _cmd_postprocess_bridge_water_density(args: argparse.Namespace) -> int:
     return bridge_main(workflow_args)
 
 
+def _cmd_postprocess_bridge_water_dewetting(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_water_dewetting import main as dewetting_main
+
+    workflow_args = [
+        "--dump",
+        str(args.dump),
+        "--output-dir",
+        str(args.output_dir),
+        "--water-oxygen-atoms",
+        args.water_oxygen_atoms,
+        "--colvar-time-unit",
+        args.colvar_time_unit,
+        "--axis",
+        args.axis,
+        "--radius-A",
+        str(args.radius_A),
+        "--lower-A",
+        str(args.lower_A),
+        "--upper-A",
+        str(args.upper_A),
+        "--oo-cutoff-A",
+        str(args.oo_cutoff_A),
+        "--connect-side-thickness-A",
+        str(args.connect_side_thickness_A),
+        "--connect-min-water",
+        str(args.connect_min_water),
+        "--time-tolerance-ns",
+        str(args.time_tolerance_ns),
+        "--cv-bins",
+        str(args.cv_bins),
+    ]
+    for flag in ["plumed", "colvar", "colvar_post"]:
+        value = getattr(args, flag)
+        if value is not None:
+            workflow_args.extend([f"--{flag.replace('_', '-')}", str(value)])
+    if args.bubble_a_atoms is not None:
+        workflow_args.extend(["--bubble-a-atoms", args.bubble_a_atoms])
+    if args.bubble_b_atoms is not None:
+        workflow_args.extend(["--bubble-b-atoms", args.bubble_b_atoms])
+    if args.dump_time_scale_ns is not None:
+        workflow_args.extend(["--dump-time-scale-ns", str(args.dump_time_scale_ns)])
+    if args.bulk_number_density_per_A3 is not None:
+        workflow_args.extend(["--bulk-number-density-per-A3", str(args.bulk_number_density_per_A3)])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    return dewetting_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_ion_occupancy(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_descriptors import main as bridge_main
 
@@ -718,6 +766,30 @@ def _add_bridge_water_density_postprocess_args(parser: argparse.ArgumentParser) 
     parser.add_argument("--water-mean-column", default="bridge_cyl_env.mean")
     parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
     parser.add_argument("--min-bin-count", type=int, default=1)
+
+
+def _add_bridge_water_dewetting_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dump", type=Path, required=True, help="LAMMPS dump trajectory")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--water-oxygen-atoms", required=True, help="PLUMED-style atom id expression for water oxygens")
+    parser.add_argument("--plumed", type=Path, help="PLUMED file containing bubA_all and bubB_all labels")
+    parser.add_argument("--bubble-a-atoms", help="Explicit atom expression for bubble A")
+    parser.add_argument("--bubble-b-atoms", help="Explicit atom expression for bubble B")
+    parser.add_argument("--colvar", type=Path, help="Optional COLVAR table")
+    parser.add_argument("--colvar-post", type=Path, help="Optional secondary COLVAR table")
+    parser.add_argument("--colvar-time-unit", choices=["fs", "ps", "ns"], default="ns")
+    parser.add_argument("--axis", choices=["x", "y", "z"], default="z")
+    parser.add_argument("--radius-A", type=float, default=6.5)
+    parser.add_argument("--lower-A", type=float, default=-8.0)
+    parser.add_argument("--upper-A", type=float, default=8.0)
+    parser.add_argument("--oo-cutoff-A", type=float, default=3.5)
+    parser.add_argument("--connect-side-thickness-A", type=float, default=2.0)
+    parser.add_argument("--connect-min-water", type=int, default=2)
+    parser.add_argument("--time-tolerance-ns", type=float, default=0.00051)
+    parser.add_argument("--dump-time-scale-ns", type=float)
+    parser.add_argument("--bulk-number-density-per-A3", type=float)
+    parser.add_argument("--cv-bins", type=int, default=40)
+    parser.add_argument("--max-frames", type=int)
 
 
 def _add_bridge_ion_occupancy_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1084,6 +1156,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_bridge_water_density_postprocess_args(bridge_water)
     bridge_water.set_defaults(func=_cmd_postprocess_bridge_water_density)
+
+    bridge_dewetting = postprocess_subparsers.add_parser(
+        "bridge-water-dewetting",
+        help="Compute bridge-water dewetting and connectivity metrics from a LAMMPS dump",
+    )
+    _add_bridge_water_dewetting_postprocess_args(bridge_dewetting)
+    bridge_dewetting.set_defaults(func=_cmd_postprocess_bridge_water_dewetting)
 
     bridge_ion = postprocess_subparsers.add_parser(
         "bridge-ion-occupancy",

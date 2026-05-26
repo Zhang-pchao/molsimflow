@@ -28,6 +28,12 @@ analysis and the first ion-analysis core:
   - computes bridge-water density proxy tables;
   - computes strict bridge-ion occupancy and net-charge descriptor tables;
   - summarizes descriptors by surface-gap bins and named windows.
+- `molsimflow.postprocess.bridge_water_dewetting`
+  - reads selected atoms from LAMMPS dump frames;
+  - resolves bubble atom groups from explicit expressions or PLUMED
+    `bubA_all`/`bubB_all` labels;
+  - computes bridge-cylinder water counts, dewetting fractions, water-cluster
+    connectivity, and `d3d_all`-binned summaries.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries.
@@ -87,6 +93,15 @@ molsimflow postprocess ion-z-distribution \
 molsimflow postprocess bridge-water-density \
   --input coalescence_state_table.csv \
   --output-dir bridge_water_descriptors
+```
+
+```bash
+molsimflow postprocess bridge-water-dewetting \
+  --dump dump.lammpstrj \
+  --plumed in.plumed \
+  --water-oxygen-atoms 1201-9000:3 \
+  --colvar COLVAR \
+  --output-dir bridge_water_dewetting
 ```
 
 ```bash

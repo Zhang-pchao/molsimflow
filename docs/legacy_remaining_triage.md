@@ -37,6 +37,7 @@ These legacy areas have first-pass engineered replacements:
   - ion species classification;
   - ion z-distribution;
   - first bridge-water and bridge-ion descriptor tables;
+  - bridge-water dewetting and spanning-connectivity tables;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -50,11 +51,6 @@ These legacy areas have first-pass engineered replacements:
 
 These are strong candidates for future engineering into reusable APIs and CLIs.
 
-- `analysis/bridge_water_dewetting.py`
-  - Bridge-cylinder water connectivity, dewetting fraction, and CV-binned
-    summaries.
-  - Suggested target: extend `molsimflow.postprocess.bridge_descriptors` or add
-    `molsimflow.postprocess.bridge_water`.
 - `analysis/bridge_water_entry_exit_flux_vs_gap.py`
   - Entry/exit flux and gap-window summaries for bridge water.
   - Suggested target: `molsimflow.postprocess.bridge_water_dynamics`.
@@ -123,7 +119,7 @@ logic.
   - Species transition counting and transition-matrix utilities.
   - Suggested target: `molsimflow.postprocess.transitions`.
 - shared LAMMPS dump readers and time-alignment helpers from:
-  - `analysis/bridge_water_dewetting.py`;
+  - `molsimflow.postprocess.bridge_water_dewetting`;
   - `analysis/water_orientation_shell.py`;
   - `analysis/bridge_transition_event_analysis.py`;
   - `analysis/bridge_ion_water_coupling.py`.

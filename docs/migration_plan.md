@@ -78,6 +78,9 @@ Reasoning:
   - bridge-water and bridge-ion descriptors: first table-oriented core migrated
     for bridge-cylinder geometry, water density proxies, ion occupancy/charge,
     and gap-bin/window summaries;
+  - bridge-water dewetting: first trajectory-backed core migrated for bridge
+    cylinder water counts, dewetting fraction, spanning water connectivity, and
+    CV-binned summaries;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

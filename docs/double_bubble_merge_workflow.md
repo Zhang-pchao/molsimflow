@@ -33,6 +33,7 @@ Current migrated or partial stages include:
 - bubble geometry;
 - ion species;
 - bridge descriptors;
+- bridge-water dewetting;
 - FES barriers;
 - case comparison.
 

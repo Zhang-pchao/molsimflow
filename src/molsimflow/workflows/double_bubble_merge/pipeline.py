@@ -69,6 +69,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Water density and ion occupancy migrated; dynamics/H-bonds remain in legacy triage.",
         ),
         DoubleBubbleMergeStage(
+            name="bridge_water_dewetting",
+            command_group="postprocess",
+            reusable_module="molsimflow.postprocess.bridge_water_dewetting",
+            status="migrated",
+            notes="Compute bridge water count, dewetting fraction, and spanning connectivity.",
+        ),
+        DoubleBubbleMergeStage(
             name="fes_barriers",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.fes_analysis",
