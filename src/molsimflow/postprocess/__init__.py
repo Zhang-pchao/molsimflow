@@ -9,6 +9,12 @@ from molsimflow.postprocess.bridge_descriptors import BridgeCylinder
 from molsimflow.postprocess.bridge_film import BridgeFilmConfig
 from molsimflow.postprocess.bridge_water_dynamics import BridgeWaterDynamicsConfig, TraceInputSpec
 from molsimflow.postprocess.bridge_water_dewetting import BridgeWaterDewettingConfig
+from molsimflow.postprocess.bridge_water_escape import (
+    BridgeWaterEscapeConfig,
+    SeedPositionRow,
+    build_seed_escape_events,
+    classify_escape_direction,
+)
 from molsimflow.postprocess.case_comparison import CasePairSpec, DescriptorTableSpec
 from molsimflow.postprocess.coalescence_state import CoalescenceStateConfig
 from molsimflow.postprocess.coupling import CouplingConfig
@@ -47,6 +53,7 @@ __all__ = [
     "BridgeFilmConfig",
     "BridgeWaterDynamicsConfig",
     "BridgeWaterDewettingConfig",
+    "BridgeWaterEscapeConfig",
     "BubbleCentroidCalculator",
     "BubbleSurfaceDistanceAnalyzer",
     "CasePairSpec",
@@ -61,6 +68,7 @@ __all__ = [
     "IonZDistribution",
     "MoleculeRecord",
     "OxygenHydrogenAssignment",
+    "SeedPositionRow",
     "SpeciesStateRow",
     "SpeciesTransitionResult",
     "TraceInputSpec",
@@ -69,7 +77,9 @@ __all__ = [
     "WaterOrientationSummaryConfig",
     "angle_to_axis_deg",
     "assign_hydrogen_to_nearest_oxygen",
+    "build_seed_escape_events",
     "build_species_transition_matrix",
+    "classify_escape_direction",
     "classify_ion_species",
     "classify_oxygen_species_indices",
     "compute_s_rho",

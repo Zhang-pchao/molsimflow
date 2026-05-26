@@ -594,6 +594,55 @@ def _cmd_postprocess_bridge_seed_survival(args: argparse.Namespace) -> int:
     return dynamics_main(_bridge_water_dynamics_args(args, "seed-survival"))
 
 
+def _cmd_postprocess_bridge_water_escape(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_water_escape import main as escape_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--case-label",
+        args.case_label,
+        "--atom-column",
+        args.atom_column,
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+        "--x-column",
+        args.x_column,
+        "--y-column",
+        args.y_column,
+        "--z-column",
+        args.z_column,
+        "--in-bridge-column",
+        args.in_bridge_column,
+        "--exit-confirm-frames",
+        str(args.exit_confirm_frames),
+        "--destination-lag-frames",
+        str(args.destination_lag_frames),
+        "--direction-z-threshold-A",
+        str(args.direction_z_threshold_A),
+        "--direction-lateral-threshold-A",
+        str(args.direction_lateral_threshold_A),
+        "--direction-z-dominance-ratio",
+        str(args.direction_z_dominance_ratio),
+        "--gap-bin-width-A",
+        str(args.gap_bin_width_A),
+        "--min-bin-count",
+        str(args.min_bin_count),
+    ]
+    if args.state_column is not None:
+        workflow_args.extend(["--state-column", args.state_column])
+    if args.gap_column is not None:
+        workflow_args.extend(["--gap-column", args.gap_column])
+    if args.box_lengths is not None:
+        workflow_args.append("--box-lengths")
+        workflow_args.extend(str(value) for value in args.box_lengths)
+    return escape_main(workflow_args)
+
+
 def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.events import main as events_main
 
@@ -1028,6 +1077,29 @@ def _add_bridge_water_dynamics_postprocess_args(parser: argparse.ArgumentParser)
     parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
     parser.add_argument("--min-bin-count", type=int, default=1)
     parser.add_argument("--state-time-tolerance-ns", type=float, default=0.0015)
+
+
+def _add_bridge_water_escape_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input seed-position CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--case-label", default="")
+    parser.add_argument("--atom-column", default="atom_id")
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--time-column", default="time")
+    parser.add_argument("--x-column", default="x")
+    parser.add_argument("--y-column", default="y")
+    parser.add_argument("--z-column", default="z")
+    parser.add_argument("--in-bridge-column", default="in_bridge")
+    parser.add_argument("--state-column")
+    parser.add_argument("--gap-column")
+    parser.add_argument("--box-lengths", type=float, nargs=3)
+    parser.add_argument("--exit-confirm-frames", type=int, default=1)
+    parser.add_argument("--destination-lag-frames", type=int, default=0)
+    parser.add_argument("--direction-z-threshold-A", type=float, default=2.0)
+    parser.add_argument("--direction-lateral-threshold-A", type=float, default=2.0)
+    parser.add_argument("--direction-z-dominance-ratio", type=float, default=1.2)
+    parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--min-bin-count", type=int, default=1)
 
 
 def _add_transition_events_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1506,6 +1578,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_bridge_water_dynamics_postprocess_args(bridge_seed_survival)
     bridge_seed_survival.set_defaults(func=_cmd_postprocess_bridge_seed_survival)
+
+    bridge_escape = postprocess_subparsers.add_parser(
+        "bridge-water-escape",
+        help="Classify tracked bridge-water escape directions from seed-position tables",
+    )
+    _add_bridge_water_escape_postprocess_args(bridge_escape)
+    bridge_escape.set_defaults(func=_cmd_postprocess_bridge_water_escape)
 
     transition_events = postprocess_subparsers.add_parser(
         "transition-events",

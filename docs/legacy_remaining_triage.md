@@ -39,6 +39,8 @@ These legacy areas have first-pass engineered replacements:
   - first bridge-water and bridge-ion descriptor tables;
   - bridge-water dewetting and spanning-connectivity tables;
   - bridge-water entry/exit flux and seed-survival trace-table summaries;
+  - bridge-water seed escape-direction analysis from explicit position and
+    membership tables;
   - generic transition-event detection and event-aligned table summaries;
   - bridge liquid-film state, barrier, residence, and coordination table
     summaries;
@@ -62,10 +64,12 @@ These legacy areas have first-pass engineered replacements:
 
 These are strong candidates for future engineering into reusable APIs and CLIs.
 
-- `analysis/bridge_water_escape_direction.py`
-  - Seed-water escape direction classification from trajectory-backed bridge
-    geometry.
-  - Suggested target: `molsimflow.postprocess.bridge_water_dynamics`.
+- residual `analysis/bridge_water_escape_direction.py` trajectory adapters
+  - Case discovery, trajectory-segment selection, seed-position table
+    generation, and publication plots around the now-migrated escape-direction
+    table API.
+  - Suggested targets: adapter in `molsimflow.postprocess.bridge_water_escape`
+    or double-bubble workflow code if the case layout remains project-specific.
 - `analysis/bridge_hbond_network.py`
   - Hydrogen-bond graph/network descriptors, lifetimes, motifs, and gap-bin
     summaries.

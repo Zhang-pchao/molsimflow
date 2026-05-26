@@ -84,6 +84,9 @@ Reasoning:
   - bridge-water dynamics: first trace-table core migrated for entry/exit flux
     proxies, turnover/drainage summaries, seed-water monotonic survival, and
     seed-exit proxy events;
+  - bridge-water escape direction: explicit seed-position/membership table
+    core migrated for retained/exited status, displacement vectors, direction
+    labels, and gap-bin summaries;
   - transition-event analysis: first generic feature-table core migrated for
     event detection, event-aligned summaries, lag correlations, and pre/post
     change-point summaries;
