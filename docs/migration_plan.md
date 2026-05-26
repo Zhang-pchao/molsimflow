@@ -90,6 +90,8 @@ Reasoning:
   - bridge-film stability: first table-oriented core migrated for film-state
     classification, barrier-top summaries, residence episodes, and coordination
     sample summaries;
+  - ion-water coupling: first feature-table core migrated for predictor-target
+    coupling, lag correlations, state comparisons, and event-aligned summaries;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

@@ -37,6 +37,7 @@ Current migrated or partial stages include:
 - bridge-water dynamics;
 - transition events;
 - bridge film;
+- ion-water coupling;
 - FES barriers;
 - case comparison.
 

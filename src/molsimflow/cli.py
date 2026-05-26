@@ -678,6 +678,42 @@ def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
     return bridge_film_main(workflow_args)
 
 
+def _cmd_postprocess_ion_water_coupling(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.coupling import main as coupling_main
+
+    workflow_args = [
+        "--feature-table",
+        str(args.feature_table),
+        "--output-dir",
+        str(args.output_dir),
+        "--state-target",
+        args.state_target,
+        "--low-quantile",
+        str(args.low_quantile),
+        "--high-quantile",
+        str(args.high_quantile),
+        "--lag-window",
+        str(args.lag_window),
+        "--event-window-before",
+        str(args.event_window_before),
+        "--event-window-after",
+        str(args.event_window_after),
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+    ]
+    if args.transition_events is not None:
+        workflow_args.extend(["--transition-events", str(args.transition_events)])
+    for column in args.predictor_column or []:
+        workflow_args.extend(["--predictor-column", column])
+    for column in args.target_column or []:
+        workflow_args.extend(["--target-column", column])
+    if not args.allow_partial_windows:
+        workflow_args.append("--no-partial-windows")
+    return coupling_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_ion_occupancy(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_descriptors import main as bridge_main
 
@@ -971,6 +1007,23 @@ def _add_bridge_film_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--barrier-cv-quantile-width", type=float, default=0.10)
     parser.add_argument("--barrier-dewet-top-fraction", type=float, default=0.10)
     parser.add_argument("--time-tolerance", type=float, default=0.0005)
+
+
+def _add_ion_water_coupling_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--feature-table", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--transition-events", type=Path)
+    parser.add_argument("--predictor-column", action="append", help="Predictor column; may be repeated")
+    parser.add_argument("--target-column", action="append", help="Target column; may be repeated")
+    parser.add_argument("--state-target", default="dewet_fraction")
+    parser.add_argument("--low-quantile", type=float, default=0.25)
+    parser.add_argument("--high-quantile", type=float, default=0.75)
+    parser.add_argument("--lag-window", type=int, default=20)
+    parser.add_argument("--event-window-before", type=int, default=20)
+    parser.add_argument("--event-window-after", type=int, default=20)
+    parser.add_argument("--allow-partial-windows", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--time-column", default="time_ns")
 
 
 def _add_bridge_ion_occupancy_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1372,6 +1425,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_bridge_film_postprocess_args(bridge_film)
     bridge_film.set_defaults(func=_cmd_postprocess_bridge_film)
+
+    ion_water_coupling = postprocess_subparsers.add_parser(
+        "ion-water-coupling",
+        help="Compute predictor-target ion/water coupling summaries from a feature CSV",
+    )
+    _add_ion_water_coupling_postprocess_args(ion_water_coupling)
+    ion_water_coupling.set_defaults(func=_cmd_postprocess_ion_water_coupling)
 
     bridge_ion = postprocess_subparsers.add_parser(
         "bridge-ion-occupancy",

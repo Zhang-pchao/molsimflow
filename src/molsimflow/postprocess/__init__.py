@@ -11,6 +11,7 @@ from molsimflow.postprocess.bridge_water_dynamics import BridgeWaterDynamicsConf
 from molsimflow.postprocess.bridge_water_dewetting import BridgeWaterDewettingConfig
 from molsimflow.postprocess.case_comparison import CasePairSpec, DescriptorTableSpec
 from molsimflow.postprocess.coalescence_state import CoalescenceStateConfig
+from molsimflow.postprocess.coupling import CouplingConfig
 from molsimflow.postprocess.events import TransitionEventConfig
 from molsimflow.postprocess.fes_analysis import FesCurve, FesCurveSpec
 from molsimflow.postprocess.ion_distribution import AtomRecord, IonZDistribution
@@ -31,6 +32,7 @@ __all__ = [
     "BubbleSurfaceDistanceAnalyzer",
     "CasePairSpec",
     "CoalescenceStateConfig",
+    "CouplingConfig",
     "DescriptorTableSpec",
     "FesCurve",
     "FesCurveSpec",

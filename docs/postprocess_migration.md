@@ -48,6 +48,10 @@ analysis and the first ion-analysis core:
   - classifies bridge liquid-film states from frame-level composition counts;
   - summarizes barrier-top film states, residence episodes, and ion-water
     coordination samples from explicit tables.
+- `molsimflow.postprocess.coupling`
+  - computes predictor-target ion/water coupling from feature tables;
+  - writes lag correlations, low/high state comparisons, and optional
+    event-aligned predictor/target summaries.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries.
@@ -140,6 +144,12 @@ molsimflow postprocess transition-events \
 molsimflow postprocess bridge-film \
   --frame-table bridge_liquid_film_frame_metrics.csv \
   --output-dir bridge_film
+```
+
+```bash
+molsimflow postprocess ion-water-coupling \
+  --feature-table transition_feature_table.csv \
+  --output-dir ion_water_coupling
 ```
 
 ```bash

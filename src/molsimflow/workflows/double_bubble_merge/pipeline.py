@@ -97,6 +97,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Frame-table film-state, barrier, residence, and coordination summaries migrated.",
         ),
         DoubleBubbleMergeStage(
+            name="ion_water_coupling",
+            command_group="postprocess",
+            reusable_module="molsimflow.postprocess.coupling",
+            status="partial",
+            notes="Feature-table coupling, lag, state comparison, and event-aligned summaries migrated.",
+        ),
+        DoubleBubbleMergeStage(
             name="fes_barriers",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.fes_analysis",
