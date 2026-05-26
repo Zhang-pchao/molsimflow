@@ -35,11 +35,45 @@ Current migrated or partial stages include:
 - bridge descriptors;
 - bridge-water dewetting;
 - bridge-water dynamics;
+- bridge-water escape;
+- water orientation;
+- H-bond network;
+- contact graph topology;
+- local environment;
+- species transitions;
 - transition events;
 - bridge film;
 - ion-water coupling;
 - FES barriers;
 - case comparison.
+
+## Residual Adapters
+
+The workflow namespace also exposes the optional double-bubble adapters that are
+still represented only by legacy scripts:
+
+```python
+from molsimflow.workflows.double_bubble_merge import residual_adapter_plan
+
+for adapter in residual_adapter_plan():
+    print(adapter.name, adapter.status, adapter.expected_output)
+```
+
+These adapters are not public-package blockers.  They should be added only when
+we want direct trajectory-to-table commands for this project family.  Generic
+analysis should continue to use explicit CSV inputs handled by the migrated
+`molsimflow.postprocess` modules.
+
+Current residual adapter categories:
+
+- seed-position table generation for `bridge-water-escape`;
+- water-orientation sample generation for `water-orientation-summary`;
+- H-bond edge-table generation for `hbond-network`;
+- contact-edge and local-environment sample generation for `contact-graph` and
+  `local-environment`;
+- microstate / region-QC tables for double-bubble diagnostics;
+- publication and case-synthesis scripts, which should not be migrated
+  directly.
 
 ## Migration Rule
 

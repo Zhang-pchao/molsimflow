@@ -10,6 +10,12 @@ The reusable first-pass core APIs have now been migrated into `src/molsimflow`;
 the remaining items are optional trajectory adapters, project-specific
 orchestration layers, or publication/reporting scripts.
 
+The optional double-bubble-specific adapters are tracked in:
+
+```python
+from molsimflow.workflows.double_bubble_merge import residual_adapter_plan
+```
+
 Current audit snapshot:
 
 - `legacy_sources/`: about 4.1 MB;
@@ -69,6 +75,7 @@ These legacy areas have first-pass engineered replacements:
 
 These are not blockers for the public package core.  Migrate them later only if
 we want direct trajectory-to-table commands instead of explicit table inputs.
+They are represented in `residual_adapter_plan()`.
 
 - residual `analysis/bridge_water_escape_direction.py` trajectory adapters
   - Case discovery, trajectory-segment selection, seed-position table
