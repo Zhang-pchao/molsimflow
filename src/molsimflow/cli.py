@@ -735,6 +735,30 @@ def _cmd_postprocess_contact_graph(args: argparse.Namespace) -> int:
     return contact_main(workflow_args)
 
 
+def _cmd_postprocess_local_environment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.local_environment import main as local_env_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--frame-column",
+        args.frame_column,
+        "--entity-column",
+        args.entity_column,
+        "--class-column",
+        args.class_column,
+    ]
+    if args.time_column is not None:
+        workflow_args.extend(["--time-column", args.time_column])
+    for column in args.feature_column or []:
+        workflow_args.extend(["--feature-column", column])
+    if args.class_order is not None:
+        workflow_args.extend(["--class-order", args.class_order])
+    return local_env_main(workflow_args)
+
+
 def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.events import main as events_main
 
@@ -1238,6 +1262,17 @@ def _add_contact_graph_postprocess_args(parser: argparse.ArgumentParser) -> None
     parser.add_argument("--min-bin-count", type=int, default=1)
 
 
+def _add_local_environment_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input local-environment sample CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--entity-column", default="entity_id")
+    parser.add_argument("--class-column", default="environment_class")
+    parser.add_argument("--time-column")
+    parser.add_argument("--feature-column", action="append", help="Feature column; may be repeated or comma separated")
+    parser.add_argument("--class-order", help="Class order, separated by commas, semicolons, or pipes")
+
+
 def _add_transition_events_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True, help="Input feature CSV")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -1735,6 +1770,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_contact_graph_postprocess_args(contact_graph)
     contact_graph.set_defaults(func=_cmd_postprocess_contact_graph)
+
+    local_environment = postprocess_subparsers.add_parser(
+        "local-environment",
+        help="Summarize local-environment sample tables and transitions",
+    )
+    _add_local_environment_postprocess_args(local_environment)
+    local_environment.set_defaults(func=_cmd_postprocess_local_environment)
 
     transition_events = postprocess_subparsers.add_parser(
         "transition-events",

@@ -43,6 +43,8 @@ These legacy areas have first-pass engineered replacements:
     membership tables;
   - H-bond network summaries from explicit edge tables;
   - generic contact graph topology summaries from explicit edge tables;
+  - local-environment class summaries and transition matrices from explicit
+    sample tables;
   - generic transition-event detection and event-aligned table summaries;
   - bridge liquid-film state, barrier, residence, and coordination table
     summaries;
@@ -97,14 +99,14 @@ These are useful but large and should be split before migration.
     - bridge atom membership;
     - residual contact graph topology adapters;
     - cycle analysis;
-    - local water environment classification;
+    - residual local water environment sample generation;
     - environment similarity;
     - gap/event-conditioned summaries;
     - topology sensitivity.
   - Suggested targets:
     - `molsimflow.postprocess.bridge_membership`;
     - residual adapters around `molsimflow.postprocess.contact_graph`;
-    - `molsimflow.postprocess.local_environment`;
+    - residual adapters around `molsimflow.postprocess.local_environment`;
     - `molsimflow.postprocess.sensitivity`.
   - Keep `networkx` optional.
 - `analysis/ion_effect_water_topology_stage02.py`

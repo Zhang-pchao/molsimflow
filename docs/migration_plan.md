@@ -93,6 +93,9 @@ Reasoning:
   - contact graph topology: explicit edge-table core migrated for generic graph
     metrics, role-mediated edges, articulation proxies, cycle rank, and
     gap-bin summaries;
+  - local environments: explicit sample-table core migrated for frame/class
+    summaries, numeric feature summaries, and persistent-entity environment
+    transition matrices;
   - transition-event analysis: first generic feature-table core migrated for
     event detection, event-aligned summaries, lag correlations, and pre/post
     change-point summaries;

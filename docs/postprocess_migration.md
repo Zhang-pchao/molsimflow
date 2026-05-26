@@ -66,6 +66,11 @@ analysis and the first ion-analysis core:
   - computes generic graph topology metrics, role-mediated edge fractions,
     articulation-node proxies, cycle rank, bridge-spanning flags, and gap-bin
     summaries.
+- `molsimflow.postprocess.local_environment`
+  - reads explicit local-environment sample tables;
+  - computes frame/class summaries for environment labels and numeric features;
+  - reuses the transition-matrix core for persistent-entity environment
+    transitions.
 - `molsimflow.postprocess.events`
   - detects connectivity, water-count drop, and dewetting-jump events from a
     feature CSV;
@@ -198,6 +203,15 @@ molsimflow postprocess contact-graph \
   --source-s-column source_s_A \
   --target-s-column target_s_A \
   --gap-column surface_gap_A
+```
+
+```bash
+molsimflow postprocess local-environment \
+  --input local_environment_samples.csv \
+  --output-dir local_environment \
+  --time-column time_ns \
+  --class-order tetrahedral,interfacial,distorted \
+  --feature-column q,lsi
 ```
 
 ```bash

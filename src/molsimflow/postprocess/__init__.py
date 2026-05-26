@@ -38,6 +38,11 @@ from molsimflow.postprocess.ion_species import (
     MoleculeRecord,
     classify_ion_species,
 )
+from molsimflow.postprocess.local_environment import (
+    LocalEnvironmentConfig,
+    build_class_environment_summary,
+    build_frame_environment_summary,
+)
 from molsimflow.postprocess.species_assignment import (
     OxygenHydrogenAssignment,
     assign_hydrogen_to_nearest_oxygen,
@@ -81,6 +86,7 @@ __all__ = [
     "IonSpeciesConfig",
     "IonSpeciesFrameResult",
     "IonZDistribution",
+    "LocalEnvironmentConfig",
     "MoleculeRecord",
     "OxygenHydrogenAssignment",
     "SeedPositionRow",
@@ -95,6 +101,8 @@ __all__ = [
     "build_seed_escape_events",
     "build_contact_graph_summary",
     "build_frame_network_summary",
+    "build_class_environment_summary",
+    "build_frame_environment_summary",
     "build_species_transition_matrix",
     "classify_escape_direction",
     "classify_hbond_type",
