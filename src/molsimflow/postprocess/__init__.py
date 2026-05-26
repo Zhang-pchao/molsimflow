@@ -33,6 +33,13 @@ from molsimflow.postprocess.transitions import (
     build_species_transition_matrix,
     infer_species_order,
 )
+from molsimflow.postprocess.water_orientation import (
+    WaterOrientationSummaryConfig,
+    angle_to_axis_deg,
+    compute_s_rho,
+    compute_water_orientation_sample,
+    nematic_order,
+)
 
 __all__ = [
     "AtomRecord",
@@ -59,11 +66,16 @@ __all__ = [
     "TraceInputSpec",
     "TransitionEventConfig",
     "UnionFind",
+    "WaterOrientationSummaryConfig",
+    "angle_to_axis_deg",
     "assign_hydrogen_to_nearest_oxygen",
     "build_species_transition_matrix",
     "classify_ion_species",
     "classify_oxygen_species_indices",
+    "compute_s_rho",
+    "compute_water_orientation_sample",
     "infer_species_order",
     "infer_timestep_time_scale",
+    "nematic_order",
     "nearest_row_index",
 ]

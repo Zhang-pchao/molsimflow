@@ -658,6 +658,44 @@ def _cmd_postprocess_species_transitions(args: argparse.Namespace) -> int:
     return transitions_main(workflow_args)
 
 
+def _cmd_postprocess_water_orientation_summary(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.water_orientation import main as water_orientation_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--s-column",
+        args.s_column,
+        "--rho-column",
+        args.rho_column,
+        "--cv-column",
+        args.cv_column,
+        "--angle-column",
+        args.angle_column,
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+        "--rho-bins",
+        str(args.rho_bins),
+        "--s-bins",
+        str(args.s_bins),
+        "--cv-bins",
+        str(args.cv_bins),
+        "--angle-bins",
+        str(args.angle_bins),
+    ]
+    if args.rho_max is not None:
+        workflow_args.extend(["--rho-max", str(args.rho_max)])
+    if args.s_min is not None:
+        workflow_args.extend(["--s-min", str(args.s_min)])
+    if args.s_max is not None:
+        workflow_args.extend(["--s-max", str(args.s_max)])
+    return water_orientation_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_film import main as bridge_film_main
 
@@ -1024,6 +1062,24 @@ def _add_species_transitions_postprocess_args(parser: argparse.ArgumentParser) -
         action="store_true",
         help="Do not count unchanged adjacent-frame species assignments in the matrix",
     )
+
+
+def _add_water_orientation_summary_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input water-orientation sample CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--s-column", default="s")
+    parser.add_argument("--rho-column", default="rho")
+    parser.add_argument("--cv-column", default="d3d_all")
+    parser.add_argument("--angle-column", default="theta_AB_deg")
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--time-column", default="time")
+    parser.add_argument("--rho-bins", type=int, default=40)
+    parser.add_argument("--rho-max", type=float)
+    parser.add_argument("--s-bins", type=int, default=40)
+    parser.add_argument("--s-min", type=float)
+    parser.add_argument("--s-max", type=float)
+    parser.add_argument("--cv-bins", type=int, default=40)
+    parser.add_argument("--angle-bins", type=int, default=72)
 
 
 def _add_bridge_film_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1464,6 +1520,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_species_transitions_postprocess_args(species_transitions)
     species_transitions.set_defaults(func=_cmd_postprocess_species_transitions)
+
+    water_orientation = postprocess_subparsers.add_parser(
+        "water-orientation-summary",
+        help="Summarize water-orientation sample tables",
+    )
+    _add_water_orientation_summary_postprocess_args(water_orientation)
+    water_orientation.set_defaults(func=_cmd_postprocess_water_orientation_summary)
 
     bridge_film = postprocess_subparsers.add_parser(
         "bridge-film",

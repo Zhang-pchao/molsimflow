@@ -30,6 +30,10 @@ analysis and the first ion-analysis core:
   - counts adjacent-frame transitions for stable entity ids;
   - writes transition-count matrices, row-normalized probabilities, matched
     transition details, species summaries, and run statistics.
+- `molsimflow.postprocess.water_orientation`
+  - computes water-orientation geometry in a two-center reference frame;
+  - summarizes explicit water-orientation sample tables by frame, radial
+    distance, bridge-axis/radial bins, CV bins, and angular distributions.
 - `molsimflow.postprocess.ion_distribution`
   - reads classified species XYZ files;
   - computes relative ion z-distribution summaries and density tables.
@@ -166,6 +170,17 @@ molsimflow postprocess species-transitions \
   --entity-column oxygen_index \
   --time-column time_ns \
   --species-order solution_bulk_oh,solution_surface_oh,solution_surface_h2o
+```
+
+```bash
+molsimflow postprocess water-orientation-summary \
+  --input water_orientation_samples.csv \
+  --output-dir water_orientation_summary \
+  --rho-bins 30 \
+  --rho-max 12 \
+  --s-bins 40 \
+  --s-min -20 \
+  --s-max 20
 ```
 
 ```bash

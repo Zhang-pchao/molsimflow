@@ -99,6 +99,9 @@ Reasoning:
     species grouping migrated into a reusable NumPy-based helper;
   - species transitions: generic long-table transition-matrix counting for
     stable entity ids and adjacent-frame species labels;
+  - water orientation: first reusable orientation geometry and explicit
+    sample-table summaries migrated for radial profiles, s-rho maps, CV bins,
+    frame summaries, and angular distributions;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

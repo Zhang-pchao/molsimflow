@@ -48,6 +48,7 @@ These legacy areas have first-pass engineered replacements:
     alignment helpers;
   - periodic O-H assignment and oxygen species grouping;
   - species transition matrix counting from explicit long-form state tables;
+  - water-orientation geometry and explicit sample-table summaries;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -70,10 +71,14 @@ These are strong candidates for future engineering into reusable APIs and CLIs.
     summaries.
   - Suggested target: `molsimflow.postprocess.hbond_network`.
   - Keep MDAnalysis as an optional dependency.
-- `analysis/water_orientation_shell.py`
-  - Water orientation, radial profiles, s-rho maps, CV summaries, and angular
-    distributions.
-  - Suggested target: `molsimflow.postprocess.water_orientation`.
+- residual `analysis/water_orientation_shell.py` trajectory adapters
+  - Atom selection, bubble-center lookup, hydrogen assignment, COLVAR
+    alignment, and optional plotting around the now-migrated orientation
+    geometry and sample-table summaries.
+  - Suggested targets: trajectory adapter into
+    `molsimflow.postprocess.water_orientation`, plotting through generic
+    `molsimflow.plotting`.
+
 ### P2: Topology And Local Environment
 
 These are useful but large and should be split before migration.
