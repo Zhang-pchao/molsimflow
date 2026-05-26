@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "molsimflow"
+version = "0.1.0"
+description = "Reusable molecular-simulation workflow tools for structure preparation, PLUMED generation, and MD analysis."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+]
+
+[project.optional-dependencies]
+analysis = [
+  "matplotlib",
+  "MDAnalysis",
+  "pandas",
+  "scipy",
+]
+structure = [
+  "ase",
+]
+dev = [
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+molsimflow = "molsimflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
