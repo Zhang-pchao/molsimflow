@@ -39,6 +39,7 @@ molsimflow postprocess bridge-water-density --input coalescence_state_table.csv 
 molsimflow postprocess bridge-water-dewetting --dump dump.lammpstrj --water-oxygen-atoms 1201-9000:3 --plumed in.plumed --output-dir bridge_water_dewetting
 molsimflow postprocess bridge-water-flux --manifest bridge_water_trace_manifest.csv --output-dir bridge_water_flux
 molsimflow postprocess bridge-seed-survival --manifest bridge_water_trace_manifest.csv --output-dir seed_water_survival
+molsimflow postprocess transition-events --input bridge_water_dewetting.csv --output-dir transition_events
 molsimflow postprocess bridge-ion-occupancy --positions tracked_bridge_ion_positions.csv --gap-table coalescence_state_table.csv --output-dir bridge_ion_descriptors
 molsimflow postprocess fes-barriers --curve fes-rew.dat "case A" tio2 --output-dir fes_barrier_results
 molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results

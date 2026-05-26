@@ -83,6 +83,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Table-based entry/exit flux and seed survival migrated; escape direction remains.",
         ),
         DoubleBubbleMergeStage(
+            name="transition_events",
+            command_group="postprocess",
+            reusable_module="molsimflow.postprocess.events",
+            status="partial",
+            notes="Generic event detection and event-aligned table summaries migrated.",
+        ),
+        DoubleBubbleMergeStage(
             name="fes_barriers",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.fes_analysis",

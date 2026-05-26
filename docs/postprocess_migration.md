@@ -39,6 +39,11 @@ analysis and the first ion-analysis core:
   - computes entry/exit flux, turnover, replacement, and drainage proxies;
   - computes seed-water retention, monotonic survival, and exit-event proxy
     summaries versus surface gap.
+- `molsimflow.postprocess.events`
+  - detects connectivity, water-count drop, and dewetting-jump events from a
+    feature CSV;
+  - writes event-aligned profiles, aligned summary statistics, lag
+    correlations, and pre/post change-point summaries.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries.
@@ -119,6 +124,12 @@ molsimflow postprocess bridge-water-flux \
 molsimflow postprocess bridge-seed-survival \
   --manifest bridge_water_trace_manifest.csv \
   --output-dir seed_water_survival
+```
+
+```bash
+molsimflow postprocess transition-events \
+  --input bridge_water_dewetting.csv \
+  --output-dir transition_events
 ```
 
 ```bash

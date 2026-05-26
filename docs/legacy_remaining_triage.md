@@ -39,6 +39,7 @@ These legacy areas have first-pass engineered replacements:
   - first bridge-water and bridge-ion descriptor tables;
   - bridge-water dewetting and spanning-connectivity tables;
   - bridge-water entry/exit flux and seed-survival trace-table summaries;
+  - generic transition-event detection and event-aligned table summaries;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -65,10 +66,6 @@ These are strong candidates for future engineering into reusable APIs and CLIs.
   - Water orientation, radial profiles, s-rho maps, CV summaries, and angular
     distributions.
   - Suggested target: `molsimflow.postprocess.water_orientation`.
-- `analysis/bridge_transition_event_analysis.py`
-  - Table-driven transition-event detection, event-aligned profiles, lag
-    correlations, and change-point summaries.
-  - Suggested target: `molsimflow.postprocess.events`.
 - `analysis/bridge_liquid_film_stability.py`
   - Bridge film state classification, residence episodes, barrier-top summaries,
     and coordination summaries.

@@ -594,6 +594,46 @@ def _cmd_postprocess_bridge_seed_survival(args: argparse.Namespace) -> int:
     return dynamics_main(_bridge_water_dynamics_args(args, "seed-survival"))
 
 
+def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.events import main as events_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+        "--event-method",
+        args.event_method,
+        "--connectivity-event",
+        args.connectivity_event,
+        "--min-event-separation",
+        str(args.min_event_separation),
+        "--event-window-before",
+        str(args.event_window_before),
+        "--event-window-after",
+        str(args.event_window_after),
+        "--lag-window",
+        str(args.lag_window),
+        "--change-window",
+        str(args.change_window),
+    ]
+    for column in args.derivative_column or []:
+        workflow_args.extend(["--derivative-column", column])
+    if args.nw_drop_threshold is not None:
+        workflow_args.extend(["--nw-drop-threshold", str(args.nw_drop_threshold)])
+    if args.dewet_rate_threshold is not None:
+        workflow_args.extend(["--dewet-rate-threshold", str(args.dewet_rate_threshold)])
+    if args.dewet_fraction_threshold is not None:
+        workflow_args.extend(["--dewet-fraction-threshold", str(args.dewet_fraction_threshold)])
+    if args.allow_partial_windows:
+        workflow_args.append("--allow-partial-windows")
+    return events_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_ion_occupancy(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_descriptors import main as bridge_main
 
@@ -846,6 +886,25 @@ def _add_bridge_water_dynamics_postprocess_args(parser: argparse.ArgumentParser)
     parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
     parser.add_argument("--min-bin-count", type=int, default=1)
     parser.add_argument("--state-time-tolerance-ns", type=float, default=0.0015)
+
+
+def _add_transition_events_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input feature CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--time-column", default="time_ns")
+    parser.add_argument("--derivative-column", action="append", help="Column to differentiate; may be repeated")
+    parser.add_argument("--event-method", choices=["connectivity_loss", "nw_drop", "dewet_jump", "hybrid"], default="hybrid")
+    parser.add_argument("--connectivity-event", choices=["loss", "gain", "any"], default="loss")
+    parser.add_argument("--nw-drop-threshold", type=float)
+    parser.add_argument("--dewet-rate-threshold", type=float)
+    parser.add_argument("--dewet-fraction-threshold", type=float)
+    parser.add_argument("--min-event-separation", type=int, default=3)
+    parser.add_argument("--event-window-before", type=int, default=20)
+    parser.add_argument("--event-window-after", type=int, default=20)
+    parser.add_argument("--allow-partial-windows", action="store_true")
+    parser.add_argument("--lag-window", type=int, default=20)
+    parser.add_argument("--change-window", type=int, default=10)
 
 
 def _add_bridge_ion_occupancy_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1233,6 +1292,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_bridge_water_dynamics_postprocess_args(bridge_seed_survival)
     bridge_seed_survival.set_defaults(func=_cmd_postprocess_bridge_seed_survival)
+
+    transition_events = postprocess_subparsers.add_parser(
+        "transition-events",
+        help="Detect transition events and event-aligned summaries from a feature CSV",
+    )
+    _add_transition_events_postprocess_args(transition_events)
+    transition_events.set_defaults(func=_cmd_postprocess_transition_events)
 
     bridge_ion = postprocess_subparsers.add_parser(
         "bridge-ion-occupancy",
