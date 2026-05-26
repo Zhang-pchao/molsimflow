@@ -2,12 +2,13 @@
 
 ## Decision
 
-Do not delete `legacy_sources/` yet.
+Do not upload `legacy_sources/`.
 
 The directory is still an ignored local migration reference, not publishable
-package code.  It contains many private paths and project-specific runners, but
-it also still contains reusable algorithms that have not been migrated into
-`src/molsimflow`.
+package code.  It contains many private paths and project-specific runners.
+The reusable first-pass core APIs have now been migrated into `src/molsimflow`;
+the remaining items are optional trajectory adapters, project-specific
+orchestration layers, or publication/reporting scripts.
 
 Current audit snapshot:
 
@@ -62,11 +63,12 @@ These legacy areas have first-pass engineered replacements:
   - external workflow config helper;
   - generic scheduler template.
 
-## Remaining Migration Candidates
+## Residual Legacy Areas
 
-### P1: Reusable Analysis Modules
+### Optional Trajectory Adapters
 
-These are strong candidates for future engineering into reusable APIs and CLIs.
+These are not blockers for the public package core.  Migrate them later only if
+we want direct trajectory-to-table commands instead of explicit table inputs.
 
 - residual `analysis/bridge_water_escape_direction.py` trajectory adapters
   - Case discovery, trajectory-segment selection, seed-position table
@@ -90,9 +92,11 @@ These are strong candidates for future engineering into reusable APIs and CLIs.
     `molsimflow.postprocess.water_orientation`, plotting through generic
     `molsimflow.plotting`.
 
-### P2: Topology And Local Environment
+### Workflow-Specific Topology And Local Environment Adapters
 
-These are useful but large and should be split before migration.
+The reusable table cores have been migrated.  The remaining work is mostly
+sample/edge generation from project-specific trajectories and optional
+sensitivity/reporting adapters.
 
 - `analysis/ion_effect_water_topology.py`
   - Contains multiple stages in one large file:
@@ -114,10 +118,11 @@ These are useful but large and should be split before migration.
     and water-position QC.
   - Suggested target: split into bridge microstate and region-position helpers.
 
-### P2: Low-Level Reusable Utilities
+### Optional Low-Level Trajectory Utilities
 
-These should be migrated before more trajectory-heavy modules reuse duplicate
-logic.
+The first shared LAMMPS dump and time-alignment helpers are already migrated.
+Extend them only when adding a direct trajectory adapter that needs more raw
+atom-record outputs.
 
 - extend shared LAMMPS dump readers and time-alignment helpers for:
   - raw trajectory membership outputs needed by
@@ -152,18 +157,17 @@ small public examples:
 
 ## Cleanup Policy
 
-Keep `legacy_sources/` local and ignored until the P1/P2 migration candidates
-above are either migrated or explicitly rejected.  After that:
+Keep `legacy_sources/` local and ignored only while optional adapters are still
+being inspected.  If historical provenance is no longer needed:
 
 1. Confirm `git ls-files legacy_sources` returns no tracked files.
-2. Confirm this triage document has no remaining open migration candidates.
-3. Archive `legacy_sources/` outside the repository if historical provenance is
+2. Archive `legacy_sources/` outside the repository if historical provenance is
    still needed.
-4. Remove the local directory with:
+3. Remove the local directory with:
 
 ```bash
 cd /path/to/molsimflow
 rm -rf legacy_sources
 ```
 
-Do not run the deletion step while P1/P2 items remain unresolved.
+Do not upload `legacy_sources/` to GitHub.
