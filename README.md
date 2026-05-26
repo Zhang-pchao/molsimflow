@@ -32,6 +32,7 @@ molsimflow structure tio2-double-bubble --bulk-structure bulk.cif --molecule-dir
 molsimflow plumed double-bubble --data model_atomic.data --packmol packmol.in --build-py build.py --output in.plumed
 molsimflow postprocess centroids --traj_file run.lammpstrj --output bubble_centroids.txt --disable_ions
 molsimflow postprocess bubble-surface-distance --traj_file run.lammpstrj --output bubble_surface_distance.txt
+molsimflow postprocess coalescence-state --colvar COLVAR --output-dir coalescence_state
 molsimflow postprocess ion-species --traj run.lammpstrj --output-dir ion_analysis_results
 molsimflow postprocess ion-z-distribution --species-statistics ion_analysis_results/species_statistics.txt --h3o-file ion_analysis_results/solution_bulk_h3o.xyz
 molsimflow postprocess bridge-water-density --input coalescence_state_table.csv --output-dir bridge_water_descriptors
@@ -88,6 +89,7 @@ src/molsimflow/
   plumed/         PLUMED generators.
   postprocess/    Migrated MD analysis workflows.
   plotting/       CSV-driven plotting helpers.
+  workflows/      Project workflow composition namespaces.
 docs/             Migration plan and publicization notes.
 templates/        Generic scheduler templates.
 tests/            Small unit tests for reusable utilities.

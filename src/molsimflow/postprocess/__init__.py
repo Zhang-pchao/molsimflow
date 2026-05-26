@@ -7,6 +7,7 @@ from molsimflow.postprocess.bubble_surface_distance import (
 )
 from molsimflow.postprocess.bridge_descriptors import BridgeCylinder
 from molsimflow.postprocess.case_comparison import CasePairSpec, DescriptorTableSpec
+from molsimflow.postprocess.coalescence_state import CoalescenceStateConfig
 from molsimflow.postprocess.fes_analysis import FesCurve, FesCurveSpec
 from molsimflow.postprocess.ion_distribution import AtomRecord, IonZDistribution
 from molsimflow.postprocess.ion_species import (
@@ -22,6 +23,7 @@ __all__ = [
     "BubbleCentroidCalculator",
     "BubbleSurfaceDistanceAnalyzer",
     "CasePairSpec",
+    "CoalescenceStateConfig",
     "DescriptorTableSpec",
     "FesCurve",
     "FesCurveSpec",

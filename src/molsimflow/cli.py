@@ -363,6 +363,52 @@ def _cmd_postprocess_bubble_surface_distance(args: argparse.Namespace) -> int:
     return surface_distance_main(workflow_args)
 
 
+def _cmd_postprocess_coalescence_state(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.coalescence_state import main as coalescence_main
+
+    workflow_args = [
+        "--colvar",
+        str(args.colvar),
+        "--output-dir",
+        str(args.output_dir),
+        "--start-ns",
+        str(args.start_ns),
+        "--sample-interval-ns",
+        str(args.sample_interval_ns),
+        "--time-tolerance-ns",
+        str(args.time_tolerance_ns),
+        "--bubble-time-tolerance-ns",
+        str(args.bubble_time_tolerance_ns),
+        "--colvar-time-unit",
+        args.colvar_time_unit,
+        "--nominal-radius-A",
+        str(args.nominal_radius_A),
+        "--close-gap-A",
+        str(args.close_gap_A),
+        "--separated-min-single-fraction",
+        str(args.separated_min_single_fraction),
+        "--merged-major-total-fraction",
+        str(args.merged_major_total_fraction),
+        "--merged-minor-total-fraction",
+        str(args.merged_minor_total_fraction),
+        "--min-persist-samples",
+        str(args.min_persist_samples),
+        "--cv-bins",
+        str(args.cv_bins),
+    ]
+    if args.colvar_post is not None:
+        workflow_args.extend(["--colvar-post", str(args.colvar_post)])
+    if args.bubble_evolution is not None:
+        workflow_args.extend(["--bubble-evolution", str(args.bubble_evolution)])
+    if args.end_ns is not None:
+        workflow_args.extend(["--end-ns", str(args.end_ns)])
+    if args.rebase_colvar_time_zero:
+        workflow_args.append("--rebase-colvar-time-zero")
+    if args.surface_contact_distance_A is not None:
+        workflow_args.extend(["--surface-contact-distance-A", str(args.surface_contact_distance_A)])
+    return coalescence_main(workflow_args)
+
+
 def _cmd_postprocess_ion_species(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.ion_species import main as ion_species_main
 
@@ -607,6 +653,28 @@ def _add_surface_distance_postprocess_args(parser: argparse.ArgumentParser) -> N
         help="Allowed step mismatch when matching trajectory frame to COLVAR row",
     )
     parser.add_argument("--disable_plot", action="store_true", help="Disable time-series plot generation")
+
+
+def _add_coalescence_state_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--colvar", type=Path, required=True, help="PLUMED COLVAR path with a time column")
+    parser.add_argument("--colvar-post", type=Path, help="Optional secondary COLVAR table with cluster counters")
+    parser.add_argument("--bubble-evolution", type=Path, help="Optional bubble evolution table")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--start-ns", type=float, default=0.0)
+    parser.add_argument("--end-ns", type=float)
+    parser.add_argument("--sample-interval-ns", type=float, default=0.001, help="Use 0 to keep every COLVAR row")
+    parser.add_argument("--time-tolerance-ns", type=float, default=0.00051)
+    parser.add_argument("--bubble-time-tolerance-ns", type=float, default=0.00051)
+    parser.add_argument("--colvar-time-unit", choices=["fs", "ps", "ns"], default="ps")
+    parser.add_argument("--rebase-colvar-time-zero", action="store_true")
+    parser.add_argument("--nominal-radius-A", type=float, default=19.0)
+    parser.add_argument("--surface-contact-distance-A", type=float)
+    parser.add_argument("--close-gap-A", type=float, default=0.0)
+    parser.add_argument("--separated-min-single-fraction", type=float, default=0.60)
+    parser.add_argument("--merged-major-total-fraction", type=float, default=0.85)
+    parser.add_argument("--merged-minor-total-fraction", type=float, default=0.10)
+    parser.add_argument("--min-persist-samples", type=int, default=3)
+    parser.add_argument("--cv-bins", type=int, default=40)
 
 
 def _add_ion_species_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -988,6 +1056,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_surface_distance_postprocess_args(surface_distance)
     surface_distance.set_defaults(func=_cmd_postprocess_bubble_surface_distance)
+
+    coalescence_state = postprocess_subparsers.add_parser(
+        "coalescence-state",
+        help="Assign provisional two-bubble coalescence states from COLVAR tables",
+    )
+    _add_coalescence_state_postprocess_args(coalescence_state)
+    coalescence_state.set_defaults(func=_cmd_postprocess_coalescence_state)
 
     ion_species = postprocess_subparsers.add_parser(
         "ion-species",

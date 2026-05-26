@@ -81,6 +81,8 @@ Reasoning:
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;
+  - coalescence-state assignment: table-oriented core migrated for COLVAR,
+    optional cluster-counter, and optional bubble-evolution inputs;
   - case-comparison descriptor synthesis: first table-oriented core migrated
     for case manifests, descriptor scorecards, pair deltas, and descriptor
     correlations;
@@ -104,6 +106,15 @@ Reasoning:
     scheduler templates;
   - added `templates/config/workflow.example.ini` with placeholder-only public
     settings.
+
+### Workflow Namespaces
+
+- Add project-specific orchestration under `src/molsimflow/workflows` only when
+  a feature is too tied to a workflow to belong in a generic namespace.
+- Current specialized namespace:
+  - `molsimflow.workflows.double_bubble_merge` records the recommended stage
+    ordering for the double-bubble coalescence system while keeping algorithms
+    in generic modules.
 
 ### Phase 5: Public Release Readiness
 

@@ -33,6 +33,7 @@ These legacy areas have first-pass engineered replacements:
 - post-processing:
   - two-bubble centroids;
   - bubble surface distance;
+  - coalescence-state assignment;
   - ion species classification;
   - ion z-distribution;
   - first bridge-water and bridge-ion descriptor tables;
@@ -49,10 +50,6 @@ These legacy areas have first-pass engineered replacements:
 
 These are strong candidates for future engineering into reusable APIs and CLIs.
 
-- `analysis/coalescence_state.py`
-  - Generic state assignment from COLVAR/bubble-evolution tables.
-  - Suggested target: `molsimflow.postprocess.coalescence_state`.
-  - Suggested CLI: `molsimflow postprocess coalescence-state`.
 - `analysis/bridge_water_dewetting.py`
   - Bridge-cylinder water connectivity, dewetting fraction, and CV-binned
     summaries.

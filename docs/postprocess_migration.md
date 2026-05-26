@@ -14,6 +14,10 @@ analysis and the first ion-analysis core:
   - computes centroid distance, surface-to-surface minimum distance, and radial
     gap metrics for two-bubble trajectories;
   - can optionally merge the surface-distance time series with a COLVAR file.
+- `molsimflow.postprocess.coalescence_state`
+  - reads PLUMED-style COLVAR tables and optional bubble-evolution tables;
+  - assigns provisional two-bubble states and surface-gap estimates;
+  - writes state tables, state summaries, and CV-binned state probabilities.
 - `molsimflow.postprocess.ion_species`
   - classifies TiO2/surface/solution ion species from atomistic frames;
   - writes classified species XYZ files and per-frame statistics.
@@ -54,6 +58,14 @@ molsimflow postprocess bubble-surface-distance \
   --output bubble_surface_distance.txt \
   --step_interval 10 \
   --surface_fraction 0.8
+```
+
+```bash
+molsimflow postprocess coalescence-state \
+  --colvar COLVAR \
+  --colvar-post COLVAR_POST \
+  --bubble-evolution data_bubble_evolution.txt \
+  --output-dir coalescence_state
 ```
 
 ```bash
