@@ -92,6 +92,9 @@ Reasoning:
     sample summaries;
   - ion-water coupling: first feature-table core migrated for predictor-target
     coupling, lag correlations, state comparisons, and event-aligned summaries;
+  - shared trajectory utilities: first orthorhombic LAMMPS dump reader,
+    periodic geometry helpers, and nearest-time alignment helpers extracted
+    from bridge-water dewetting for trajectory-heavy migrations;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

@@ -3,7 +3,8 @@
 `molsimflow` is a reusable Python package for molecular-simulation workflows:
 
 - structure preparation utilities for slab, bubble, and electrolyte systems;
-- file conversion helpers for extended XYZ and LAMMPS data files;
+- file conversion helpers for extended XYZ, LAMMPS data files, and selected
+  LAMMPS dump frames;
 - PLUMED input generation for double-bubble enhanced-sampling cases;
 - a migration target for existing MD post-processing and visualization workflows;
 - CSV-driven plotting helpers for reusable analysis figures.
@@ -90,7 +91,7 @@ environment, run the documented smoke commands for the workflow being migrated.
 ```text
 src/molsimflow/
   config/        External workflow configuration helpers.
-  io/             File readers, writers, and converters.
+  io/             File readers, writers, converters, and trajectory helpers.
   structure/      Geometry helpers and future structure builders.
   plumed/         PLUMED generators.
   postprocess/    Migrated MD analysis workflows.

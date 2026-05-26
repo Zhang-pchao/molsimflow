@@ -14,11 +14,26 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from molsimflow.io.lammps_dump import (
+    LammpsFrame,
+    box_lengths,
+    cylinder_membership,
+    iter_lammps_dump_frames,
+    midpoint_minimum_image,
+    minimum_image_vectors,
+    periodic_center,
+    wrap_point_to_box,
+)
 from molsimflow.postprocess.coalescence_state import read_plumed_table
+from molsimflow.postprocess.time_alignment import (
+    as_float as _as_float,
+    infer_timestep_time_scale,
+    nearest_row_index as _nearest_row_index,
+)
 
 
 AXIS_TO_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -82,16 +97,6 @@ class PlumedAtomDefinition:
 
 
 @dataclass(frozen=True)
-class LammpsFrame:
-    """Selected atom positions from one LAMMPS dump frame."""
-
-    frame_index: int
-    timestep: int
-    bounds: np.ndarray
-    selected_positions: Mapping[int, np.ndarray]
-
-
-@dataclass(frozen=True)
 class BridgeWaterDewettingConfig:
     """Geometry and matching settings for bridge-water dewetting."""
 
@@ -123,14 +128,6 @@ class BridgeWaterDewettingConfig:
         return math.pi * float(self.radius_A) ** 2 * (float(self.upper_A) - float(self.lower_A))
 
 
-def _as_float(value: object, default: float = math.nan) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return default
-    return out if math.isfinite(out) else default
-
-
 def _mean(values: Iterable[object]) -> float:
     finite = [_as_float(value) for value in values]
     finite = [value for value in finite if math.isfinite(value)]
@@ -141,6 +138,16 @@ def _std(values: Iterable[object]) -> float:
     finite = [_as_float(value) for value in values]
     finite = [value for value in finite if math.isfinite(value)]
     return float(np.std(finite, ddof=1)) if len(finite) > 1 else 0.0 if len(finite) == 1 else math.nan
+
+
+def infer_dump_time_scale_ns(
+    timesteps: Sequence[int],
+    colvar_rows: Sequence[Mapping[str, object]],
+    tolerance_ns: float,
+) -> float:
+    """Infer timestep-to-ns scale from COLVAR matching."""
+
+    return infer_timestep_time_scale(timesteps, colvar_rows, tolerance=tolerance_ns, time_column="time_ns")
 
 
 def parse_atom_selection(expression: str) -> List[int]:
@@ -243,138 +250,6 @@ def extract_bubble_atom_groups_from_plumed(plumed_path: Path) -> Tuple[List[int]
     )
 
 
-def _choose_coord_field(fields: Sequence[str], dim: str) -> Tuple[int, bool]:
-    for name in (dim, dim + "u", dim + "s"):
-        if name in fields:
-            return fields.index(name), name.endswith("s")
-    raise ValueError(f"LAMMPS dump is missing {dim}/{dim}u/{dim}s coordinate column")
-
-
-def iter_lammps_dump_frames(
-    dump_path: Path,
-    needed_atom_ids: Optional[Iterable[int]] = None,
-    max_frames: Optional[int] = None,
-) -> Iterator[LammpsFrame]:
-    """Iterate LAMMPS dump frames while retaining selected atom positions."""
-
-    needed = set(needed_atom_ids) if needed_atom_ids is not None else None
-    with Path(dump_path).open(encoding="utf-8") as handle:
-        frame_index = 0
-        while True:
-            line = handle.readline()
-            if not line:
-                break
-            if not line.startswith("ITEM: TIMESTEP"):
-                raise ValueError("Unexpected dump format: expected ITEM: TIMESTEP")
-            timestep = int(handle.readline().strip())
-            if not handle.readline().startswith("ITEM: NUMBER OF ATOMS"):
-                raise ValueError("Unexpected dump format: missing ITEM: NUMBER OF ATOMS")
-            n_atoms = int(handle.readline().strip())
-            if not handle.readline().startswith("ITEM: BOX BOUNDS"):
-                raise ValueError("Unexpected dump format: missing ITEM: BOX BOUNDS")
-            bounds = np.zeros((3, 2), dtype=float)
-            for dim in range(3):
-                parts = handle.readline().split()
-                bounds[dim, 0] = float(parts[0])
-                bounds[dim, 1] = float(parts[1])
-            atoms_header = handle.readline().strip()
-            if not atoms_header.startswith("ITEM: ATOMS"):
-                raise ValueError("Unexpected dump format: missing ITEM: ATOMS")
-            fields = atoms_header.split()[2:]
-            if "id" not in fields:
-                raise ValueError("LAMMPS dump ATOMS line must contain id")
-            id_index = fields.index("id")
-            x_index, x_scaled = _choose_coord_field(fields, "x")
-            y_index, y_scaled = _choose_coord_field(fields, "y")
-            z_index, z_scaled = _choose_coord_field(fields, "z")
-            lengths = bounds[:, 1] - bounds[:, 0]
-            selected: Dict[int, np.ndarray] = {}
-            for _ in range(n_atoms):
-                parts = handle.readline().split()
-                atom_id = int(parts[id_index])
-                if needed is not None and atom_id not in needed:
-                    continue
-                coords = np.asarray([float(parts[x_index]), float(parts[y_index]), float(parts[z_index])], dtype=float)
-                for dim, scaled in enumerate((x_scaled, y_scaled, z_scaled)):
-                    if scaled:
-                        coords[dim] = bounds[dim, 0] + coords[dim] * lengths[dim]
-                selected[atom_id] = coords
-            yield LammpsFrame(frame_index=frame_index, timestep=timestep, bounds=bounds, selected_positions=selected)
-            frame_index += 1
-            if max_frames is not None and frame_index >= int(max_frames):
-                break
-
-
-def box_lengths(bounds: np.ndarray) -> np.ndarray:
-    return np.asarray(bounds, dtype=float)[:, 1] - np.asarray(bounds, dtype=float)[:, 0]
-
-
-def minimum_image_vectors(vectors: np.ndarray, lengths: np.ndarray) -> np.ndarray:
-    values = np.asarray(vectors, dtype=float)
-    return values - np.asarray(lengths, dtype=float) * np.round(values / np.asarray(lengths, dtype=float))
-
-
-def wrap_point_to_box(point: np.ndarray, bounds: np.ndarray) -> np.ndarray:
-    lengths = box_lengths(bounds)
-    wrapped = np.empty(3, dtype=float)
-    for dim in range(3):
-        lo = float(bounds[dim, 0])
-        wrapped[dim] = ((float(point[dim]) - lo) % float(lengths[dim])) + lo
-    return wrapped
-
-
-def periodic_center(coords: np.ndarray, bounds: np.ndarray) -> np.ndarray:
-    """Compute a periodic center robustly when coordinates straddle boundaries."""
-
-    coords = np.asarray(coords, dtype=float)
-    if coords.size == 0:
-        raise ValueError("Cannot compute periodic center for empty coordinate array")
-    lengths = box_lengths(bounds)
-    center = np.empty(3, dtype=float)
-    for dim in range(3):
-        lo = float(bounds[dim, 0])
-        scaled = (coords[:, dim] - lo) / float(lengths[dim])
-        angles = 2.0 * np.pi * scaled
-        complex_mean = np.exp(1j * angles).mean()
-        if np.isclose(abs(complex_mean), 0.0):
-            center[dim] = float(np.mean(coords[:, dim]))
-            continue
-        angle = np.angle(complex_mean)
-        if angle < 0:
-            angle += 2.0 * np.pi
-        center[dim] = lo + (angle / (2.0 * np.pi)) * float(lengths[dim])
-    return center
-
-
-def midpoint_minimum_image(center_a: np.ndarray, center_b: np.ndarray, bounds: np.ndarray) -> np.ndarray:
-    lengths = box_lengths(bounds)
-    delta = minimum_image_vectors(np.asarray(center_b, dtype=float) - np.asarray(center_a, dtype=float), lengths)
-    return wrap_point_to_box(np.asarray(center_a, dtype=float) + 0.5 * delta, bounds)
-
-
-def cylinder_membership(
-    coords: np.ndarray,
-    center: np.ndarray,
-    bounds: np.ndarray,
-    axis_index: int,
-    radius_A: float,
-    lower_A: float,
-    upper_A: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return bridge mask, local axial coordinate, and radial distance."""
-
-    coords = np.asarray(coords, dtype=float)
-    if coords.size == 0:
-        return np.zeros(0, dtype=bool), np.zeros(0, dtype=float), np.zeros(0, dtype=float)
-    lengths = box_lengths(bounds)
-    deltas = minimum_image_vectors(coords - np.asarray(center, dtype=float), lengths)
-    axial = deltas[:, axis_index]
-    perp = [index for index in range(3) if index != axis_index]
-    radial = np.sqrt(np.sum(deltas[:, perp] ** 2, axis=1))
-    mask = (axial >= float(lower_A)) & (axial <= float(upper_A)) & (radial <= float(radius_A))
-    return mask, axial, radial
-
-
 def _union_find_root(parents: np.ndarray, index: int) -> int:
     while parents[index] != index:
         parents[index] = parents[parents[index]]
@@ -431,57 +306,6 @@ def analyze_bridge_connectivity(
         if lower_mask[cluster].any() and upper_mask[cluster].any():
             return largest, True
     return largest, False
-
-
-def _nearest_row_index(rows: Sequence[Mapping[str, object]], time_ns: float, tolerance_ns: float) -> Optional[int]:
-    if not rows:
-        return None
-    times = np.asarray([_as_float(row.get("time_ns")) for row in rows], dtype=float)
-    index = int(np.searchsorted(times, float(time_ns)))
-    candidates = []
-    if index < times.size:
-        candidates.append(index)
-    if index > 0:
-        candidates.append(index - 1)
-    if not candidates:
-        return None
-    best = min(candidates, key=lambda item: abs(float(times[item]) - float(time_ns)))
-    return best if abs(float(times[best]) - float(time_ns)) <= float(tolerance_ns) else None
-
-
-def infer_dump_time_scale_ns(
-    timesteps: Sequence[int],
-    colvar_rows: Sequence[Mapping[str, object]],
-    tolerance_ns: float,
-) -> float:
-    """Infer timestep-to-ns scale from COLVAR matching."""
-
-    if not timesteps or not colvar_rows:
-        return 1.0
-    candidates = (1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9)
-    best_scale = 1.0
-    best_matches = -1
-    best_delta = math.inf
-    for scale in candidates:
-        matches = 0
-        deltas = []
-        for timestep in timesteps:
-            frame_time = float(timestep) * scale
-            index = _nearest_row_index(colvar_rows, frame_time, tolerance_ns)
-            if index is not None:
-                matches += 1
-                deltas.append(abs(_as_float(colvar_rows[index].get("time_ns")) - frame_time))
-        mean_delta = float(np.mean(deltas)) if deltas else math.inf
-        if matches > best_matches or (matches == best_matches and mean_delta < best_delta):
-            best_scale = scale
-            best_matches = matches
-            best_delta = mean_delta
-    if best_matches <= 0:
-        max_step = max(abs(float(item)) for item in timesteps)
-        max_time = max(abs(_as_float(row.get("time_ns"))) for row in colvar_rows)
-        if max_step > 0 and max_time > 0:
-            return max_time / max_step
-    return best_scale
 
 
 def compute_cv_binned_summary(rows: Sequence[Mapping[str, object]], bins: int) -> List[Dict[str, object]]:

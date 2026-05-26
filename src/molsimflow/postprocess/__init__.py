@@ -21,6 +21,7 @@ from molsimflow.postprocess.ion_species import (
     MoleculeRecord,
     classify_ion_species,
 )
+from molsimflow.postprocess.time_alignment import infer_timestep_time_scale, nearest_row_index
 
 __all__ = [
     "AtomRecord",
@@ -45,4 +46,6 @@ __all__ = [
     "TransitionEventConfig",
     "UnionFind",
     "classify_ion_species",
+    "infer_timestep_time_scale",
+    "nearest_row_index",
 ]

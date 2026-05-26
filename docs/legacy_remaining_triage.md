@@ -44,6 +44,8 @@ These legacy areas have first-pass engineered replacements:
     summaries;
   - ion-water coupling, lag correlation, state-comparison, and event-aligned
     feature-table summaries;
+  - first shared LAMMPS dump reader, PBC geometry helpers, and nearest-time
+    alignment helpers;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -105,13 +107,13 @@ logic.
 - `transitions/species_transition_matrix.py`
   - Species transition counting and transition-matrix utilities.
   - Suggested target: `molsimflow.postprocess.transitions`.
-- shared LAMMPS dump readers and time-alignment helpers from:
-  - `molsimflow.postprocess.bridge_water_dewetting`;
-  - `analysis/water_orientation_shell.py`;
-  - `analysis/bridge_transition_event_analysis.py`;
-  - `analysis/bridge_ion_water_coupling.py`.
-  - Suggested target: `molsimflow.io.lammps_dump` and
-    `molsimflow.postprocess.time_alignment`.
+- extend shared LAMMPS dump readers and time-alignment helpers for:
+  - raw trajectory membership outputs needed by
+    `analysis/bridge_water_escape_direction.py`;
+  - orientation-specific atom records from `analysis/water_orientation_shell.py`;
+  - future H-bond/topology trajectory readers.
+  - Current first-pass targets:
+    `molsimflow.io.lammps_dump` and `molsimflow.postprocess.time_alignment`.
 
 ### P3: Mostly Aggregation Or Publication Layers
 

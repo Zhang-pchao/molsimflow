@@ -64,6 +64,16 @@ The migrated commands intentionally do not provide case-layout defaults such as
 relative trajectory or ion-analysis directories.  Pass every trajectory, data,
 ion, and COLVAR input explicitly.
 
+## Shared Utilities
+
+The first shared trajectory helpers have been extracted for later
+trajectory-heavy migrations:
+
+- `molsimflow.io.lammps_dump` for selected-atom LAMMPS dump frame reading and
+  orthorhombic PBC geometry helpers;
+- `molsimflow.postprocess.time_alignment` for nearest-time row matching and
+  timestep-to-time scale inference.
+
 ## CLI Examples
 
 ```bash
