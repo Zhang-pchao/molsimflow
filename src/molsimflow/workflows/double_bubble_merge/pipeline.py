@@ -90,6 +90,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Generic event detection and event-aligned table summaries migrated.",
         ),
         DoubleBubbleMergeStage(
+            name="bridge_film",
+            command_group="postprocess",
+            reusable_module="molsimflow.postprocess.bridge_film",
+            status="partial",
+            notes="Frame-table film-state, barrier, residence, and coordination summaries migrated.",
+        ),
+        DoubleBubbleMergeStage(
             name="fes_barriers",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.fes_analysis",

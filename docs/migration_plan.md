@@ -87,6 +87,9 @@ Reasoning:
   - transition-event analysis: first generic feature-table core migrated for
     event detection, event-aligned summaries, lag correlations, and pre/post
     change-point summaries;
+  - bridge-film stability: first table-oriented core migrated for film-state
+    classification, barrier-top summaries, residence episodes, and coordination
+    sample summaries;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

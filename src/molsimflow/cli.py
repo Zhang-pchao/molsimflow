@@ -634,6 +634,50 @@ def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
     return events_main(workflow_args)
 
 
+def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_film import main as bridge_film_main
+
+    workflow_args = [
+        "--frame-table",
+        str(args.frame_table),
+        "--output-dir",
+        str(args.output_dir),
+        "--min-oxygen-for-film",
+        str(args.min_oxygen_for_film),
+        "--min-reactive-count",
+        str(args.min_reactive_count),
+        "--acid-base-ratio-threshold",
+        str(args.acid_base_ratio_threshold),
+        "--min-salt-ion-count",
+        str(args.min_salt_ion_count),
+        "--salt-ratio-threshold",
+        str(args.salt_ratio_threshold),
+        "--hydration-extension-threshold",
+        str(args.hydration_extension_threshold),
+        "--min-hydration-count",
+        str(args.min_hydration_count),
+        "--barrier-event-window-before",
+        str(args.barrier_event_window_before),
+        "--barrier-event-window-after",
+        str(args.barrier_event_window_after),
+        "--barrier-cv-quantile-width",
+        str(args.barrier_cv_quantile_width),
+        "--barrier-dewet-top-fraction",
+        str(args.barrier_dewet_top_fraction),
+        "--time-tolerance",
+        str(args.time_tolerance),
+    ]
+    for flag in ["transition_events", "residence_membership", "coordination_samples"]:
+        value = getattr(args, flag)
+        if value is not None:
+            workflow_args.extend([f"--{flag.replace('_', '-')}", str(value)])
+    if args.barrier_cv_min is not None:
+        workflow_args.extend(["--barrier-cv-min", str(args.barrier_cv_min)])
+    if args.barrier_cv_max is not None:
+        workflow_args.extend(["--barrier-cv-max", str(args.barrier_cv_max)])
+    return bridge_film_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_ion_occupancy(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_descriptors import main as bridge_main
 
@@ -905,6 +949,28 @@ def _add_transition_events_postprocess_args(parser: argparse.ArgumentParser) -> 
     parser.add_argument("--allow-partial-windows", action="store_true")
     parser.add_argument("--lag-window", type=int, default=20)
     parser.add_argument("--change-window", type=int, default=10)
+
+
+def _add_bridge_film_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--frame-table", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--transition-events", type=Path)
+    parser.add_argument("--residence-membership", type=Path, help="Long CSV with species,atom_id,frame/time,in_bridge")
+    parser.add_argument("--coordination-samples", type=Path, help="Long CSV with species,coordination rows")
+    parser.add_argument("--min-oxygen-for-film", type=int, default=3)
+    parser.add_argument("--min-reactive-count", type=int, default=1)
+    parser.add_argument("--acid-base-ratio-threshold", type=float, default=2.0)
+    parser.add_argument("--min-salt-ion-count", type=int, default=1)
+    parser.add_argument("--salt-ratio-threshold", type=float, default=0.08)
+    parser.add_argument("--hydration-extension-threshold", type=float, default=0.25)
+    parser.add_argument("--min-hydration-count", type=int, default=2)
+    parser.add_argument("--barrier-event-window-before", type=int, default=2)
+    parser.add_argument("--barrier-event-window-after", type=int, default=2)
+    parser.add_argument("--barrier-cv-min", type=float)
+    parser.add_argument("--barrier-cv-max", type=float)
+    parser.add_argument("--barrier-cv-quantile-width", type=float, default=0.10)
+    parser.add_argument("--barrier-dewet-top-fraction", type=float, default=0.10)
+    parser.add_argument("--time-tolerance", type=float, default=0.0005)
 
 
 def _add_bridge_ion_occupancy_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1299,6 +1365,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_transition_events_postprocess_args(transition_events)
     transition_events.set_defaults(func=_cmd_postprocess_transition_events)
+
+    bridge_film = postprocess_subparsers.add_parser(
+        "bridge-film",
+        help="Summarize bridge liquid-film states from frame tables",
+    )
+    _add_bridge_film_postprocess_args(bridge_film)
+    bridge_film.set_defaults(func=_cmd_postprocess_bridge_film)
 
     bridge_ion = postprocess_subparsers.add_parser(
         "bridge-ion-occupancy",

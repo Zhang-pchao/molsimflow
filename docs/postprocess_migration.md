@@ -44,6 +44,10 @@ analysis and the first ion-analysis core:
     feature CSV;
   - writes event-aligned profiles, aligned summary statistics, lag
     correlations, and pre/post change-point summaries.
+- `molsimflow.postprocess.bridge_film`
+  - classifies bridge liquid-film states from frame-level composition counts;
+  - summarizes barrier-top film states, residence episodes, and ion-water
+    coordination samples from explicit tables.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries.
@@ -130,6 +134,12 @@ molsimflow postprocess bridge-seed-survival \
 molsimflow postprocess transition-events \
   --input bridge_water_dewetting.csv \
   --output-dir transition_events
+```
+
+```bash
+molsimflow postprocess bridge-film \
+  --frame-table bridge_liquid_film_frame_metrics.csv \
+  --output-dir bridge_film
 ```
 
 ```bash

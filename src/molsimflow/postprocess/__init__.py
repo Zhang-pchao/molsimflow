@@ -6,6 +6,7 @@ from molsimflow.postprocess.bubble_surface_distance import (
     FrameDistanceResult,
 )
 from molsimflow.postprocess.bridge_descriptors import BridgeCylinder
+from molsimflow.postprocess.bridge_film import BridgeFilmConfig
 from molsimflow.postprocess.bridge_water_dynamics import BridgeWaterDynamicsConfig, TraceInputSpec
 from molsimflow.postprocess.bridge_water_dewetting import BridgeWaterDewettingConfig
 from molsimflow.postprocess.case_comparison import CasePairSpec, DescriptorTableSpec
@@ -23,6 +24,7 @@ from molsimflow.postprocess.ion_species import (
 __all__ = [
     "AtomRecord",
     "BridgeCylinder",
+    "BridgeFilmConfig",
     "BridgeWaterDynamicsConfig",
     "BridgeWaterDewettingConfig",
     "BubbleCentroidCalculator",
