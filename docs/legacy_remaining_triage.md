@@ -38,6 +38,7 @@ These legacy areas have first-pass engineered replacements:
   - ion z-distribution;
   - first bridge-water and bridge-ion descriptor tables;
   - bridge-water dewetting and spanning-connectivity tables;
+  - bridge-water entry/exit flux and seed-survival trace-table summaries;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -51,12 +52,6 @@ These legacy areas have first-pass engineered replacements:
 
 These are strong candidates for future engineering into reusable APIs and CLIs.
 
-- `analysis/bridge_water_entry_exit_flux_vs_gap.py`
-  - Entry/exit flux and gap-window summaries for bridge water.
-  - Suggested target: `molsimflow.postprocess.bridge_water_dynamics`.
-- `analysis/seed_water_survival_vs_gap.py`
-  - Seed-water survival, retention, and exit proxy events.
-  - Suggested target: `molsimflow.postprocess.bridge_water_dynamics`.
 - `analysis/bridge_water_escape_direction.py`
   - Seed-water escape direction classification from trajectory-backed bridge
     geometry.

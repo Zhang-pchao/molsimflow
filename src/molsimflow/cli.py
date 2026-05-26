@@ -553,6 +553,47 @@ def _cmd_postprocess_bridge_water_dewetting(args: argparse.Namespace) -> int:
     return dewetting_main(workflow_args)
 
 
+def _bridge_water_dynamics_args(args: argparse.Namespace, command: str) -> List[str]:
+    workflow_args = [
+        command,
+        "--output-dir",
+        str(args.output_dir),
+        "--gap-source",
+        args.gap_source,
+        "--gap-bin-width-A",
+        str(args.gap_bin_width_A),
+        "--min-bin-count",
+        str(args.min_bin_count),
+        "--state-time-tolerance-ns",
+        str(args.state_time_tolerance_ns),
+    ]
+    if args.manifest is not None:
+        workflow_args.extend(["--manifest", str(args.manifest)])
+    if args.trace_metrics is not None:
+        workflow_args.extend(["--trace-metrics", str(args.trace_metrics)])
+    if args.case_label:
+        workflow_args.extend(["--case-label", args.case_label])
+    if args.state_table is not None:
+        workflow_args.extend(["--state-table", str(args.state_table)])
+    if args.start_time_ns is not None:
+        workflow_args.extend(["--start-time-ns", str(args.start_time_ns)])
+    if args.end_time_ns is not None:
+        workflow_args.extend(["--end-time-ns", str(args.end_time_ns)])
+    return workflow_args
+
+
+def _cmd_postprocess_bridge_water_flux(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_water_dynamics import main as dynamics_main
+
+    return dynamics_main(_bridge_water_dynamics_args(args, "flux"))
+
+
+def _cmd_postprocess_bridge_seed_survival(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_water_dynamics import main as dynamics_main
+
+    return dynamics_main(_bridge_water_dynamics_args(args, "seed-survival"))
+
+
 def _cmd_postprocess_bridge_ion_occupancy(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_descriptors import main as bridge_main
 
@@ -790,6 +831,21 @@ def _add_bridge_water_dewetting_postprocess_args(parser: argparse.ArgumentParser
     parser.add_argument("--bulk-number-density-per-A3", type=float)
     parser.add_argument("--cv-bins", type=int, default=40)
     parser.add_argument("--max-frames", type=int)
+
+
+def _add_bridge_water_dynamics_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--manifest", type=Path, help="CSV with case_label,trace_metrics,state_table columns")
+    input_group.add_argument("--trace-metrics", type=Path, help="Single bridge_water_trace_metrics.csv input")
+    parser.add_argument("--case-label", default="", help="Case label for --trace-metrics")
+    parser.add_argument("--state-table", type=Path, help="Optional coalescence_state_table.csv for --trace-metrics")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--start-time-ns", type=float)
+    parser.add_argument("--end-time-ns", type=float)
+    parser.add_argument("--gap-source", choices=["trace", "coalescence"], default="coalescence")
+    parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--min-bin-count", type=int, default=1)
+    parser.add_argument("--state-time-tolerance-ns", type=float, default=0.0015)
 
 
 def _add_bridge_ion_occupancy_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1163,6 +1219,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_bridge_water_dewetting_postprocess_args(bridge_dewetting)
     bridge_dewetting.set_defaults(func=_cmd_postprocess_bridge_water_dewetting)
+
+    bridge_flux = postprocess_subparsers.add_parser(
+        "bridge-water-flux",
+        help="Compute bridge-water entry/exit flux proxy summaries",
+    )
+    _add_bridge_water_dynamics_postprocess_args(bridge_flux)
+    bridge_flux.set_defaults(func=_cmd_postprocess_bridge_water_flux)
+
+    bridge_seed_survival = postprocess_subparsers.add_parser(
+        "bridge-seed-survival",
+        help="Compute seed bridge-water survival proxy summaries",
+    )
+    _add_bridge_water_dynamics_postprocess_args(bridge_seed_survival)
+    bridge_seed_survival.set_defaults(func=_cmd_postprocess_bridge_seed_survival)
 
     bridge_ion = postprocess_subparsers.add_parser(
         "bridge-ion-occupancy",

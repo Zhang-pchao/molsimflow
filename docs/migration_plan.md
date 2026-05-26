@@ -81,6 +81,9 @@ Reasoning:
   - bridge-water dewetting: first trajectory-backed core migrated for bridge
     cylinder water counts, dewetting fraction, spanning water connectivity, and
     CV-binned summaries;
+  - bridge-water dynamics: first trace-table core migrated for entry/exit flux
+    proxies, turnover/drainage summaries, seed-water monotonic survival, and
+    seed-exit proxy events;
   - FES and barrier analysis: first table-oriented core migrated for 1D FES
     loading, reference shifting, smoothing, zeroing, and configurable barrier
     window summaries;

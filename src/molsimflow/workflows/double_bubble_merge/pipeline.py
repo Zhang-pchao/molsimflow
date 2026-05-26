@@ -76,6 +76,13 @@ def recommended_postprocess_stages() -> Tuple[DoubleBubbleMergeStage, ...]:
             notes="Compute bridge water count, dewetting fraction, and spanning connectivity.",
         ),
         DoubleBubbleMergeStage(
+            name="bridge_water_dynamics",
+            command_group="postprocess",
+            reusable_module="molsimflow.postprocess.bridge_water_dynamics",
+            status="partial",
+            notes="Table-based entry/exit flux and seed survival migrated; escape direction remains.",
+        ),
+        DoubleBubbleMergeStage(
             name="fes_barriers",
             command_group="postprocess",
             reusable_module="molsimflow.postprocess.fes_analysis",

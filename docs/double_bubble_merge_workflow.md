@@ -34,6 +34,7 @@ Current migrated or partial stages include:
 - ion species;
 - bridge descriptors;
 - bridge-water dewetting;
+- bridge-water dynamics;
 - FES barriers;
 - case comparison.
 

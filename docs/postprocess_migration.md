@@ -34,6 +34,11 @@ analysis and the first ion-analysis core:
     `bubA_all`/`bubB_all` labels;
   - computes bridge-cylinder water counts, dewetting fractions, water-cluster
     connectivity, and `d3d_all`-binned summaries.
+- `molsimflow.postprocess.bridge_water_dynamics`
+  - reads explicit bridge-water trace-metrics CSV files or manifests;
+  - computes entry/exit flux, turnover, replacement, and drainage proxies;
+  - computes seed-water retention, monotonic survival, and exit-event proxy
+    summaries versus surface gap.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries.
@@ -102,6 +107,18 @@ molsimflow postprocess bridge-water-dewetting \
   --water-oxygen-atoms 1201-9000:3 \
   --colvar COLVAR \
   --output-dir bridge_water_dewetting
+```
+
+```bash
+molsimflow postprocess bridge-water-flux \
+  --manifest bridge_water_trace_manifest.csv \
+  --output-dir bridge_water_flux
+```
+
+```bash
+molsimflow postprocess bridge-seed-survival \
+  --manifest bridge_water_trace_manifest.csv \
+  --output-dir seed_water_survival
 ```
 
 ```bash
