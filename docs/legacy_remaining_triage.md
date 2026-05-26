@@ -46,7 +46,8 @@ These legacy areas have first-pass engineered replacements:
     feature-table summaries;
   - first shared LAMMPS dump reader, PBC geometry helpers, and nearest-time
     alignment helpers;
-  - periodic O-H assignment and oxygen species grouping.
+  - periodic O-H assignment and oxygen species grouping;
+  - species transition matrix counting from explicit long-form state tables;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
 - plotting/config:
@@ -102,9 +103,6 @@ These are useful but large and should be split before migration.
 These should be migrated before more trajectory-heavy modules reuse duplicate
 logic.
 
-- `transitions/species_transition_matrix.py`
-  - Species transition counting and transition-matrix utilities.
-  - Suggested target: `molsimflow.postprocess.transitions`.
 - extend shared LAMMPS dump readers and time-alignment helpers for:
   - raw trajectory membership outputs needed by
     `analysis/bridge_water_escape_direction.py`;

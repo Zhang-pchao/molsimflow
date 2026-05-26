@@ -27,6 +27,12 @@ from molsimflow.postprocess.species_assignment import (
     classify_oxygen_species_indices,
 )
 from molsimflow.postprocess.time_alignment import infer_timestep_time_scale, nearest_row_index
+from molsimflow.postprocess.transitions import (
+    SpeciesStateRow,
+    SpeciesTransitionResult,
+    build_species_transition_matrix,
+    infer_species_order,
+)
 
 __all__ = [
     "AtomRecord",
@@ -48,12 +54,16 @@ __all__ = [
     "IonZDistribution",
     "MoleculeRecord",
     "OxygenHydrogenAssignment",
+    "SpeciesStateRow",
+    "SpeciesTransitionResult",
     "TraceInputSpec",
     "TransitionEventConfig",
     "UnionFind",
     "assign_hydrogen_to_nearest_oxygen",
+    "build_species_transition_matrix",
     "classify_ion_species",
     "classify_oxygen_species_indices",
+    "infer_species_order",
     "infer_timestep_time_scale",
     "nearest_row_index",
 ]

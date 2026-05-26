@@ -25,6 +25,11 @@ analysis and the first ion-analysis core:
   - assigns hydrogens to nearest oxygens under orthorhombic PBC;
   - groups oxygen indices by assigned hydrogen count for OH/H2O/H3O-style
     species classification.
+- `molsimflow.postprocess.transitions`
+  - reads explicit long-form species-state tables;
+  - counts adjacent-frame transitions for stable entity ids;
+  - writes transition-count matrices, row-normalized probabilities, matched
+    transition details, species summaries, and run statistics.
 - `molsimflow.postprocess.ion_distribution`
   - reads classified species XYZ files;
   - computes relative ion z-distribution summaries and density tables.
@@ -152,6 +157,15 @@ molsimflow postprocess bridge-seed-survival \
 molsimflow postprocess transition-events \
   --input bridge_water_dewetting.csv \
   --output-dir transition_events
+```
+
+```bash
+molsimflow postprocess species-transitions \
+  --input species_states.csv \
+  --output-dir species_transitions \
+  --entity-column oxygen_index \
+  --time-column time_ns \
+  --species-order solution_bulk_oh,solution_surface_oh,solution_surface_h2o
 ```
 
 ```bash

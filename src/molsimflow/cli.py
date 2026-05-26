@@ -634,6 +634,30 @@ def _cmd_postprocess_transition_events(args: argparse.Namespace) -> int:
     return events_main(workflow_args)
 
 
+def _cmd_postprocess_species_transitions(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.transitions import main as transitions_main
+
+    workflow_args = [
+        "--input",
+        str(args.input),
+        "--output-dir",
+        str(args.output_dir),
+        "--frame-column",
+        args.frame_column,
+        "--entity-column",
+        args.entity_column,
+        "--species-column",
+        args.species_column,
+    ]
+    if args.time_column is not None:
+        workflow_args.extend(["--time-column", args.time_column])
+    if args.species_order is not None:
+        workflow_args.extend(["--species-order", args.species_order])
+    if args.no_self_transitions:
+        workflow_args.append("--no-self-transitions")
+    return transitions_main(workflow_args)
+
+
 def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_film import main as bridge_film_main
 
@@ -985,6 +1009,21 @@ def _add_transition_events_postprocess_args(parser: argparse.ArgumentParser) -> 
     parser.add_argument("--allow-partial-windows", action="store_true")
     parser.add_argument("--lag-window", type=int, default=20)
     parser.add_argument("--change-window", type=int, default=10)
+
+
+def _add_species_transitions_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input", type=Path, required=True, help="Input long-form species-state CSV")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--frame-column", default="frame")
+    parser.add_argument("--entity-column", default="entity_id")
+    parser.add_argument("--species-column", default="species")
+    parser.add_argument("--time-column")
+    parser.add_argument("--species-order", help="Species order, separated by commas, semicolons, or pipes")
+    parser.add_argument(
+        "--no-self-transitions",
+        action="store_true",
+        help="Do not count unchanged adjacent-frame species assignments in the matrix",
+    )
 
 
 def _add_bridge_film_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1418,6 +1457,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_transition_events_postprocess_args(transition_events)
     transition_events.set_defaults(func=_cmd_postprocess_transition_events)
+
+    species_transitions = postprocess_subparsers.add_parser(
+        "species-transitions",
+        help="Build species transition matrices from a long-form state CSV",
+    )
+    _add_species_transitions_postprocess_args(species_transitions)
+    species_transitions.set_defaults(func=_cmd_postprocess_species_transitions)
 
     bridge_film = postprocess_subparsers.add_parser(
         "bridge-film",
