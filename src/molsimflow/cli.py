@@ -11,6 +11,7 @@ from molsimflow.io.lammps_data import convert_extxyz_to_lammps_atomic_data
 from molsimflow.plumed.double_bubble import generate_double_bubble_plumed
 from molsimflow.plumed.nanobubble import (
     PlumedBiasConfig,
+    UmbrellaSamplingConfig,
     generate_n2_com_plumed,
     parse_type_map,
 )
@@ -242,7 +243,7 @@ def _cmd_plumed_double_bubble(args: argparse.Namespace) -> int:
 
 
 def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
-    config = PlumedBiasConfig(
+    opes_config = PlumedBiasConfig(
         contact_d0=args.contact_d0_A,
         contact_dmax=args.contact_dmax_A,
         temperature=args.temperature,
@@ -261,6 +262,30 @@ def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
         colvar_file=args.colvar_file,
         secondary_colvar_file=args.secondary_colvar_file,
     )
+    us_config = UmbrellaSamplingConfig(
+        window_center_z=args.us_center_z,
+        restraint_kappa=args.us_kappa,
+        upper_wall_z_at=args.us_upper_z_at,
+        upper_wall_z_kappa=args.us_upper_z_kappa,
+        enable_upper_wall_sum_cn=args.us_enable_upper_sumcn_wall,
+        upper_wall_sum_cn_at=args.us_upper_sumcn_at,
+        upper_wall_sum_cn_kappa=args.us_upper_sumcn_kappa,
+        lower_wall_z_at=args.us_lower_z_at,
+        lower_wall_z_kappa=args.us_lower_z_kappa,
+        lower_wall_sum_cn_at=args.us_lower_sumcn_at,
+        lower_wall_sum_cn_kappa=args.us_lower_sumcn_kappa,
+        committor_stride=args.us_committor_stride,
+        committor_n2_ll1=args.us_n2_basin_ll1,
+        committor_n2_ul1=args.us_n2_basin_ul1,
+        enable_committor_sum_cn=args.us_enable_sumcn_committor,
+        committor_sum_cn_ll1=args.us_sumcn_basin_ll1,
+        committor_sum_cn_ul1=args.us_sumcn_basin_ul1,
+        enable_committor_dz=args.us_enable_dz_committor,
+        committor_dz_ll1=args.us_dz_basin_ll1,
+        committor_dz_ul1=args.us_dz_basin_ul1,
+        print_stride=args.print_stride,
+        colvar_file=args.colvar_file,
+    )
     summary = generate_n2_com_plumed(
         output_file=args.output,
         start=args.start,
@@ -274,12 +299,14 @@ def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
         surface_element=args.surface_element,
         surface_z_tolerance=args.surface_z_tolerance_A,
         surface_stride=args.surface_stride,
-        config=config,
+        opes_config=opes_config,
+        us_config=us_config,
+        bias_mode=args.bias_mode,
         label_prefix=args.label_prefix,
         group_label=args.group_label,
     )
     print(summary.output_file)
-    print(f"mode={summary.mode} n2_pairs={summary.dimer_count}")
+    print(f"mode={summary.mode} bias={summary.bias_mode} n2_pairs={summary.dimer_count}")
     if summary.surface_selection is not None:
         surface = summary.surface_selection
         print(
@@ -1785,7 +1812,7 @@ def build_parser() -> argparse.ArgumentParser:
     n2_com.add_argument(
         "--with-surface",
         action="store_true",
-        help="Add surface COM and use dz.z as the OPES argument",
+        help="Add a surface COM and generate a surface-distance collective variable",
     )
     n2_com.add_argument("--surface-element", default="Si", help="Element used for the top surface layer")
     n2_com.add_argument(
@@ -1802,6 +1829,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     n2_com.add_argument("--label-prefix", default="c", help="Prefix for dimer COM labels")
     n2_com.add_argument("--group-label", default="reps_center", help="PLUMED group label for all dimer COMs")
+    n2_com.add_argument(
+        "--bias-mode",
+        choices=["auto", "opes", "us"],
+        default="auto",
+        help="Bias mode; auto keeps cluster-size runs on OPES and surface runs on umbrella sampling",
+    )
     n2_com.add_argument("--contact-d0-A", type=float, default=5.0)
     n2_com.add_argument("--contact-dmax-A", type=float, default=6.0)
     n2_com.add_argument("--temperature", type=float, default=330.0)
@@ -1819,6 +1852,26 @@ def build_parser() -> argparse.ArgumentParser:
     n2_com.add_argument("--state-file", default="STATE")
     n2_com.add_argument("--colvar-file", default="COLVAR")
     n2_com.add_argument("--secondary-colvar-file", default="COLVAR_step10")
+    n2_com.add_argument("--us-center-z", default="__Z0__", help="Umbrella window center for dz.z")
+    n2_com.add_argument("--us-kappa", type=float, default=3.0, help="Umbrella kappa in kJ/mol/A^2")
+    n2_com.add_argument("--us-upper-z-at", type=float, default=130.0)
+    n2_com.add_argument("--us-upper-z-kappa", type=float, default=50.0)
+    n2_com.add_argument("--us-lower-z-at", type=float, default=11.0)
+    n2_com.add_argument("--us-lower-z-kappa", type=float, default=50.0)
+    n2_com.add_argument("--us-enable-upper-sumcn-wall", action="store_true")
+    n2_com.add_argument("--us-upper-sumcn-at", type=float, default=14.4)
+    n2_com.add_argument("--us-upper-sumcn-kappa", type=float, default=500.0)
+    n2_com.add_argument("--us-lower-sumcn-at", type=float, default=450.0)
+    n2_com.add_argument("--us-lower-sumcn-kappa", type=float, default=200.0)
+    n2_com.add_argument("--us-committor-stride", type=int, default=500)
+    n2_com.add_argument("--us-n2-basin-ll1", type=float, default=0.0)
+    n2_com.add_argument("--us-n2-basin-ul1", type=float, default=85.0)
+    n2_com.add_argument("--us-enable-sumcn-committor", action="store_true")
+    n2_com.add_argument("--us-sumcn-basin-ll1", type=float, default=0.0)
+    n2_com.add_argument("--us-sumcn-basin-ul1", type=float, default=100.0)
+    n2_com.add_argument("--us-enable-dz-committor", action="store_true")
+    n2_com.add_argument("--us-dz-basin-ll1", type=float, default=-1000.0)
+    n2_com.add_argument("--us-dz-basin-ul1", type=float, default=0.0)
     n2_com.set_defaults(func=_cmd_plumed_n2_com)
 
     plot = subparsers.add_parser("plot", help="CSV-driven plotting helpers")

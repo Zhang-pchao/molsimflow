@@ -52,7 +52,7 @@ class SurfaceSelection:
 
 @dataclass(frozen=True)
 class PlumedBiasConfig:
-    """Configurable constants for the legacy N2 COM PLUMED template."""
+    """Configurable constants for the OPES-based N2 COM PLUMED template."""
 
     contact_d0: float = 5.0
     contact_dmax: float = 6.0
@@ -74,6 +74,41 @@ class PlumedBiasConfig:
 
 
 @dataclass(frozen=True)
+class UmbrellaSamplingConfig:
+    """Configurable constants for surface-distance umbrella sampling PLUMED."""
+
+    window_center_z: str = "__Z0__"
+    restraint_kappa: float = 3.0
+    upper_wall_z_at: float = 130.0
+    upper_wall_z_kappa: float = 50.0
+    upper_wall_z_exp: int = 2
+    enable_upper_wall_sum_cn: bool = False
+    upper_wall_sum_cn_at: float = 14.4
+    upper_wall_sum_cn_kappa: float = 500.0
+    upper_wall_sum_cn_exp: int = 2
+    lower_wall_z_at: float = 11.0
+    lower_wall_z_kappa: float = 50.0
+    lower_wall_z_exp: int = 2
+    lower_wall_sum_cn_at: float = 450.0
+    lower_wall_sum_cn_kappa: float = 200.0
+    lower_wall_sum_cn_exp: int = 2
+    committor_stride: int = 500
+    enable_committor_n2: bool = True
+    committor_n2_ll1: float = 0.0
+    committor_n2_ul1: float = 85.0
+    enable_committor_sum_cn: bool = False
+    committor_sum_cn_ll1: float = 0.0
+    committor_sum_cn_ul1: float = 100.0
+    enable_committor_dz: bool = False
+    committor_dz_ll1: float = -1000.0
+    committor_dz_ul1: float = 0.0
+    committor_sd_ll1: float = -1000.0
+    committor_sd_ul1: float = -8.0
+    print_stride: int = 1
+    colvar_file: str = "COLVAR"
+
+
+@dataclass(frozen=True)
 class N2ComPlumedSummary:
     """Summary returned after writing a PLUMED file."""
 
@@ -81,6 +116,7 @@ class N2ComPlumedSummary:
     dimer_pairs: Tuple[Tuple[int, int], ...]
     surface_selection: Optional[SurfaceSelection]
     mode: str
+    bias_mode: str
 
     @property
     def dimer_count(self) -> int:
@@ -317,6 +353,12 @@ def _format_float(value: float) -> str:
     return f"{value:g}"
 
 
+def _format_value(value: Union[str, float, int]) -> str:
+    if isinstance(value, str):
+        return value
+    return _format_float(float(value))
+
+
 def _yes_no(value: bool) -> str:
     return "YES" if value else "NO"
 
@@ -364,19 +406,192 @@ def _opes_block(
     ]
 
 
+def _wall_line(
+    action: str,
+    *,
+    arg: str,
+    at: float,
+    kappa: float,
+    exp: int,
+    label: str,
+    commented: bool = False,
+) -> str:
+    line = (
+        f"{action} ARG={arg:<12} "
+        f"AT={_format_float(at):<5} "
+        f"KAPPA={_format_float(kappa):<4} "
+        f"EXP={exp} LABEL={label}"
+    )
+    return f"#{line}" if commented else line
+
+
+def _committor_line(
+    label: str,
+    *,
+    arg: str,
+    basin_ll1: float,
+    basin_ul1: float,
+    stride: int,
+    commented: bool = False,
+) -> str:
+    line = (
+        f"{label}: COMMITTOR ARG={arg:<10} "
+        f"BASIN_LL1={_format_float(basin_ll1):<5} "
+        f"BASIN_UL1={_format_float(basin_ul1):<5} "
+        f"STRIDE={stride}"
+    )
+    return f"#{line}" if commented else line
+
+
+def _render_opes_lines(arg: str, *, print_args: str, config: PlumedBiasConfig) -> List[str]:
+    lines: List[str] = []
+    lines.extend(
+        _opes_block(
+            "OPES_METAD_EXPLORE",
+            label="opes_e",
+            arg=arg,
+            output_file=config.hills_explore_file,
+            barrier=config.explore_barrier,
+            state_file=config.state_explore_file,
+            config=config,
+        )
+    )
+    lines.append("")
+    lines.extend(
+        _opes_block(
+            "OPES_METAD",
+            label="opes",
+            arg=arg,
+            output_file=config.hills_file,
+            barrier=config.production_barrier,
+            state_file=config.state_file,
+            config=config,
+        )
+    )
+    lines.extend(
+        [
+            "",
+            f"PRINT STRIDE={config.print_stride}  FILE={config.colvar_file}        ARG={print_args}",
+            (
+                f"PRINT STRIDE={config.secondary_print_stride} FILE={config.secondary_colvar_file} "
+                f"ARG={print_args}"
+            ),
+            f"FLUSH STRIDE={config.flush_stride}",
+        ]
+    )
+    return lines
+
+
+def _render_umbrella_sampling_lines(config: UmbrellaSamplingConfig) -> List[str]:
+    return [
+        "# --- umbrella restraint (window center) ---",
+        (
+            "umb: RESTRAINT ARG=dz.z "
+            f"AT={_format_value(config.window_center_z)} "
+            f"KAPPA={_format_float(config.restraint_kappa)}"
+        ),
+        "",
+        "# --- keep z in the physical region (recommended) ---",
+        _wall_line(
+            "UPPER_WALLS",
+            arg="dz.z",
+            at=config.upper_wall_z_at,
+            kappa=config.upper_wall_z_kappa,
+            exp=config.upper_wall_z_exp,
+            label="uwall_1",
+        ),
+        _wall_line(
+            "UPPER_WALLS",
+            arg="sum_cn.sum",
+            at=config.upper_wall_sum_cn_at,
+            kappa=config.upper_wall_sum_cn_kappa,
+            exp=config.upper_wall_sum_cn_exp,
+            label="uwall_2",
+            commented=not config.enable_upper_wall_sum_cn,
+        ),
+        _wall_line(
+            "LOWER_WALLS",
+            arg="dz.z",
+            at=config.lower_wall_z_at,
+            kappa=config.lower_wall_z_kappa,
+            exp=config.lower_wall_z_exp,
+            label="lwall_1",
+        ),
+        _wall_line(
+            "LOWER_WALLS",
+            arg="sum_cn.sum",
+            at=config.lower_wall_sum_cn_at,
+            kappa=config.lower_wall_sum_cn_kappa,
+            exp=config.lower_wall_sum_cn_exp,
+            label="lwall_2",
+        ),
+        "",
+        _committor_line(
+            "cmt1",
+            arg="n2_num",
+            basin_ll1=config.committor_n2_ll1,
+            basin_ul1=config.committor_n2_ul1,
+            stride=config.committor_stride,
+            commented=not config.enable_committor_n2,
+        ),
+        _committor_line(
+            "cmt2",
+            arg="sum_cn.sum",
+            basin_ll1=config.committor_sum_cn_ll1,
+            basin_ul1=config.committor_sum_cn_ul1,
+            stride=config.committor_stride,
+            commented=not config.enable_committor_sum_cn,
+        ),
+        _committor_line(
+            "cmt3",
+            arg="dz.z",
+            basin_ll1=config.committor_dz_ll1,
+            basin_ul1=config.committor_dz_ul1,
+            stride=config.committor_stride,
+            commented=not config.enable_committor_dz,
+        ),
+        _committor_line(
+            "cmt4",
+            arg="sd",
+            basin_ll1=config.committor_sd_ll1,
+            basin_ul1=config.committor_sd_ul1,
+            stride=config.committor_stride,
+            commented=True,
+        ),
+        "",
+        "# --- output ---",
+        f"PRINT STRIDE={config.print_stride} FILE={config.colvar_file} ARG=n2_num,sum_cn.sum,dz.z,umb.bias",
+    ]
+
+
+def _resolve_bias_mode(surface_ids: Sequence[int], bias_mode: str) -> str:
+    mode = bias_mode.lower()
+    if mode not in {"auto", "opes", "us"}:
+        raise ValueError(f"Unsupported bias mode: {bias_mode}")
+    if mode == "auto":
+        return "us" if surface_ids else "opes"
+    if mode == "us" and not surface_ids:
+        raise ValueError("Umbrella sampling mode requires --with-surface")
+    return mode
+
+
 def render_n2_com_plumed(
     dimer_pairs: Sequence[Tuple[int, int]],
     *,
     surface_atom_ids: Optional[Sequence[int]] = None,
-    config: Optional[PlumedBiasConfig] = None,
+    opes_config: Optional[PlumedBiasConfig] = None,
+    us_config: Optional[UmbrellaSamplingConfig] = None,
+    bias_mode: str = "auto",
     label_prefix: str = "c",
     group_label: str = "reps_center",
 ) -> str:
     """Render the complete PLUMED text."""
     if not dimer_pairs:
         raise ValueError("At least one dimer pair is required")
-    cfg = config or PlumedBiasConfig()
+    opes_cfg = opes_config or PlumedBiasConfig()
+    us_cfg = us_config or UmbrellaSamplingConfig()
     surface_ids = tuple(surface_atom_ids or ())
+    resolved_bias_mode = _resolve_bias_mode(surface_ids, bias_mode)
 
     lines: List[str] = [
         "# Auto-generated by molsimflow.plumed.nanobubble",
@@ -390,7 +605,7 @@ def render_n2_com_plumed(
             (
                 f"mat: CONTACT_MATRIX ATOMS={group_label} "
                 "SWITCH={CUBIC "
-                f"D_0={_format_float(cfg.contact_d0)} D_MAX={_format_float(cfg.contact_dmax)}}}"
+                f"D_0={_format_float(opes_cfg.contact_d0)} D_MAX={_format_float(opes_cfg.contact_dmax)}}}"
             ),
             "dfs: DFSCLUSTERING MATRIX=mat LOWMEM",
             "",
@@ -407,53 +622,35 @@ def render_n2_com_plumed(
                 "cb:    COM ATOMS=allN2",
                 "",
                 f"surf: GROUP ATOMS={','.join(str(atom_id) for atom_id in surface_ids)}",
-                "csurf: COM ATOMS=surf",
+                "csurf: COM ATOMS=surf NOPBC" if resolved_bias_mode == "us" else "csurf: COM ATOMS=surf",
                 "",
-                "dz: DISTANCE ATOMS=csurf,cb COMPONENTS",
+                (
+                    "dz: DISTANCE ATOMS=csurf,cb COMPONENTS NOPBC"
+                    if resolved_bias_mode == "us"
+                    else "dz: DISTANCE ATOMS=csurf,cb COMPONENTS"
+                ),
                 "",
             ]
         )
-        bias_arg = "dz.z"
-        print_args = "n2_num,sum_cn.*,dz.z,opes.bias,opes_e.bias"
+        if resolved_bias_mode == "us":
+            lines.extend(_render_umbrella_sampling_lines(us_cfg))
+        else:
+            lines.extend(
+                _render_opes_lines(
+                    "dz.z",
+                    print_args="n2_num,sum_cn.*,dz.z,opes.bias,opes_e.bias",
+                    config=opes_cfg,
+                )
+            )
     else:
-        bias_arg = "sum_cn.sum"
-        print_args = "n2_num,sum_cn.*,opes.bias,opes_e.bias"
-
-    lines.extend(
-        _opes_block(
-            "OPES_METAD_EXPLORE",
-            label="opes_e",
-            arg=bias_arg,
-            output_file=cfg.hills_explore_file,
-            barrier=cfg.explore_barrier,
-            state_file=cfg.state_explore_file,
-            config=cfg,
+        lines.extend(
+            _render_opes_lines(
+                "sum_cn.sum",
+                print_args="n2_num,sum_cn.*,opes.bias,opes_e.bias",
+                config=opes_cfg,
+            )
         )
-    )
     lines.append("")
-    lines.extend(
-        _opes_block(
-            "OPES_METAD",
-            label="opes",
-            arg=bias_arg,
-            output_file=cfg.hills_file,
-            barrier=cfg.production_barrier,
-            state_file=cfg.state_file,
-            config=cfg,
-        )
-    )
-    lines.extend(
-        [
-            "",
-            f"PRINT STRIDE={cfg.print_stride}  FILE={cfg.colvar_file}        ARG={print_args}",
-            (
-                f"PRINT STRIDE={cfg.secondary_print_stride} FILE={cfg.secondary_colvar_file} "
-                f"ARG={print_args}"
-            ),
-            f"FLUSH STRIDE={cfg.flush_stride}",
-            "",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -462,7 +659,9 @@ def write_n2_com_plumed(
     dimer_pairs: Sequence[Tuple[int, int]],
     *,
     surface_atom_ids: Optional[Sequence[int]] = None,
-    config: Optional[PlumedBiasConfig] = None,
+    opes_config: Optional[PlumedBiasConfig] = None,
+    us_config: Optional[UmbrellaSamplingConfig] = None,
+    bias_mode: str = "auto",
     label_prefix: str = "c",
     group_label: str = "reps_center",
 ) -> Path:
@@ -473,7 +672,9 @@ def write_n2_com_plumed(
         render_n2_com_plumed(
             dimer_pairs,
             surface_atom_ids=surface_atom_ids,
-            config=config,
+            opes_config=opes_config,
+            us_config=us_config,
+            bias_mode=bias_mode,
             label_prefix=label_prefix,
             group_label=group_label,
         ),
@@ -512,7 +713,9 @@ def generate_n2_com_plumed(
     surface_element: str = "Si",
     surface_z_tolerance: float = 0.5,
     surface_stride: int = 1,
-    config: Optional[PlumedBiasConfig] = None,
+    opes_config: Optional[PlumedBiasConfig] = None,
+    us_config: Optional[UmbrellaSamplingConfig] = None,
+    bias_mode: str = "auto",
     label_prefix: str = "c",
     group_label: str = "reps_center",
 ) -> N2ComPlumedSummary:
@@ -548,16 +751,23 @@ def generate_n2_com_plumed(
         output_file,
         dimer_pairs,
         surface_atom_ids=surface_selection.atom_ids if surface_selection else None,
-        config=config,
+        opes_config=opes_config,
+        us_config=us_config,
+        bias_mode=bias_mode,
         label_prefix=label_prefix,
         group_label=group_label,
     )
     mode = "surface-distance" if surface_selection else "cluster-size"
+    resolved_bias_mode = _resolve_bias_mode(
+        surface_selection.atom_ids if surface_selection else (),
+        bias_mode,
+    )
     return N2ComPlumedSummary(
         output_file=Path(output_file),
         dimer_pairs=tuple(dimer_pairs),
         surface_selection=surface_selection,
         mode=mode,
+        bias_mode=resolved_bias_mode,
     )
 
 
@@ -566,14 +776,14 @@ def generate_legacy_n2_com_plumed(
     stop: int,
     output_file: Union[str, Path],
     *,
-    config: Optional[PlumedBiasConfig] = None,
+    opes_config: Optional[PlumedBiasConfig] = None,
 ) -> N2ComPlumedSummary:
     """Compatibility helper for the old ``gen_plumed.py START STOP`` workflow."""
     return generate_n2_com_plumed(
         output_file=output_file,
         start=start,
         stop=stop,
-        config=config,
+        opes_config=opes_config,
     )
 
 
