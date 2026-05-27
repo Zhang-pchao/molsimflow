@@ -31,6 +31,7 @@ molsimflow structure slab-double-bubble --interface-structure interface.xyz --mo
 molsimflow structure slab-double-bubble --interface-structure interface.xyz --molecule-dir molecules --output-dir case --run-packmol
 molsimflow structure tio2-double-bubble --bulk-structure bulk.cif --molecule-dir molecules --output-dir case
 molsimflow plumed double-bubble --data model_atomic.data --packmol packmol.in --build-py build.py --output in.plumed
+molsimflow plumed n2-com --structure model.xyz --with-surface --surface-element Si --surface-stride 10 --output in.plumed
 molsimflow postprocess centroids --traj_file run.lammpstrj --output bubble_centroids.txt --disable_ions
 molsimflow postprocess bubble-surface-distance --traj_file run.lammpstrj --output bubble_surface_distance.txt
 molsimflow postprocess coalescence-state --colvar COLVAR --output-dir coalescence_state

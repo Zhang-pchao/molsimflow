@@ -53,6 +53,8 @@ Reasoning:
 ### Phase 2: Preprocessing and PLUMED Tools
 
 - Generalize the duplicate PLUMED scripts into one argument-driven module.
+- Migrate N2 COM nanobubble PLUMED generation into a configurable structure
+  reader, dimer pairing helper, and optional top-surface distance CV.
 - Replace hardcoded input/output paths with required CLI arguments.
 - Generalize extended XYZ PBC injection and LAMMPS data conversion.
 - Split the TiO2 double-bubble slab builder into configuration, geometry,
@@ -171,4 +173,5 @@ Reasoning:
 - `molsimflow structure extxyz-to-lammps-data`.
 - `molsimflow structure equal-volume-radius`.
 - `molsimflow plumed double-bubble`.
+- `molsimflow plumed n2-com`.
 - Unit tests for the small reusable utilities.

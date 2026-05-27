@@ -9,6 +9,11 @@ from typing import List, Optional
 from molsimflow.io.extxyz import add_pbc_lattice_to_xyz
 from molsimflow.io.lammps_data import convert_extxyz_to_lammps_atomic_data
 from molsimflow.plumed.double_bubble import generate_double_bubble_plumed
+from molsimflow.plumed.nanobubble import (
+    PlumedBiasConfig,
+    generate_n2_com_plumed,
+    parse_type_map,
+)
 from molsimflow.structure.bubble_geometry import equal_volume_radius
 from molsimflow.structure.double_bubble_slab import (
     DoubleBubbleSlabConfig,
@@ -233,6 +238,58 @@ def _cmd_plumed_double_bubble(args: argparse.Namespace) -> int:
         f"{summary.gas_radius_a:.3f},{summary.gas_radius_b:.3f} "
         f"n2_pairs={len(summary.bubble_a_pairs)},{len(summary.bubble_b_pairs)}"
     )
+    return 0
+
+
+def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
+    config = PlumedBiasConfig(
+        contact_d0=args.contact_d0_A,
+        contact_dmax=args.contact_dmax_A,
+        temperature=args.temperature,
+        pace=args.pace,
+        explore_barrier=args.explore_barrier,
+        production_barrier=args.production_barrier,
+        state_wstride=args.state_wstride,
+        print_stride=args.print_stride,
+        secondary_print_stride=args.secondary_print_stride,
+        flush_stride=args.flush_stride,
+        restart=args.restart,
+        hills_explore_file=args.hills_explore_file,
+        hills_file=args.hills_file,
+        state_explore_file=args.state_explore_file,
+        state_file=args.state_file,
+        colvar_file=args.colvar_file,
+        secondary_colvar_file=args.secondary_colvar_file,
+    )
+    summary = generate_n2_com_plumed(
+        output_file=args.output,
+        start=args.start,
+        stop=args.stop,
+        structure_file=args.structure,
+        structure_format=args.structure_format,
+        type_map=parse_type_map(args.type_map),
+        lammps_atom_style=args.lammps_atom_style,
+        dimer_element=args.dimer_element,
+        with_surface=args.with_surface,
+        surface_element=args.surface_element,
+        surface_z_tolerance=args.surface_z_tolerance_A,
+        surface_stride=args.surface_stride,
+        config=config,
+        label_prefix=args.label_prefix,
+        group_label=args.group_label,
+    )
+    print(summary.output_file)
+    print(f"mode={summary.mode} n2_pairs={summary.dimer_count}")
+    if summary.surface_selection is not None:
+        surface = summary.surface_selection
+        print(
+            "surface_atoms="
+            f"{len(surface.atom_ids)}/{surface.candidate_count} "
+            f"element={args.surface_element} "
+            f"max_z={surface.max_z:.6f} "
+            f"tolerance={surface.z_tolerance:.6f} "
+            f"stride={surface.stride}"
+        )
     return 0
 
 
@@ -1693,6 +1750,76 @@ def build_parser() -> argparse.ArgumentParser:
     )
     double_bubble.add_argument("--case-label", default="", help="Optional case label for PLUMED comments")
     double_bubble.set_defaults(func=_cmd_plumed_double_bubble)
+
+    n2_com = plumed_subparsers.add_parser(
+        "n2-com",
+        help="Generate N2 COM PLUMED input with an optional top-surface distance CV",
+    )
+    n2_com.add_argument("--output", type=Path, required=True, help="Output PLUMED file")
+    n2_com.add_argument("--start", type=int, help="First N atom id for legacy range mode")
+    n2_com.add_argument("--stop", type=int, help="Last N atom id for legacy range mode, inclusive")
+    n2_com.add_argument(
+        "--structure",
+        type=Path,
+        help="Structure file used to infer N2 dimers and optional surface atoms",
+    )
+    n2_com.add_argument(
+        "--format",
+        dest="structure_format",
+        choices=["auto", "extxyz", "lammps-data"],
+        default="auto",
+        help="Input structure format",
+    )
+    n2_com.add_argument(
+        "--type-map",
+        nargs="*",
+        help="LAMMPS data type map entries such as 3=N 8=Si; overrides Masses comments",
+    )
+    n2_com.add_argument(
+        "--lammps-atom-style",
+        choices=["atomic", "charge", "full", "molecular"],
+        default="atomic",
+        help="Atom style for LAMMPS data input",
+    )
+    n2_com.add_argument("--dimer-element", default="N", help="Element used to infer dimers from --structure")
+    n2_com.add_argument(
+        "--with-surface",
+        action="store_true",
+        help="Add surface COM and use dz.z as the OPES argument",
+    )
+    n2_com.add_argument("--surface-element", default="Si", help="Element used for the top surface layer")
+    n2_com.add_argument(
+        "--surface-z-tolerance-A",
+        type=float,
+        default=0.5,
+        help="Maximum z-distance from the highest selected surface atom layer",
+    )
+    n2_com.add_argument(
+        "--surface-stride",
+        type=int,
+        default=1,
+        help="Keep every Nth top-layer surface atom after sorting by atom id",
+    )
+    n2_com.add_argument("--label-prefix", default="c", help="Prefix for dimer COM labels")
+    n2_com.add_argument("--group-label", default="reps_center", help="PLUMED group label for all dimer COMs")
+    n2_com.add_argument("--contact-d0-A", type=float, default=5.0)
+    n2_com.add_argument("--contact-dmax-A", type=float, default=6.0)
+    n2_com.add_argument("--temperature", type=float, default=330.0)
+    n2_com.add_argument("--pace", type=int, default=500)
+    n2_com.add_argument("--explore-barrier", type=float, default=100.0)
+    n2_com.add_argument("--production-barrier", type=float, default=200.0)
+    n2_com.add_argument("--state-wstride", type=int, default=5000)
+    n2_com.add_argument("--print-stride", type=int, default=1)
+    n2_com.add_argument("--secondary-print-stride", type=int, default=10)
+    n2_com.add_argument("--flush-stride", type=int, default=100)
+    n2_com.add_argument("--restart", action="store_true", help="Set RESTART=YES in OPES blocks")
+    n2_com.add_argument("--hills-explore-file", default="HILLS_e")
+    n2_com.add_argument("--hills-file", default="HILLS")
+    n2_com.add_argument("--state-explore-file", default="STATE_e")
+    n2_com.add_argument("--state-file", default="STATE")
+    n2_com.add_argument("--colvar-file", default="COLVAR")
+    n2_com.add_argument("--secondary-colvar-file", default="COLVAR_step10")
+    n2_com.set_defaults(func=_cmd_plumed_n2_com)
 
     plot = subparsers.add_parser("plot", help="CSV-driven plotting helpers")
     plot_subparsers = plot.add_subparsers(dest="plot_kind", required=True)
