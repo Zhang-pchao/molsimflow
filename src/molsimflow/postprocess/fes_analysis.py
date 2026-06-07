@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -38,6 +39,20 @@ class FesCurve:
     cv: np.ndarray
     free_energy: np.ndarray
     uncertainty: np.ndarray
+
+
+@dataclass(frozen=True)
+class FesConvergenceSpec:
+    """Input metadata for one FES convergence/robustness dataset."""
+
+    path: Path
+    label: str
+    group: str = "default"
+    dataset_key: str = ""
+    series: str = "default"
+    chemistry: str = ""
+    block_paths: Tuple[Path, ...] = ()
+    cumulative_paths: Tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -117,6 +132,122 @@ def load_curve_manifest(path: Path) -> List[FesCurveSpec]:
             specs.append(FesCurveSpec(path=Path(raw_path), label=label, group=group, dataset_key=dataset_key))
     if not specs:
         raise ValueError(f"No curves found in manifest: {path}")
+    return specs
+
+
+def _manifest_path(raw: object, base_dir: Path) -> Optional[Path]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def _split_manifest_list(raw: object) -> List[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    normalized = text.replace("|", ";").replace(",", ";")
+    return [item.strip() for item in normalized.split(";") if item.strip()]
+
+
+def _manifest_path_list(raw: object, base_dir: Path) -> Tuple[Path, ...]:
+    paths: List[Path] = []
+    for item in _split_manifest_list(raw):
+        path = _manifest_path(item, base_dir)
+        if path is not None:
+            paths.append(path)
+    return tuple(paths)
+
+
+def infer_block_paths(final_path: Path, block_count: int = 3) -> Tuple[Path, ...]:
+    """Infer existing block FES paths next to a final FES file."""
+
+    final_path = Path(final_path)
+    candidates = [
+        final_path.parent / f"{final_path.stem}_{index}{final_path.suffix}"
+        for index in range(1, int(block_count) + 1)
+    ]
+    return tuple(path for path in candidates if path.exists())
+
+
+def sort_cumulative_paths(paths: Iterable[Path]) -> Tuple[Path, ...]:
+    """Sort cumulative FES paths by the last integer in each filename."""
+
+    def sort_key(path: Path) -> Tuple[int, str]:
+        matches = re.findall(r"\d+", path.stem)
+        return (int(matches[-1]) if matches else 10**9, path.name)
+
+    return tuple(sorted((Path(path) for path in paths), key=sort_key))
+
+
+def discover_cumulative_paths(root: Path, pattern: str = "fes-cum_*.dat") -> Tuple[Path, ...]:
+    """Discover cumulative FES profiles in a directory."""
+
+    root = Path(root)
+    if not root.exists():
+        return ()
+    return sort_cumulative_paths(root.glob(pattern))
+
+
+def load_fes_convergence_manifest(
+    path: Path,
+    infer_blocks: bool = False,
+    block_count: int = 3,
+    cumulative_glob: str = "fes-cum_*.dat",
+) -> List[FesConvergenceSpec]:
+    """Load FES convergence inputs from a CSV manifest.
+
+    Required column: `path`. Optional columns: `label`, `group`,
+    `dataset_key`, `series`, `chemistry`, `block_paths`, `cumulative_paths`,
+    and `cumulative_dir`. Relative paths are resolved against the manifest
+    directory.
+    """
+
+    manifest_path = Path(path)
+    base_dir = manifest_path.parent
+    specs: List[FesConvergenceSpec] = []
+    with manifest_path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Manifest has no header: {path}")
+        if "path" not in reader.fieldnames:
+            raise ValueError("Manifest missing required column: path")
+        for index, row in enumerate(reader):
+            input_path = _manifest_path(row.get("path"), base_dir)
+            if input_path is None:
+                continue
+            dataset_key = str(row.get("dataset_key") or input_path.stem or f"dataset_{index}").strip()
+            label = str(row.get("label") or dataset_key).strip()
+            group = str(row.get("group") or "default").strip()
+            series = str(row.get("series") or group or "default").strip()
+            chemistry = str(row.get("chemistry") or "").strip()
+
+            block_paths = _manifest_path_list(row.get("block_paths"), base_dir)
+            if not block_paths and infer_blocks:
+                block_paths = infer_block_paths(input_path, block_count=block_count)
+
+            cumulative_paths = _manifest_path_list(row.get("cumulative_paths"), base_dir)
+            cumulative_dir = _manifest_path(row.get("cumulative_dir"), base_dir)
+            if not cumulative_paths and cumulative_dir is not None:
+                cumulative_paths = discover_cumulative_paths(cumulative_dir, pattern=cumulative_glob)
+
+            specs.append(
+                FesConvergenceSpec(
+                    path=input_path,
+                    label=label,
+                    group=group,
+                    dataset_key=dataset_key,
+                    series=series,
+                    chemistry=chemistry,
+                    block_paths=tuple(block_paths),
+                    cumulative_paths=sort_cumulative_paths(cumulative_paths),
+                )
+            )
+    if not specs:
+        raise ValueError(f"No FES convergence datasets found in manifest: {path}")
     return specs
 
 
@@ -695,6 +826,460 @@ def zero_curve(
     return clean - zero, zero
 
 
+def numeric_fes_metadata(path: Path) -> Dict[str, float]:
+    """Return numeric `#! SET` metadata values from a FES header."""
+
+    _fields, metadata = parse_fes_header(path)
+    numeric: Dict[str, float] = {}
+    for key, value in metadata.items():
+        try:
+            numeric[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return numeric
+
+
+def preclean_jumps(values: Sequence[float], jump_threshold: float = 120.0) -> Tuple[np.ndarray, np.ndarray]:
+    """Interpolate large one-step jumps before smoothing."""
+
+    clean, _finite = clean_series(values)
+    jump_mask = np.zeros_like(clean, dtype=bool)
+    if clean.size <= 1 or float(jump_threshold) <= 0:
+        return clean, jump_mask
+    jump_indices = np.where(np.abs(np.diff(clean)) > float(jump_threshold))[0] + 1
+    jump_mask[jump_indices] = True
+    if np.any(jump_mask):
+        indices = np.arange(clean.size)
+        keep = ~jump_mask
+        if np.count_nonzero(keep) >= 2:
+            clean[jump_mask] = np.interp(indices[jump_mask], indices[keep], clean[keep])
+        else:
+            jump_mask[:] = False
+    return clean, jump_mask
+
+
+def smooth_fes_curve(
+    values: Sequence[float],
+    jump_threshold: float = 120.0,
+    smooth_window: int = 21,
+    smooth_passes: int = 3,
+) -> Tuple[np.ndarray, int]:
+    """Preclean large jumps and smooth a FES curve with a moving average."""
+
+    clean, jump_mask = preclean_jumps(values, jump_threshold=jump_threshold)
+    smoothed = moving_average_smooth(clean, window_length=smooth_window, passes=smooth_passes)
+    return smoothed, int(np.count_nonzero(jump_mask))
+
+
+def zero_values(values: Sequence[float]) -> Tuple[np.ndarray, float]:
+    """Zero a sequence by its finite minimum."""
+
+    arr, _finite = clean_series(values)
+    finite = arr[np.isfinite(arr)]
+    zero = float(np.min(finite)) if finite.size else 0.0
+    return arr - zero, zero
+
+
+def delta_f_window(cv: np.ndarray, free_energy_zeroed: np.ndarray, low: float, high: float) -> float:
+    """Compute max-min Delta-F in an inclusive CV window."""
+
+    mask = (np.asarray(cv, dtype=float) >= float(low)) & (np.asarray(cv, dtype=float) <= float(high))
+    mask &= np.isfinite(free_energy_zeroed)
+    if not np.any(mask):
+        return math.nan
+    values = np.asarray(free_energy_zeroed, dtype=float)[mask]
+    return float(np.max(values) - np.min(values))
+
+
+def _finite_array(values: Sequence[float]) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    return arr[np.isfinite(arr)]
+
+
+def _finite_mean(values: Sequence[float]) -> float:
+    finite = _finite_array(values)
+    return float(np.mean(finite)) if finite.size else math.nan
+
+
+def _finite_sd(values: Sequence[float]) -> float:
+    finite = _finite_array(values)
+    return float(np.std(finite, ddof=1)) if finite.size > 1 else math.nan
+
+
+def _finite_min_value(values: Sequence[float]) -> float:
+    finite = _finite_array(values)
+    return float(np.min(finite)) if finite.size else math.nan
+
+
+def _finite_max_value(values: Sequence[float]) -> float:
+    finite = _finite_array(values)
+    return float(np.max(finite)) if finite.size else math.nan
+
+
+def _finite_range(values: Sequence[float]) -> float:
+    finite = _finite_array(values)
+    return float(np.max(finite) - np.min(finite)) if finite.size else math.nan
+
+
+def _value_or_nan(mapping: Mapping[str, float], key: str) -> float:
+    value = mapping.get(key, math.nan)
+    return float(value) if np.isfinite(value) else math.nan
+
+
+def _processed_convergence_curve(
+    path: Path,
+    spec: FesConvergenceSpec,
+    curve_type: str,
+    window_low: float,
+    window_high: float,
+    smooth_window: int,
+    smooth_passes: int,
+    jump_threshold: float,
+    block_index: Optional[int] = None,
+    cumulative_index: Optional[int] = None,
+    trajectory_fraction: Optional[float] = None,
+) -> Tuple[Dict[str, object], List[Dict[str, object]], Dict[str, float]]:
+    curve = load_fes_curve(
+        FesCurveSpec(
+            path=Path(path),
+            label=spec.label,
+            group=spec.group,
+            dataset_key=spec.dataset_key,
+        )
+    )
+    metadata = numeric_fes_metadata(path)
+    raw_zeroed, _raw_zero = zero_values(curve.free_energy)
+    smooth_values, jump_count = smooth_fes_curve(
+        curve.free_energy,
+        jump_threshold=jump_threshold,
+        smooth_window=smooth_window,
+        smooth_passes=smooth_passes,
+    )
+    smooth_zeroed, _smooth_zero = zero_values(smooth_values)
+    raw_delta = delta_f_window(curve.cv, raw_zeroed, low=window_low, high=window_high)
+    smooth_delta = delta_f_window(curve.cv, smooth_zeroed, low=window_low, high=window_high)
+
+    metrics: Dict[str, object] = {
+        "dataset_key": spec.dataset_key or spec.path.stem,
+        "label": spec.label,
+        "group": spec.group,
+        "series": spec.series,
+        "chemistry": spec.chemistry,
+        "curve_type": curve_type,
+        "block_index": block_index if block_index is not None else math.nan,
+        "cumulative_index": cumulative_index if cumulative_index is not None else math.nan,
+        "trajectory_fraction": trajectory_fraction if trajectory_fraction is not None else math.nan,
+        "delta_f_win_smooth_kj_mol": smooth_delta,
+        "delta_f_win_raw_kj_mol": raw_delta,
+        "jump_precleaned_points": jump_count,
+        "sample_size": _value_or_nan(metadata, "sample_size"),
+        "effective_sample_size": _value_or_nan(metadata, "effective_sample_size"),
+        "blocks_effective_num": _value_or_nan(metadata, "blocks_effective_num"),
+        "source_path": str(path),
+    }
+    curve_rows: List[Dict[str, object]] = []
+    for point_index, (cv, raw, smooth, uncertainty) in enumerate(
+        zip(curve.cv, raw_zeroed, smooth_zeroed, curve.uncertainty)
+    ):
+        curve_rows.append(
+            {
+                "dataset_key": spec.dataset_key or spec.path.stem,
+                "label": spec.label,
+                "group": spec.group,
+                "series": spec.series,
+                "chemistry": spec.chemistry,
+                "curve_type": curve_type,
+                "block_index": block_index if block_index is not None else math.nan,
+                "cumulative_index": cumulative_index if cumulative_index is not None else math.nan,
+                "trajectory_fraction": trajectory_fraction if trajectory_fraction is not None else math.nan,
+                "point_index": point_index,
+                "cv": float(cv),
+                "free_energy_raw_zeroed_kj_mol": float(raw),
+                "free_energy_smooth_zeroed_kj_mol": float(smooth),
+                "uncertainty_kj_mol": float(uncertainty) if np.isfinite(uncertainty) else math.nan,
+                "source_path": str(path),
+            }
+        )
+    return metrics, curve_rows, metadata
+
+
+def _rank_rows(rows: List[Dict[str, object]], group_keys: Sequence[str], value_key: str, output_key: str) -> None:
+    groups: Dict[Tuple[object, ...], List[Dict[str, object]]] = {}
+    for row in rows:
+        key = tuple(row.get(group_key, "") for group_key in group_keys)
+        groups.setdefault(key, []).append(row)
+    for group_rows in groups.values():
+        finite_rows = [
+            row for row in group_rows if np.isfinite(float(row.get(value_key, math.nan)))
+        ]
+        sorted_rows = sorted(finite_rows, key=lambda row: float(row.get(value_key, math.nan)), reverse=True)
+        last_value: Optional[float] = None
+        last_rank = 0
+        for position, row in enumerate(sorted_rows, start=1):
+            value = float(row.get(value_key, math.nan))
+            if last_value is None or not math.isclose(value, last_value, rel_tol=0.0, abs_tol=0.0):
+                last_rank = position
+                last_value = value
+            row[output_key] = last_rank
+        for row in group_rows:
+            row.setdefault(output_key, math.nan)
+
+
+CONVERGENCE_SUMMARY_FIELDS: Tuple[str, ...] = (
+    "dataset_key",
+    "label",
+    "group",
+    "series",
+    "chemistry",
+    "window_low",
+    "window_high",
+    "delta_f_win_final_smooth_kj_mol",
+    "delta_f_win_final_raw_kj_mol",
+    "raw_minus_smooth_kj_mol",
+    "rank_final_smooth_within_series",
+    "n_blocks_available",
+    "delta_f_win_block_mean_smooth_kj_mol",
+    "delta_f_win_block_sd_smooth_kj_mol",
+    "delta_f_win_block_min_smooth_kj_mol",
+    "delta_f_win_block_max_smooth_kj_mol",
+    "delta_f_win_block_range_smooth_kj_mol",
+    "delta_f_win_block_mean_raw_kj_mol",
+    "block_effective_sample_size_mean",
+    "n_cumulative_profiles_available",
+    "delta_f_win_cumulative_first_smooth_kj_mol",
+    "delta_f_win_cumulative_penultimate_smooth_kj_mol",
+    "delta_f_win_cumulative_last_smooth_kj_mol",
+    "delta_f_win_cumulative_tail_range_smooth_kj_mol",
+    "delta_f_win_final_minus_cumulative_last_smooth_kj_mol",
+    "sample_size",
+    "effective_sample_size",
+    "blocks_effective_num",
+    "jump_precleaned_points_final",
+    "source_path",
+)
+
+
+CONVERGENCE_VALUE_FIELDS: Tuple[str, ...] = (
+    "dataset_key",
+    "label",
+    "group",
+    "series",
+    "chemistry",
+    "curve_type",
+    "block_index",
+    "cumulative_index",
+    "trajectory_fraction",
+    "rank_cumulative_smooth_within_series",
+    "delta_f_win_smooth_kj_mol",
+    "delta_f_win_raw_kj_mol",
+    "jump_precleaned_points",
+    "sample_size",
+    "effective_sample_size",
+    "blocks_effective_num",
+    "source_path",
+)
+
+
+CONVERGENCE_CURVE_FIELDS: Tuple[str, ...] = (
+    "dataset_key",
+    "label",
+    "group",
+    "series",
+    "chemistry",
+    "curve_type",
+    "block_index",
+    "cumulative_index",
+    "trajectory_fraction",
+    "point_index",
+    "cv",
+    "free_energy_raw_zeroed_kj_mol",
+    "free_energy_smooth_zeroed_kj_mol",
+    "uncertainty_kj_mol",
+    "source_path",
+)
+
+
+def analyze_fes_convergence(
+    specs: Sequence[FesConvergenceSpec],
+    output_dir: Path,
+    window_low: float = 20.0,
+    window_high: float = 52.0,
+    smooth_window: int = 21,
+    smooth_passes: int = 3,
+    jump_threshold: float = 120.0,
+) -> Dict[str, Path]:
+    """Analyze final/block/cumulative FES Delta-F convergence."""
+
+    if not specs:
+        raise ValueError("At least one FES convergence dataset is required")
+    if float(window_high) <= float(window_low):
+        raise ValueError("window_high must be greater than window_low")
+
+    summary_rows: List[Dict[str, object]] = []
+    block_rows: List[Dict[str, object]] = []
+    cumulative_rows: List[Dict[str, object]] = []
+    curve_rows: List[Dict[str, object]] = []
+    manifest_rows: List[Dict[str, object]] = []
+
+    for spec in specs:
+        final_metrics, final_curve_rows, _final_metadata = _processed_convergence_curve(
+            spec.path,
+            spec,
+            curve_type="final",
+            window_low=window_low,
+            window_high=window_high,
+            smooth_window=smooth_window,
+            smooth_passes=smooth_passes,
+            jump_threshold=jump_threshold,
+        )
+        curve_rows.extend(final_curve_rows)
+
+        block_smooth_values: List[float] = []
+        block_raw_values: List[float] = []
+        block_neff_values: List[float] = []
+        for block_index, block_path in enumerate(spec.block_paths, start=1):
+            block_metrics, block_curve_rows, _block_metadata = _processed_convergence_curve(
+                block_path,
+                spec,
+                curve_type="block",
+                window_low=window_low,
+                window_high=window_high,
+                smooth_window=smooth_window,
+                smooth_passes=smooth_passes,
+                jump_threshold=jump_threshold,
+                block_index=block_index,
+            )
+            block_rows.append(block_metrics)
+            curve_rows.extend(block_curve_rows)
+            block_smooth_values.append(float(block_metrics["delta_f_win_smooth_kj_mol"]))
+            block_raw_values.append(float(block_metrics["delta_f_win_raw_kj_mol"]))
+            if np.isfinite(float(block_metrics["effective_sample_size"])):
+                block_neff_values.append(float(block_metrics["effective_sample_size"]))
+
+        cumulative_records: List[Tuple[Path, Dict[str, object], List[Dict[str, object]], Dict[str, float]]] = []
+        for cumulative_index, cumulative_path in enumerate(spec.cumulative_paths, start=1):
+            metrics, rows, metadata = _processed_convergence_curve(
+                cumulative_path,
+                spec,
+                curve_type="cumulative",
+                window_low=window_low,
+                window_high=window_high,
+                smooth_window=smooth_window,
+                smooth_passes=smooth_passes,
+                jump_threshold=jump_threshold,
+                cumulative_index=cumulative_index,
+            )
+            cumulative_records.append((cumulative_path, metrics, rows, metadata))
+        sample_sizes = [
+            float(metadata.get("sample_size", math.nan))
+            for _path, _metrics, _rows, metadata in cumulative_records
+            if np.isfinite(float(metadata.get("sample_size", math.nan)))
+        ]
+        max_sample_size = max(sample_sizes, default=math.nan)
+        cumulative_smooth_values: List[float] = []
+        cumulative_raw_values: List[float] = []
+        for index, (_path, metrics, rows, _metadata) in enumerate(cumulative_records, start=1):
+            sample_size = float(metrics.get("sample_size", math.nan))
+            if np.isfinite(sample_size) and np.isfinite(max_sample_size) and max_sample_size > 0:
+                fraction = sample_size / max_sample_size
+            else:
+                fraction = index / max(1, len(cumulative_records))
+            metrics["trajectory_fraction"] = fraction
+            for row in rows:
+                row["trajectory_fraction"] = fraction
+            cumulative_rows.append(metrics)
+            curve_rows.extend(rows)
+            cumulative_smooth_values.append(float(metrics["delta_f_win_smooth_kj_mol"]))
+            cumulative_raw_values.append(float(metrics["delta_f_win_raw_kj_mol"]))
+
+        cumulative_arr = np.asarray(cumulative_smooth_values, dtype=float)
+        cumulative_tail = cumulative_arr[-2:] if cumulative_arr.size >= 2 else np.array([], dtype=float)
+        cumulative_first = float(cumulative_arr[0]) if cumulative_arr.size else math.nan
+        cumulative_penultimate = float(cumulative_arr[-2]) if cumulative_arr.size >= 2 else math.nan
+        cumulative_last = float(cumulative_arr[-1]) if cumulative_arr.size else math.nan
+        final_smooth = float(final_metrics["delta_f_win_smooth_kj_mol"])
+        final_raw = float(final_metrics["delta_f_win_raw_kj_mol"])
+        summary_rows.append(
+            {
+                "dataset_key": spec.dataset_key or spec.path.stem,
+                "label": spec.label,
+                "group": spec.group,
+                "series": spec.series,
+                "chemistry": spec.chemistry,
+                "window_low": float(window_low),
+                "window_high": float(window_high),
+                "delta_f_win_final_smooth_kj_mol": final_smooth,
+                "delta_f_win_final_raw_kj_mol": final_raw,
+                "raw_minus_smooth_kj_mol": final_raw - final_smooth,
+                "n_blocks_available": len(spec.block_paths),
+                "delta_f_win_block_mean_smooth_kj_mol": _finite_mean(block_smooth_values),
+                "delta_f_win_block_sd_smooth_kj_mol": _finite_sd(block_smooth_values),
+                "delta_f_win_block_min_smooth_kj_mol": _finite_min_value(block_smooth_values),
+                "delta_f_win_block_max_smooth_kj_mol": _finite_max_value(block_smooth_values),
+                "delta_f_win_block_range_smooth_kj_mol": _finite_range(block_smooth_values),
+                "delta_f_win_block_mean_raw_kj_mol": _finite_mean(block_raw_values),
+                "block_effective_sample_size_mean": _finite_mean(block_neff_values),
+                "n_cumulative_profiles_available": len(cumulative_records),
+                "delta_f_win_cumulative_first_smooth_kj_mol": cumulative_first,
+                "delta_f_win_cumulative_penultimate_smooth_kj_mol": cumulative_penultimate,
+                "delta_f_win_cumulative_last_smooth_kj_mol": cumulative_last,
+                "delta_f_win_cumulative_tail_range_smooth_kj_mol": _finite_range(cumulative_tail),
+                "delta_f_win_final_minus_cumulative_last_smooth_kj_mol": (
+                    final_smooth - cumulative_last if np.isfinite(cumulative_last) else math.nan
+                ),
+                "sample_size": final_metrics["sample_size"],
+                "effective_sample_size": final_metrics["effective_sample_size"],
+                "blocks_effective_num": final_metrics["blocks_effective_num"],
+                "jump_precleaned_points_final": final_metrics["jump_precleaned_points"],
+                "source_path": str(spec.path),
+            }
+        )
+        manifest_rows.append(
+            {
+                "dataset_key": spec.dataset_key or spec.path.stem,
+                "label": spec.label,
+                "group": spec.group,
+                "series": spec.series,
+                "chemistry": spec.chemistry,
+                "path": str(spec.path),
+                "n_block_paths": len(spec.block_paths),
+                "n_cumulative_paths": len(spec.cumulative_paths),
+            }
+        )
+
+    _rank_rows(
+        summary_rows,
+        group_keys=("series",),
+        value_key="delta_f_win_final_smooth_kj_mol",
+        output_key="rank_final_smooth_within_series",
+    )
+    _rank_rows(
+        cumulative_rows,
+        group_keys=("series", "cumulative_index"),
+        value_key="delta_f_win_smooth_kj_mol",
+        output_key="rank_cumulative_smooth_within_series",
+    )
+
+    output_dir = Path(output_dir)
+    outputs = {
+        "summary": output_dir / "fes_convergence_summary.csv",
+        "blocks": output_dir / "fes_convergence_block_values.csv",
+        "cumulative": output_dir / "fes_convergence_cumulative_values.csv",
+        "curves": output_dir / "fes_convergence_curves.csv",
+        "manifest": output_dir / "fes_convergence_manifest.csv",
+    }
+    _write_csv_with_fields(outputs["summary"], summary_rows, CONVERGENCE_SUMMARY_FIELDS)
+    _write_csv_with_fields(outputs["blocks"], block_rows, CONVERGENCE_VALUE_FIELDS)
+    _write_csv_with_fields(outputs["cumulative"], cumulative_rows, CONVERGENCE_VALUE_FIELDS)
+    _write_csv_with_fields(outputs["curves"], curve_rows, CONVERGENCE_CURVE_FIELDS)
+    _write_csv_with_fields(
+        outputs["manifest"],
+        manifest_rows,
+        ("dataset_key", "label", "group", "series", "chemistry", "path", "n_block_paths", "n_cumulative_paths"),
+    )
+    return outputs
+
+
 def process_curve(
     curve: FesCurve,
     reference_low: float = -math.inf,
@@ -818,6 +1403,15 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     ordered.extend([key for key in fieldnames if key not in ordered])
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=ordered)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_csv_with_fields(path: Path, rows: Sequence[Mapping[str, object]], fieldnames: Sequence[str]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(fieldnames), extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -975,6 +1569,52 @@ def run_fes2d_grid(argv: Optional[Sequence[str]] = None) -> int:
         )
     except Exception as exc:
         print(f"2D FES grid processing failed: {exc}")
+        return 1
+
+    for path in outputs.values():
+        print(path)
+    return 0
+
+
+def get_fes_convergence_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Build arguments for FES convergence/robustness analysis."""
+
+    parser = argparse.ArgumentParser(description="Analyze FES Delta-F convergence from a CSV manifest")
+    parser.add_argument("--manifest", type=Path, required=True, help="CSV with path and optional block/cumulative inputs")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--window-low", type=float, default=20.0)
+    parser.add_argument("--window-high", type=float, default=52.0)
+    parser.add_argument("--smooth-window", type=int, default=21)
+    parser.add_argument("--smooth-passes", type=int, default=3)
+    parser.add_argument("--jump-threshold", type=float, default=120.0)
+    parser.add_argument("--infer-blocks", action="store_true", help="Infer existing PATH stem_1/stem_2/... block files")
+    parser.add_argument("--block-count", type=int, default=3)
+    parser.add_argument("--cumulative-glob", default="fes-cum_*.dat")
+    return parser.parse_args(argv)
+
+
+def run_fes_convergence(argv: Optional[Sequence[str]] = None) -> int:
+    """Run FES convergence analysis from CLI-style arguments."""
+
+    args = get_fes_convergence_args(argv)
+    try:
+        specs = load_fes_convergence_manifest(
+            args.manifest,
+            infer_blocks=bool(args.infer_blocks),
+            block_count=int(args.block_count),
+            cumulative_glob=str(args.cumulative_glob),
+        )
+        outputs = analyze_fes_convergence(
+            specs,
+            output_dir=args.output_dir,
+            window_low=float(args.window_low),
+            window_high=float(args.window_high),
+            smooth_window=int(args.smooth_window),
+            smooth_passes=int(args.smooth_passes),
+            jump_threshold=float(args.jump_threshold),
+        )
+    except Exception as exc:
+        print(f"FES convergence analysis failed: {exc}")
         return 1
 
     for path in outputs.values():

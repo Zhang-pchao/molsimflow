@@ -7,7 +7,9 @@ import numpy as np
 from molsimflow.postprocess.fes_analysis import (
     FesCurveSpec,
     analyze_fes_barriers,
+    analyze_fes_convergence,
     load_curve_manifest,
+    load_fes_convergence_manifest,
     load_fes2d_grid,
     load_fes_curve,
     moving_average_smooth,
@@ -21,6 +23,16 @@ from molsimflow.postprocess.fes_analysis import (
 def _write_curve(path, values):
     with path.open("w") as handle:
         handle.write("#! FIELDS cv free_energy uncertainty\n")
+        for cv, free_energy, uncertainty in values:
+            handle.write(f"{cv} {free_energy} {uncertainty}\n")
+
+
+def _write_curve_with_metadata(path, values, sample_size=None):
+    with path.open("w") as handle:
+        handle.write("#! FIELDS cv free_energy uncertainty\n")
+        if sample_size is not None:
+            handle.write(f"#! SET sample_size {sample_size}\n")
+            handle.write(f"#! SET effective_sample_size {0.5 * float(sample_size)}\n")
         for cv, free_energy, uncertainty in values:
             handle.write(f"{cv} {free_energy} {uncertainty}\n")
 
@@ -173,3 +185,71 @@ def test_process_fes2d_grid_writes_csv_and_metadata(tmp_path):
     assert len(rows) == 4
     assert rows[0]["d"] == "0"
     assert rows[0]["bridge"] == "0"
+
+
+def test_fes_convergence_manifest_and_outputs(tmp_path):
+    final_path = tmp_path / "caseA.dat"
+    block1_path = tmp_path / "caseA_1.dat"
+    block2_path = tmp_path / "caseA_2.dat"
+    cumulative_dir = tmp_path / "cumulative"
+    cumulative_dir.mkdir()
+    cumulative1_path = cumulative_dir / "fes-cum_050.dat"
+    cumulative2_path = cumulative_dir / "fes-cum_100.dat"
+    values_final = [(0.0, 5.0, 0.1), (1.0, 1.0, 0.1), (2.0, 7.0, 0.2), (3.0, 3.0, 0.2)]
+    values_block = [(0.0, 4.0, 0.1), (1.0, 2.0, 0.1), (2.0, 6.0, 0.2), (3.0, 3.0, 0.2)]
+    values_cum1 = [(0.0, 5.0, 0.1), (1.0, 1.0, 0.1), (2.0, 6.0, 0.2), (3.0, 2.0, 0.2)]
+    _write_curve_with_metadata(final_path, values_final, sample_size=100)
+    _write_curve_with_metadata(block1_path, values_block, sample_size=30)
+    _write_curve_with_metadata(block2_path, values_block, sample_size=40)
+    _write_curve_with_metadata(cumulative1_path, values_cum1, sample_size=50)
+    _write_curve_with_metadata(cumulative2_path, values_final, sample_size=100)
+
+    manifest = tmp_path / "manifest.csv"
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["path", "label", "group", "dataset_key", "series", "chemistry", "cumulative_dir"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "path": final_path.name,
+                "label": "case A",
+                "group": "set1",
+                "dataset_key": "caseA",
+                "series": "S",
+                "chemistry": "water",
+                "cumulative_dir": cumulative_dir.name,
+            }
+        )
+
+    specs = load_fes_convergence_manifest(manifest, infer_blocks=True)
+    outputs = analyze_fes_convergence(
+        specs,
+        output_dir=tmp_path / "out",
+        window_low=0.0,
+        window_high=3.0,
+        smooth_window=1,
+    )
+
+    assert len(specs) == 1
+    assert len(specs[0].block_paths) == 2
+    assert len(specs[0].cumulative_paths) == 2
+    assert outputs["summary"].exists()
+    assert outputs["blocks"].exists()
+    assert outputs["cumulative"].exists()
+    assert outputs["curves"].exists()
+
+    with outputs["summary"].open() as handle:
+        summary_rows = list(csv.DictReader(handle))
+    summary = summary_rows[0]
+    assert math.isclose(float(summary["delta_f_win_final_smooth_kj_mol"]), 6.0)
+    assert math.isclose(float(summary["delta_f_win_block_mean_smooth_kj_mol"]), 4.0)
+    assert math.isclose(float(summary["delta_f_win_cumulative_last_smooth_kj_mol"]), 6.0)
+    assert math.isclose(float(summary["delta_f_win_final_minus_cumulative_last_smooth_kj_mol"]), 0.0)
+    assert summary["rank_final_smooth_within_series"] == "1"
+
+    with outputs["cumulative"].open() as handle:
+        cumulative_rows = list(csv.DictReader(handle))
+    assert math.isclose(float(cumulative_rows[0]["trajectory_fraction"]), 0.5)
+    assert math.isclose(float(cumulative_rows[1]["trajectory_fraction"]), 1.0)

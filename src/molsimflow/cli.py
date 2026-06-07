@@ -1172,6 +1172,34 @@ def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
     return run_fes2d_grid(workflow_args)
 
 
+def _cmd_postprocess_fes_convergence(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.fes_analysis import run_fes_convergence
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--output-dir",
+        str(args.output_dir),
+        "--window-low",
+        str(args.window_low),
+        "--window-high",
+        str(args.window_high),
+        "--smooth-window",
+        str(args.smooth_window),
+        "--smooth-passes",
+        str(args.smooth_passes),
+        "--jump-threshold",
+        str(args.jump_threshold),
+        "--block-count",
+        str(args.block_count),
+        "--cumulative-glob",
+        args.cumulative_glob,
+    ]
+    if args.infer_blocks:
+        workflow_args.append("--infer-blocks")
+    return run_fes_convergence(workflow_args)
+
+
 
 def _cmd_postprocess_silica_surface(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.silica_surface import main as silica_surface_main
@@ -1791,6 +1819,19 @@ def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cmap", default="viridis")
 
 
+def _add_fes_convergence_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True, help="CSV with path and optional block/cumulative inputs")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--window-low", type=float, default=20.0)
+    parser.add_argument("--window-high", type=float, default=52.0)
+    parser.add_argument("--smooth-window", type=int, default=21)
+    parser.add_argument("--smooth-passes", type=int, default=3)
+    parser.add_argument("--jump-threshold", type=float, default=120.0)
+    parser.add_argument("--infer-blocks", action="store_true", help="Infer existing PATH stem_1/stem_2/... block files")
+    parser.add_argument("--block-count", type=int, default=3)
+    parser.add_argument("--cumulative-glob", default="fes-cum_*.dat")
+
+
 def _add_plot_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True, help="Input CSV table")
     parser.add_argument("--output", type=Path, required=True, help="Output figure path or stem")
@@ -2358,6 +2399,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes2d_grid_postprocess_args(fes2d_grid)
     fes2d_grid.set_defaults(func=_cmd_postprocess_fes2d_grid)
+
+    fes_convergence = postprocess_subparsers.add_parser(
+        "fes-convergence",
+        help="Analyze FES Delta-F convergence from final, block, and cumulative profiles",
+    )
+    _add_fes_convergence_postprocess_args(fes_convergence)
+    fes_convergence.set_defaults(func=_cmd_postprocess_fes_convergence)
 
     case_scorecard = postprocess_subparsers.add_parser(
         "case-scorecard",

@@ -87,7 +87,8 @@ analysis and the first ion-analysis core:
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
   - writes zeroed/smoothed curve tables and barrier summaries;
-  - processes regular 2D FES grids into zeroed/smoothed long-form tables, metadata, and optional contour plots.
+  - processes regular 2D FES grids into zeroed/smoothed long-form tables, metadata, and optional contour plots;
+  - analyzes final/block/cumulative FES profiles for fixed-window Delta-F convergence from explicit CSV manifests.
 - `molsimflow.postprocess.case_comparison`
   - joins case-level descriptor tables through explicit CSV manifests;
   - computes target-minus-reference case deltas;
@@ -175,6 +176,21 @@ molsimflow postprocess fes2d-grid \
   --y-range 50 380 \
   --prefix d3d_bridge
 ```
+
+```bash
+molsimflow postprocess fes-convergence \
+  --manifest fes_convergence_manifest.csv \
+  --output-dir fes_convergence \
+  --window-low 20 \
+  --window-high 52 \
+  --infer-blocks
+```
+
+`fes-convergence` manifests require `path` and may include `label`,
+`group`, `dataset_key`, `series`, `chemistry`, `block_paths`,
+`cumulative_paths`, and `cumulative_dir`.  List-valued path columns accept
+semicolon, comma, or pipe separators; relative paths resolve against the
+manifest file directory.
 
 ```bash
 molsimflow postprocess ion-species \
