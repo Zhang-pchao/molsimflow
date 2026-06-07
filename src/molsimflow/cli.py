@@ -1224,6 +1224,46 @@ def _cmd_postprocess_fes2d_batch_manifest(args: argparse.Namespace) -> int:
     return run_fes2d_batch_manifest(workflow_args)
 
 
+def _cmd_postprocess_fes_cumulative_reweight_manifest(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.fes_analysis import run_fes_cumulative_reweight_manifest
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--output-manifest",
+        str(args.output_manifest),
+        "--driver",
+        str(args.driver),
+        "--output-root",
+        str(args.output_root),
+        "--output-prefix",
+        args.output_prefix,
+        "--python-executable",
+        args.python_executable,
+        "--cv",
+        args.cv,
+        "--cv-min",
+        str(args.cv_min),
+        "--cv-max",
+        str(args.cv_max),
+        "--delta-fat",
+        str(args.delta_fat),
+        "--sigma",
+        str(args.sigma),
+        "--skiprows",
+        str(args.skiprows),
+        "--blocks",
+        str(args.blocks),
+        "--temperature",
+        str(args.temperature),
+    ]
+    for fraction in args.fraction or []:
+        workflow_args.extend(["--fraction", str(fraction)])
+    if args.create_dirs:
+        workflow_args.append("--create-dirs")
+    return run_fes_cumulative_reweight_manifest(workflow_args)
+
+
 def _cmd_postprocess_fes_convergence(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.fes_analysis import run_fes_convergence
 
@@ -2067,6 +2107,25 @@ def _add_fes2d_batch_manifest_postprocess_args(parser: argparse.ArgumentParser) 
     parser.add_argument("--create-dirs", action="store_true")
 
 
+def _add_fes_cumulative_reweight_manifest_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True, help="CSV with system,workdir,colvar,sample_size columns")
+    parser.add_argument("--output-manifest", type=Path, required=True)
+    parser.add_argument("--driver", type=Path, required=True, help="Path to the reweighting driver script")
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--fraction", type=float, action="append", help="Trajectory fraction; may be repeated")
+    parser.add_argument("--output-prefix", default="fes-cum")
+    parser.add_argument("--python-executable", default="python")
+    parser.add_argument("--cv", default="d3d_all")
+    parser.add_argument("--cv-min", type=float, default=5.0)
+    parser.add_argument("--cv-max", type=float, default=52.0)
+    parser.add_argument("--delta-fat", type=float, default=45.0)
+    parser.add_argument("--sigma", type=float, default=0.06)
+    parser.add_argument("--skiprows", type=int, default=50000)
+    parser.add_argument("--blocks", type=int, default=3)
+    parser.add_argument("--temperature", type=float, default=330.0)
+    parser.add_argument("--create-dirs", action="store_true")
+
+
 def _add_fes_convergence_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", type=Path, required=True, help="CSV with path and optional block/cumulative inputs")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -2667,6 +2726,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes2d_batch_manifest_postprocess_args(fes2d_batch)
     fes2d_batch.set_defaults(func=_cmd_postprocess_fes2d_batch_manifest)
+
+    fes_cumulative = postprocess_subparsers.add_parser(
+        "fes-cumulative-reweight-manifest",
+        help="Prepare a path-explicit command manifest for cumulative FES reweighting",
+    )
+    _add_fes_cumulative_reweight_manifest_postprocess_args(fes_cumulative)
+    fes_cumulative.set_defaults(func=_cmd_postprocess_fes_cumulative_reweight_manifest)
 
     fes_convergence = postprocess_subparsers.add_parser(
         "fes-convergence",

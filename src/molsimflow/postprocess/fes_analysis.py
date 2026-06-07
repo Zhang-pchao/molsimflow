@@ -112,6 +112,37 @@ class Fes2DBatchConfig:
     write_comparison: bool = False
 
 
+@dataclass(frozen=True)
+class FesCumulativeReweightSpec:
+    """Input metadata for one cumulative reweight dataset."""
+
+    system: str
+    workdir: Path
+    colvar: Path
+    sample_size: int
+    output_dir: Optional[Path] = None
+    group: str = "default"
+
+
+@dataclass(frozen=True)
+class FesCumulativeReweightConfig:
+    """Command defaults for cumulative-prefix FES reweight planning."""
+
+    driver: Path
+    output_root: Path
+    fractions: Tuple[float, ...] = (0.60, 0.80, 1.00)
+    output_prefix: str = "fes-cum"
+    python_executable: str = "python"
+    cv: str = "d3d_all"
+    cv_min: float = 5.0
+    cv_max: float = 52.0
+    delta_f_at: float = 45.0
+    sigma: float = 0.06
+    skiprows: int = 50000
+    blocks: int = 3
+    temperature: float = 330.0
+
+
 def _as_float(value: str) -> float:
     text = str(value).strip()
     if text.lower() in {"inf", "+inf", "infinity", "+infinity"}:
@@ -520,6 +551,175 @@ def prepare_fes2d_batch_manifest(
         "colvar_tmp_exists",
         "fes_file_exists",
         "fes2d_grid_command",
+    ]
+    _write_csv_with_fields(Path(output_manifest), rows, fieldnames)
+    return rows
+
+
+def load_fes_cumulative_reweight_manifest(path: Path) -> List[FesCumulativeReweightSpec]:
+    """Load cumulative reweight planning inputs from a CSV manifest.
+
+    Required columns are `system`, `workdir`, `colvar`, and `sample_size`.
+    Optional columns are `output_dir` and `group`. Relative paths are resolved
+    against the manifest directory.
+    """
+
+    manifest_path = Path(path)
+    base_dir = manifest_path.parent
+    specs: List[FesCumulativeReweightSpec] = []
+    with manifest_path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Manifest has no header: {path}")
+        required = ["system", "workdir", "colvar", "sample_size"]
+        missing = [column for column in required if column not in reader.fieldnames]
+        if missing:
+            raise ValueError("Cumulative reweight manifest missing required columns: " + ", ".join(missing))
+        for row in reader:
+            system = str(row.get("system") or "").strip()
+            if not system:
+                continue
+            workdir = _manifest_path(row.get("workdir"), base_dir)
+            colvar = _manifest_path(row.get("colvar"), base_dir)
+            if workdir is None or colvar is None:
+                continue
+            try:
+                sample_size = int(float(str(row.get("sample_size", "")).strip()))
+            except ValueError as exc:
+                raise ValueError(f"Invalid sample_size for {system}: {row.get('sample_size')!r}") from exc
+            if sample_size <= 0:
+                raise ValueError(f"sample_size must be positive for {system}")
+            specs.append(
+                FesCumulativeReweightSpec(
+                    system=system,
+                    workdir=workdir,
+                    colvar=colvar,
+                    sample_size=sample_size,
+                    output_dir=_manifest_path(row.get("output_dir"), base_dir),
+                    group=str(row.get("group") or "default").strip(),
+                )
+            )
+    if not specs:
+        raise ValueError(f"No cumulative reweight datasets found in manifest: {path}")
+    return specs
+
+
+def normalize_reweight_fractions(fractions: Sequence[float]) -> Tuple[float, ...]:
+    """Validate and sort cumulative trajectory fractions."""
+
+    values = tuple(sorted({float(value) for value in fractions}))
+    if not values:
+        raise ValueError("At least one cumulative fraction is required")
+    for value in values:
+        if value <= 0.0 or value > 1.0:
+            raise ValueError("Cumulative fractions must be in (0, 1]")
+    return values
+
+
+def build_cumulative_reweight_command(row: Mapping[str, object], config: FesCumulativeReweightConfig) -> str:
+    """Build a shell-safe reweight command for one planned cumulative output."""
+
+    parts = [
+        config.python_executable,
+        str(config.driver),
+        "-o",
+        str(row["output_path"]),
+        "-f",
+        str(row["colvar"]),
+        "--cv",
+        config.cv,
+        "--min",
+        str(config.cv_min),
+        "--max",
+        str(config.cv_max),
+        "--deltaFat",
+        str(config.delta_f_at),
+        "--sigma",
+        str(config.sigma),
+        "--skiprows",
+        str(config.skiprows),
+        "--skipfoot",
+        str(row["skipfoot"]),
+        "--blocks",
+        str(config.blocks),
+        "--temp",
+        str(config.temperature),
+    ]
+    return " ".join(_shell_quote(part) for part in parts)
+
+
+def prepare_fes_cumulative_reweight_manifest(
+    specs: Sequence[FesCumulativeReweightSpec],
+    output_manifest: Path,
+    *,
+    config: FesCumulativeReweightConfig,
+    create_dirs: bool = False,
+) -> List[Dict[str, object]]:
+    """Prepare a command table for cumulative-prefix FES reweighting."""
+
+    fractions = normalize_reweight_fractions(config.fractions)
+    rows: List[Dict[str, object]] = []
+    for spec in specs:
+        out_dir = spec.output_dir or (config.output_root / safe_file_label(spec.system))
+        if create_dirs:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        for fraction in fractions:
+            keep_after_skip = int(round(float(spec.sample_size) * fraction))
+            skipfoot = max(0, int(spec.sample_size) - keep_after_skip)
+            percent = int(round(fraction * 100.0))
+            output_path = out_dir / f"{config.output_prefix}_{percent:03d}.dat"
+            row: Dict[str, object] = {
+                "system": spec.system,
+                "group": spec.group,
+                "workdir": str(spec.workdir),
+                "colvar": str(spec.colvar),
+                "sample_size": int(spec.sample_size),
+                "trajectory_fraction": fraction,
+                "keep_after_skip": keep_after_skip,
+                "skipfoot": skipfoot,
+                "output_dir": str(out_dir),
+                "output_path": str(output_path),
+                "driver": str(config.driver),
+                "cv": config.cv,
+                "cv_min": config.cv_min,
+                "cv_max": config.cv_max,
+                "delta_f_at": config.delta_f_at,
+                "sigma": config.sigma,
+                "skiprows": config.skiprows,
+                "blocks": config.blocks,
+                "temperature": config.temperature,
+                "workdir_exists": int(spec.workdir.exists()),
+                "colvar_exists": int(spec.colvar.exists()),
+                "driver_exists": int(config.driver.exists()),
+                "output_exists": int(output_path.exists()),
+            }
+            row["reweight_command"] = build_cumulative_reweight_command(row, config)
+            rows.append(row)
+    fieldnames = [
+        "system",
+        "group",
+        "workdir",
+        "colvar",
+        "sample_size",
+        "trajectory_fraction",
+        "keep_after_skip",
+        "skipfoot",
+        "output_dir",
+        "output_path",
+        "driver",
+        "cv",
+        "cv_min",
+        "cv_max",
+        "delta_f_at",
+        "sigma",
+        "skiprows",
+        "blocks",
+        "temperature",
+        "workdir_exists",
+        "colvar_exists",
+        "driver_exists",
+        "output_exists",
+        "reweight_command",
     ]
     _write_csv_with_fields(Path(output_manifest), rows, fieldnames)
     return rows
@@ -1973,6 +2173,64 @@ def run_fes2d_batch_manifest(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     print(args.output_manifest)
     print(f"cases={len(rows)}")
+    return 0
+
+
+def get_fes_cumulative_reweight_manifest_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Build arguments for cumulative reweight command-table generation."""
+
+    parser = argparse.ArgumentParser(description="Prepare a cumulative FES reweight command manifest")
+    parser.add_argument("--manifest", type=Path, required=True, help="CSV with system,workdir,colvar,sample_size columns")
+    parser.add_argument("--output-manifest", type=Path, required=True)
+    parser.add_argument("--driver", type=Path, required=True, help="Path to the reweighting driver script")
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--fraction", type=float, action="append", help="Trajectory fraction; may be repeated")
+    parser.add_argument("--output-prefix", default="fes-cum")
+    parser.add_argument("--python-executable", default="python")
+    parser.add_argument("--cv", default="d3d_all")
+    parser.add_argument("--cv-min", type=float, default=5.0)
+    parser.add_argument("--cv-max", type=float, default=52.0)
+    parser.add_argument("--delta-fat", type=float, default=45.0)
+    parser.add_argument("--sigma", type=float, default=0.06)
+    parser.add_argument("--skiprows", type=int, default=50000)
+    parser.add_argument("--blocks", type=int, default=3)
+    parser.add_argument("--temperature", type=float, default=330.0)
+    parser.add_argument("--create-dirs", action="store_true")
+    return parser.parse_args(argv)
+
+
+def run_fes_cumulative_reweight_manifest(argv: Optional[Sequence[str]] = None) -> int:
+    """Run cumulative FES reweight command-table generation."""
+
+    args = get_fes_cumulative_reweight_manifest_args(argv)
+    try:
+        specs = load_fes_cumulative_reweight_manifest(args.manifest)
+        config = FesCumulativeReweightConfig(
+            driver=args.driver,
+            output_root=args.output_root,
+            fractions=tuple(args.fraction or (0.60, 0.80, 1.00)),
+            output_prefix=args.output_prefix,
+            python_executable=args.python_executable,
+            cv=args.cv,
+            cv_min=float(args.cv_min),
+            cv_max=float(args.cv_max),
+            delta_f_at=float(args.delta_fat),
+            sigma=float(args.sigma),
+            skiprows=int(args.skiprows),
+            blocks=int(args.blocks),
+            temperature=float(args.temperature),
+        )
+        rows = prepare_fes_cumulative_reweight_manifest(
+            specs,
+            output_manifest=args.output_manifest,
+            config=config,
+            create_dirs=bool(args.create_dirs),
+        )
+    except Exception as exc:
+        print(f"Cumulative FES reweight manifest generation failed: {exc}")
+        return 1
+    print(args.output_manifest)
+    print(f"commands={len(rows)}")
     return 0
 
 

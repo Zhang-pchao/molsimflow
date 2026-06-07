@@ -33,6 +33,8 @@ from molsimflow.postprocess.fes_analysis import (
     Fes2DBatchConfig,
     Fes2DGrid,
     FesConvergenceSpec,
+    FesCumulativeReweightConfig,
+    FesCumulativeReweightSpec,
     FesCurve,
     FesCurveSpec,
 )
@@ -95,6 +97,8 @@ __all__ = [
     "Fes2DBatchConfig",
     "Fes2DGrid",
     "FesConvergenceSpec",
+    "FesCumulativeReweightConfig",
+    "FesCumulativeReweightSpec",
     "FesCurve",
     "FesCurveSpec",
     "FrameDistanceResult",

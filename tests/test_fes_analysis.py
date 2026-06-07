@@ -6,9 +6,11 @@ import numpy as np
 
 from molsimflow.postprocess.fes_analysis import (
     Fes2DBatchConfig,
+    FesCumulativeReweightConfig,
     FesCurveSpec,
     analyze_fes_barriers,
     analyze_fes_convergence,
+    load_fes_cumulative_reweight_manifest,
     load_fes2d_batch_case_manifest,
     load_curve_manifest,
     load_fes_convergence_manifest,
@@ -17,6 +19,7 @@ from molsimflow.postprocess.fes_analysis import (
     moving_average_smooth,
     normalized_gaussian_smooth_2d,
     parse_window,
+    prepare_fes_cumulative_reweight_manifest,
     prepare_fes2d_batch_manifest,
     process_fes2d_grid,
     process_curve,
@@ -295,3 +298,42 @@ def test_prepare_fes2d_batch_manifest_from_case_manifest(tmp_path):
     with (tmp_path / "batch.csv").open() as handle:
         written = list(csv.DictReader(handle))
     assert written[0]["case_label"] == "Case A"
+
+
+def test_prepare_fes_cumulative_reweight_manifest(tmp_path):
+    workdir = tmp_path / "caseA" / "fes_reweight"
+    workdir.mkdir(parents=True)
+    colvar = tmp_path / "caseA" / "COLVAR_tmp"
+    colvar.write_text("#! FIELDS time d3d_all\n")
+    driver = tmp_path / "FES_from_Reweighting.py"
+    driver.write_text("# driver placeholder\n")
+    manifest = tmp_path / "cumulative_cases.csv"
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["system", "workdir", "colvar", "sample_size"])
+        writer.writeheader()
+        writer.writerow({"system": "Case A", "workdir": "caseA/fes_reweight", "colvar": "caseA/COLVAR_tmp", "sample_size": 100})
+
+    specs = load_fes_cumulative_reweight_manifest(manifest)
+    rows = prepare_fes_cumulative_reweight_manifest(
+        specs,
+        tmp_path / "cumulative_manifest.csv",
+        config=FesCumulativeReweightConfig(
+            driver=driver,
+            output_root=tmp_path / "out",
+            fractions=(0.5, 1.0),
+            skiprows=10,
+        ),
+    )
+
+    assert len(rows) == 2
+    assert rows[0]["trajectory_fraction"] == 0.5
+    assert rows[0]["keep_after_skip"] == 50
+    assert rows[0]["skipfoot"] == 50
+    assert rows[1]["skipfoot"] == 0
+    assert rows[0]["colvar_exists"] == 1
+    assert "--skipfoot 50" in rows[0]["reweight_command"]
+    assert "--skiprows 10" in rows[0]["reweight_command"]
+
+    with (tmp_path / "cumulative_manifest.csv").open() as handle:
+        written = list(csv.DictReader(handle))
+    assert written[1]["trajectory_fraction"] == "1.0"
