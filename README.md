@@ -50,6 +50,7 @@ molsimflow postprocess bridge-film --frame-table bridge_liquid_film_frame_metric
 molsimflow postprocess ion-water-coupling --feature-table transition_feature_table.csv --output-dir ion_water_coupling
 molsimflow postprocess bridge-ion-occupancy --positions tracked_bridge_ion_positions.csv --gap-table coalescence_state_table.csv --output-dir bridge_ion_descriptors
 molsimflow postprocess fes-barriers --curve fes-rew.dat "case A" tio2 --output-dir fes_barrier_results
+molsimflow postprocess fes2d-grid --fes-file fes-rew-2d.dat --output-dir fes2d_grid --x-range 20 52 --y-range 50 380
 molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results
 molsimflow plot line --input fes_processed_curves.csv --x-column cv --y-column free_energy_smooth_zeroed_kj_mol --group-column label --output fes_curves.png
 molsimflow plot scatter --input case_scorecard.csv --x-column bridge__bridge_waters --y-column barrier__barrier_kjmol --label-column case_label --fit-line --output descriptor_vs_barrier.png

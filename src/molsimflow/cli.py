@@ -1124,6 +1124,54 @@ def _cmd_postprocess_fes_barriers(args: argparse.Namespace) -> int:
     return fes_main(workflow_args)
 
 
+def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.fes_analysis import run_fes2d_grid
+
+    workflow_args = [
+        "--fes-file",
+        str(args.fes_file),
+        "--output-dir",
+        str(args.output_dir),
+        "--max-fes",
+        str(args.max_fes),
+        "--smooth-sigma",
+        str(args.smooth_sigma),
+        "--smooth-valid-threshold",
+        str(args.smooth_valid_threshold),
+        "--prefix",
+        args.prefix,
+        "--zero-scope",
+        args.zero_scope,
+        "--missing-plot-value",
+        args.missing_plot_value,
+        "--contour-levels",
+        str(args.contour_levels),
+        "--dpi",
+        str(args.dpi),
+        "--cmap",
+        args.cmap,
+    ]
+    if args.x_range is not None:
+        workflow_args.append("--x-range")
+        workflow_args.extend(str(value) for value in args.x_range)
+    if args.y_range is not None:
+        workflow_args.append("--y-range")
+        workflow_args.extend(str(value) for value in args.y_range)
+    if args.no_grid:
+        workflow_args.append("--no-grid")
+    if args.write_plots:
+        workflow_args.append("--write-plots")
+    if args.write_comparison:
+        workflow_args.append("--write-comparison")
+    if args.title:
+        workflow_args.extend(["--title", args.title])
+    if args.x_label:
+        workflow_args.extend(["--x-label", args.x_label])
+    if args.y_label:
+        workflow_args.extend(["--y-label", args.y_label])
+    return run_fes2d_grid(workflow_args)
+
+
 
 def _cmd_postprocess_silica_surface(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.silica_surface import main as silica_surface_main
@@ -1721,6 +1769,28 @@ def _add_fes_barriers_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--uncertainty-column", type=int, default=2, help="Zero-based uncertainty column index; use -1 to disable")
 
 
+def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--fes-file", type=Path, required=True, help="PLUMED-style 2D FES table")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--x-range", type=float, nargs=2, metavar=("LOW", "HIGH"), help="Inclusive x range")
+    parser.add_argument("--y-range", type=float, nargs=2, metavar=("LOW", "HIGH"), help="Inclusive y range")
+    parser.add_argument("--max-fes", type=float, default=200.0)
+    parser.add_argument("--smooth-sigma", type=float, default=0.8, help="Gaussian sigma in grid-bin units")
+    parser.add_argument("--smooth-valid-threshold", type=float, default=0.25)
+    parser.add_argument("--prefix", default="fes2d")
+    parser.add_argument("--zero-scope", choices=("window", "all"), default="window")
+    parser.add_argument("--missing-plot-value", choices=("max", "nan"), default="max")
+    parser.add_argument("--no-grid", action="store_true", help="Skip long-form processed grid CSV")
+    parser.add_argument("--write-plots", action="store_true", help="Write contour plot PNG outputs")
+    parser.add_argument("--write-comparison", action="store_true", help="Also write raw-vs-smoothed comparison")
+    parser.add_argument("--contour-levels", type=int, default=16)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--title", default="")
+    parser.add_argument("--x-label")
+    parser.add_argument("--y-label")
+    parser.add_argument("--cmap", default="viridis")
+
+
 def _add_plot_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", type=Path, required=True, help="Input CSV table")
     parser.add_argument("--output", type=Path, required=True, help="Output figure path or stem")
@@ -2281,6 +2351,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes_barriers_postprocess_args(fes_barriers)
     fes_barriers.set_defaults(func=_cmd_postprocess_fes_barriers)
+
+    fes2d_grid = postprocess_subparsers.add_parser(
+        "fes2d-grid",
+        help="Process a regular 2D FES grid into tables and optional plots",
+    )
+    _add_fes2d_grid_postprocess_args(fes2d_grid)
+    fes2d_grid.set_defaults(func=_cmd_postprocess_fes2d_grid)
 
     case_scorecard = postprocess_subparsers.add_parser(
         "case-scorecard",

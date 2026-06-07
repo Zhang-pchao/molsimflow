@@ -86,7 +86,8 @@ analysis and the first ion-analysis core:
     event-aligned predictor/target summaries.
 - `molsimflow.postprocess.fes_analysis`
   - processes 1D FES curves;
-  - writes zeroed/smoothed curve tables and barrier summaries.
+  - writes zeroed/smoothed curve tables and barrier summaries;
+  - processes regular 2D FES grids into zeroed/smoothed long-form tables, metadata, and optional contour plots.
 - `molsimflow.postprocess.case_comparison`
   - joins case-level descriptor tables through explicit CSV manifests;
   - computes target-minus-reference case deltas;
@@ -164,6 +165,15 @@ molsimflow postprocess particle-flotation \
   --trajectory dump.lammpstrj \
   --model-summary model_summary.json \
   --output-dir particle_flotation
+```
+
+```bash
+molsimflow postprocess fes2d-grid \
+  --fes-file fes-rew-2d.dat \
+  --output-dir fes2d_grid \
+  --x-range 20 52 \
+  --y-range 50 380 \
+  --prefix d3d_bridge
 ```
 
 ```bash
