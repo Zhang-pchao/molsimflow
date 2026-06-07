@@ -1331,6 +1331,31 @@ def _cmd_postprocess_particle_flotation(args: argparse.Namespace) -> int:
     return flotation_main(workflow_args)
 
 
+def _cmd_postprocess_gas_contact_summary(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.gas_connectivity import main as gas_main
+
+    workflow_args = [
+        "--input-table",
+        str(args.input_table),
+        "--output-dir",
+        str(args.output_dir),
+        "--radius-sum-A",
+        str(args.radius_sum_A),
+        "--d-column",
+        args.d_column,
+        "--d-range",
+        str(args.d_range[0]),
+        str(args.d_range[1]),
+        "--d-bin-width-A",
+        str(args.d_bin_width_A),
+        "--min-bin-frames",
+        str(args.min_bin_frames),
+    ]
+    for window in args.window or []:
+        workflow_args.extend(["--window", window])
+    return gas_main(workflow_args)
+
+
 
 def _cmd_postprocess_case_scorecard(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.case_comparison import main as case_main
@@ -1427,6 +1452,17 @@ def _add_particle_flotation_postprocess_args(parser: argparse.ArgumentParser) ->
     parser.add_argument("--radial-max-A", type=float, default=80.0)
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--no-plots", action="store_true")
+
+
+def _add_gas_contact_summary_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--input-table", type=Path, required=True, help="Precomputed gas connectivity frame table")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--radius-sum-A", type=float, required=True)
+    parser.add_argument("--d-column", default="d3d_all")
+    parser.add_argument("--d-range", type=float, nargs=2, default=(0.0, 70.0), metavar=("LOW", "HIGH"))
+    parser.add_argument("--d-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--window", action="append", help="Window as name:low:high; may be repeated")
+    parser.add_argument("--min-bin-frames", type=int, default=3)
 
 
 
@@ -2266,6 +2302,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_particle_flotation_postprocess_args(particle_flotation)
     particle_flotation.set_defaults(func=_cmd_postprocess_particle_flotation)
 
+    gas_contact = postprocess_subparsers.add_parser(
+        "gas-contact-summary",
+        help="Summarize gas contact/connectivity around a radius-sum reference",
+    )
+    _add_gas_contact_summary_postprocess_args(gas_contact)
+    gas_contact.set_defaults(func=_cmd_postprocess_gas_contact_summary)
 
     silica_surface = postprocess_subparsers.add_parser(
         "silica-surface",

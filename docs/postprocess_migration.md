@@ -104,6 +104,9 @@ analysis and the first ion-analysis core:
 - `molsimflow.postprocess.particle_flotation`
   - analyzes silica-particle and N2 flotation trajectories from LAMMPS dumps;
   - computes particle lift, slab gap, N2 contact/coverage, radial density, and optional force/velocity summaries.
+- `molsimflow.postprocess.gas_connectivity`
+  - computes gas COM contact-graph metrics under orthorhombic PBC;
+  - summarizes precomputed gas-connectivity frame tables around a radius-sum reference with distance-bin, window, threshold, and transition tables.
 
 The migrated commands intentionally do not provide case-layout defaults such as
 relative trajectory or ion-analysis directories.  Pass every trajectory, data,
@@ -166,6 +169,15 @@ molsimflow postprocess particle-flotation \
   --trajectory dump.lammpstrj \
   --model-summary model_summary.json \
   --output-dir particle_flotation
+```
+
+```bash
+molsimflow postprocess gas-contact-summary \
+  --input-table gas_connectivity_frame_table.csv \
+  --output-dir gas_contact_summary \
+  --radius-sum-A 38 \
+  --d-range 20 60 \
+  --d-bin-width-A 2
 ```
 
 ```bash
