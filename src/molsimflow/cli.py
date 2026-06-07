@@ -1172,6 +1172,58 @@ def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
     return run_fes2d_grid(workflow_args)
 
 
+def _cmd_postprocess_fes2d_batch_manifest(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.fes_analysis import run_fes2d_batch_manifest
+
+    workflow_args = [
+        "--output-manifest",
+        str(args.output_manifest),
+        "--colvar-name",
+        args.colvar_name,
+        "--run-subdir",
+        args.run_subdir,
+        "--fes-name",
+        args.fes_name,
+        "--output-subdir",
+        args.output_subdir,
+        "--prefix-template",
+        args.prefix_template,
+        "--x-range",
+        str(args.x_range[0]),
+        str(args.x_range[1]),
+        "--y-range",
+        str(args.y_range[0]),
+        str(args.y_range[1]),
+        "--max-fes",
+        str(args.max_fes),
+        "--smooth-sigma",
+        str(args.smooth_sigma),
+        "--smooth-valid-threshold",
+        str(args.smooth_valid_threshold),
+        "--contour-levels",
+        str(args.contour_levels),
+        "--dpi",
+        str(args.dpi),
+        "--zero-scope",
+        args.zero_scope,
+        "--missing-plot-value",
+        args.missing_plot_value,
+        "--command-executable",
+        args.command_executable,
+    ]
+    if args.case_manifest is not None:
+        workflow_args.extend(["--case-manifest", str(args.case_manifest)])
+    for case_path_list in args.case_path_list or []:
+        workflow_args.extend(["--case-path-list", case_path_list])
+    if args.write_plots:
+        workflow_args.append("--write-plots")
+    if args.write_comparison:
+        workflow_args.append("--write-comparison")
+    if args.create_dirs:
+        workflow_args.append("--create-dirs")
+    return run_fes2d_batch_manifest(workflow_args)
+
+
 def _cmd_postprocess_fes_convergence(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.fes_analysis import run_fes_convergence
 
@@ -1986,6 +2038,35 @@ def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cmap", default="viridis")
 
 
+def _add_fes2d_batch_manifest_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--case-manifest", type=Path, help="CSV with bias_dir,case_label[,family] columns")
+    input_group.add_argument(
+        "--case-path-list",
+        action="append",
+        help="Plain path-list input as PATH or FAMILY:PATH; may be repeated",
+    )
+    parser.add_argument("--output-manifest", type=Path, required=True)
+    parser.add_argument("--colvar-name", default="COLVAR_tmp")
+    parser.add_argument("--run-subdir", default="fes2D/bins50")
+    parser.add_argument("--fes-name", default="fes-rew.dat")
+    parser.add_argument("--output-subdir", default="fes2d_plot")
+    parser.add_argument("--prefix-template", default="{safe_label}_fes2d")
+    parser.add_argument("--x-range", type=float, nargs=2, default=(20.0, 52.0), metavar=("LOW", "HIGH"))
+    parser.add_argument("--y-range", type=float, nargs=2, default=(50.0, 380.0), metavar=("LOW", "HIGH"))
+    parser.add_argument("--max-fes", type=float, default=200.0)
+    parser.add_argument("--smooth-sigma", type=float, default=0.8)
+    parser.add_argument("--smooth-valid-threshold", type=float, default=0.25)
+    parser.add_argument("--contour-levels", type=int, default=16)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--zero-scope", choices=("window", "all"), default="window")
+    parser.add_argument("--missing-plot-value", choices=("max", "nan"), default="max")
+    parser.add_argument("--write-plots", action="store_true")
+    parser.add_argument("--write-comparison", action="store_true")
+    parser.add_argument("--command-executable", default="molsimflow")
+    parser.add_argument("--create-dirs", action="store_true")
+
+
 def _add_fes_convergence_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", type=Path, required=True, help="CSV with path and optional block/cumulative inputs")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -2579,6 +2660,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes2d_grid_postprocess_args(fes2d_grid)
     fes2d_grid.set_defaults(func=_cmd_postprocess_fes2d_grid)
+
+    fes2d_batch = postprocess_subparsers.add_parser(
+        "fes2d-batch-manifest",
+        help="Prepare a path-explicit manifest for multiple 2D FES grid runs",
+    )
+    _add_fes2d_batch_manifest_postprocess_args(fes2d_batch)
+    fes2d_batch.set_defaults(func=_cmd_postprocess_fes2d_batch_manifest)
 
     fes_convergence = postprocess_subparsers.add_parser(
         "fes-convergence",

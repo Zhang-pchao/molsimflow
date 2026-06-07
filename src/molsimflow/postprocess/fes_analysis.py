@@ -7,6 +7,7 @@ import csv
 import json
 import math
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -70,6 +71,45 @@ class Fes2DGrid:
     y_values: np.ndarray
     free_energy: np.ndarray
     uncertainty: Optional[np.ndarray]
+
+
+@dataclass(frozen=True)
+class Fes2DBatchCaseSpec:
+    """Input metadata for one 2D FES batch case."""
+
+    bias_dir: Path
+    case_label: str
+    family: str = ""
+    dataset_key: str = ""
+    safe_label: str = ""
+    colvar_path: Optional[Path] = None
+    run_dir: Optional[Path] = None
+    fes_file: Optional[Path] = None
+    output_dir: Optional[Path] = None
+
+
+@dataclass(frozen=True)
+class Fes2DBatchConfig:
+    """Path and plotting defaults for 2D FES batch manifest generation."""
+
+    colvar_name: str = "COLVAR_tmp"
+    run_subdir: str = "fes2D/bins50"
+    fes_name: str = "fes-rew.dat"
+    output_subdir: str = "fes2d_plot"
+    prefix_template: str = "{safe_label}_fes2d"
+    x_low: float = 20.0
+    x_high: float = 52.0
+    y_low: float = 50.0
+    y_high: float = 380.0
+    max_fes: float = 200.0
+    smooth_sigma: float = 0.8
+    smooth_valid_threshold: float = 0.25
+    contour_levels: int = 16
+    dpi: int = 300
+    zero_scope: str = "window"
+    missing_plot_value: str = "max"
+    write_plots: bool = False
+    write_comparison: bool = False
 
 
 def _as_float(value: str) -> float:
@@ -151,6 +191,10 @@ def _split_manifest_list(raw: object) -> List[str]:
         return []
     normalized = text.replace("|", ";").replace(",", ";")
     return [item.strip() for item in normalized.split(";") if item.strip()]
+
+
+def _shell_quote(value: object) -> str:
+    return shlex.quote(str(value))
 
 
 def _manifest_path_list(raw: object, base_dir: Path) -> Tuple[Path, ...]:
@@ -249,6 +293,236 @@ def load_fes_convergence_manifest(
     if not specs:
         raise ValueError(f"No FES convergence datasets found in manifest: {path}")
     return specs
+
+
+def safe_file_label(label: str) -> str:
+    """Return a filesystem-friendly label for generated FES outputs."""
+
+    text = str(label).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "case"
+
+
+def infer_case_label_from_path(path: Path, family: str = "") -> str:
+    """Infer a generic case label from a path when no explicit label is given."""
+
+    path = Path(path)
+    parts = [part for part in path.parts if part]
+    base = path.name or (parts[-1] if parts else "case")
+    if base.startswith("bias_") and len(parts) >= 2:
+        base = parts[-2]
+    label = safe_file_label(base).replace("_", "-")
+    return f"{label}-{family}" if family else label
+
+
+def read_fes2d_case_path_list(path: Path, family: str = "") -> List[Fes2DBatchCaseSpec]:
+    """Read a plain text file with one bias directory per non-comment line."""
+
+    specs: List[Fes2DBatchCaseSpec] = []
+    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        bias_dir = Path(line).expanduser()
+        label = infer_case_label_from_path(bias_dir, family=family)
+        specs.append(
+            Fes2DBatchCaseSpec(
+                bias_dir=bias_dir,
+                case_label=label,
+                family=family,
+                dataset_key=safe_file_label(label),
+            )
+        )
+    return specs
+
+
+def load_fes2d_batch_case_manifest(path: Path) -> List[Fes2DBatchCaseSpec]:
+    """Load 2D FES batch cases from a CSV manifest.
+
+    Required column: `bias_dir`. Optional columns are `case_label`, `family`,
+    `dataset_key`, `safe_label`, `colvar_path`, `run_dir`, `fes_file`, and
+    `output_dir`. Relative paths are resolved against the manifest directory.
+    """
+
+    manifest_path = Path(path)
+    base_dir = manifest_path.parent
+    specs: List[Fes2DBatchCaseSpec] = []
+    with manifest_path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"Manifest has no header: {path}")
+        if "bias_dir" not in reader.fieldnames:
+            raise ValueError("2D FES batch manifest missing required column: bias_dir")
+        for index, row in enumerate(reader):
+            bias_dir = _manifest_path(row.get("bias_dir"), base_dir)
+            if bias_dir is None:
+                continue
+            family = str(row.get("family") or "").strip()
+            label = str(row.get("case_label") or "").strip() or infer_case_label_from_path(bias_dir, family=family)
+            dataset_key = str(row.get("dataset_key") or safe_file_label(label) or f"case_{index}").strip()
+            safe_label = str(row.get("safe_label") or safe_file_label(label)).strip()
+            specs.append(
+                Fes2DBatchCaseSpec(
+                    bias_dir=bias_dir,
+                    case_label=label,
+                    family=family,
+                    dataset_key=dataset_key,
+                    safe_label=safe_label,
+                    colvar_path=_manifest_path(row.get("colvar_path"), base_dir),
+                    run_dir=_manifest_path(row.get("run_dir"), base_dir),
+                    fes_file=_manifest_path(row.get("fes_file"), base_dir),
+                    output_dir=_manifest_path(row.get("output_dir"), base_dir),
+                )
+            )
+    if not specs:
+        raise ValueError(f"No 2D FES batch cases found in manifest: {path}")
+    return specs
+
+
+def parse_case_path_list_spec(raw: str) -> Tuple[str, Path]:
+    """Parse `FAMILY:PATH` or `PATH` syntax for plain case-path lists."""
+
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("Empty case-path-list spec")
+    if ":" in text and not re.match(r"^[A-Za-z]:[\\/]", text):
+        family, path = text.split(":", 1)
+        return family.strip(), Path(path.strip())
+    return "", Path(text)
+
+
+def build_fes2d_grid_command(row: Mapping[str, object], executable: str = "molsimflow") -> str:
+    """Build a shell-safe command string for an already prepared manifest row."""
+
+    parts = [
+        executable,
+        "postprocess",
+        "fes2d-grid",
+        "--fes-file",
+        str(row["fes_file"]),
+        "--output-dir",
+        str(row["plot_dir"]),
+        "--x-range",
+        str(row["x_low"]),
+        str(row["x_high"]),
+        "--y-range",
+        str(row["y_low"]),
+        str(row["y_high"]),
+        "--max-fes",
+        str(row["max_fes"]),
+        "--smooth-sigma",
+        str(row["smooth_sigma"]),
+        "--smooth-valid-threshold",
+        str(row["smooth_valid_threshold"]),
+        "--contour-levels",
+        str(row["contour_levels"]),
+        "--dpi",
+        str(row["dpi"]),
+        "--prefix",
+        str(row["prefix"]),
+        "--title",
+        str(row["case_label"]),
+        "--zero-scope",
+        str(row["zero_scope"]),
+        "--missing-plot-value",
+        str(row["missing_plot_value"]),
+    ]
+    if int(row.get("write_plots", 0)):
+        parts.append("--write-plots")
+    if int(row.get("write_comparison", 0)):
+        parts.append("--write-comparison")
+    return " ".join(_shell_quote(part) for part in parts)
+
+
+def prepare_fes2d_batch_manifest(
+    cases: Sequence[Fes2DBatchCaseSpec],
+    output_manifest: Path,
+    *,
+    config: Fes2DBatchConfig = Fes2DBatchConfig(),
+    command_executable: str = "molsimflow",
+    create_dirs: bool = False,
+) -> List[Dict[str, object]]:
+    """Prepare a path-explicit 2D FES batch manifest and command table."""
+
+    rows: List[Dict[str, object]] = []
+    for case in cases:
+        safe_label = case.safe_label or safe_file_label(case.case_label)
+        run_dir = case.run_dir or (case.bias_dir / config.run_subdir)
+        colvar_path = case.colvar_path or (case.bias_dir / config.colvar_name)
+        fes_file = case.fes_file or (run_dir / config.fes_name)
+        plot_dir = case.output_dir or (run_dir / config.output_subdir)
+        prefix = config.prefix_template.format(
+            safe_label=safe_label,
+            dataset_key=case.dataset_key or safe_label,
+            family=case.family,
+            case_label=case.case_label,
+        )
+        if create_dirs:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            plot_dir.mkdir(parents=True, exist_ok=True)
+        row: Dict[str, object] = {
+            "dataset_key": case.dataset_key or safe_label,
+            "family": case.family,
+            "case_label": case.case_label,
+            "safe_label": safe_label,
+            "bias_dir": str(case.bias_dir),
+            "run_dir": str(run_dir),
+            "colvar_tmp": str(colvar_path),
+            "fes_file": str(fes_file),
+            "plot_dir": str(plot_dir),
+            "prefix": prefix,
+            "x_low": config.x_low,
+            "x_high": config.x_high,
+            "y_low": config.y_low,
+            "y_high": config.y_high,
+            "max_fes": config.max_fes,
+            "smooth_sigma": config.smooth_sigma,
+            "smooth_valid_threshold": config.smooth_valid_threshold,
+            "contour_levels": config.contour_levels,
+            "dpi": config.dpi,
+            "zero_scope": config.zero_scope,
+            "missing_plot_value": config.missing_plot_value,
+            "write_plots": int(config.write_plots),
+            "write_comparison": int(config.write_comparison),
+            "bias_dir_exists": int(case.bias_dir.exists()),
+            "colvar_tmp_exists": int(colvar_path.exists()),
+            "fes_file_exists": int(fes_file.exists()),
+        }
+        row["fes2d_grid_command"] = build_fes2d_grid_command(row, executable=command_executable)
+        rows.append(row)
+
+    fieldnames = [
+        "dataset_key",
+        "family",
+        "case_label",
+        "safe_label",
+        "bias_dir",
+        "run_dir",
+        "colvar_tmp",
+        "fes_file",
+        "plot_dir",
+        "prefix",
+        "x_low",
+        "x_high",
+        "y_low",
+        "y_high",
+        "max_fes",
+        "smooth_sigma",
+        "smooth_valid_threshold",
+        "contour_levels",
+        "dpi",
+        "zero_scope",
+        "missing_plot_value",
+        "write_plots",
+        "write_comparison",
+        "bias_dir_exists",
+        "colvar_tmp_exists",
+        "fes_file_exists",
+        "fes2d_grid_command",
+    ]
+    _write_csv_with_fields(Path(output_manifest), rows, fieldnames)
+    return rows
 
 
 def load_fes_curve(
@@ -1619,6 +1893,86 @@ def run_fes_convergence(argv: Optional[Sequence[str]] = None) -> int:
 
     for path in outputs.values():
         print(path)
+    return 0
+
+
+def get_fes2d_batch_manifest_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Build arguments for 2D FES batch manifest generation."""
+
+    parser = argparse.ArgumentParser(description="Prepare a path-explicit 2D FES batch manifest")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--case-manifest", type=Path, help="CSV with bias_dir,case_label[,family] columns")
+    input_group.add_argument(
+        "--case-path-list",
+        action="append",
+        help="Plain path-list input as PATH or FAMILY:PATH; may be repeated",
+    )
+    parser.add_argument("--output-manifest", type=Path, required=True)
+    parser.add_argument("--colvar-name", default="COLVAR_tmp")
+    parser.add_argument("--run-subdir", default="fes2D/bins50")
+    parser.add_argument("--fes-name", default="fes-rew.dat")
+    parser.add_argument("--output-subdir", default="fes2d_plot")
+    parser.add_argument("--prefix-template", default="{safe_label}_fes2d")
+    parser.add_argument("--x-range", type=float, nargs=2, default=(20.0, 52.0), metavar=("LOW", "HIGH"))
+    parser.add_argument("--y-range", type=float, nargs=2, default=(50.0, 380.0), metavar=("LOW", "HIGH"))
+    parser.add_argument("--max-fes", type=float, default=200.0)
+    parser.add_argument("--smooth-sigma", type=float, default=0.8)
+    parser.add_argument("--smooth-valid-threshold", type=float, default=0.25)
+    parser.add_argument("--contour-levels", type=int, default=16)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--zero-scope", choices=("window", "all"), default="window")
+    parser.add_argument("--missing-plot-value", choices=("max", "nan"), default="max")
+    parser.add_argument("--write-plots", action="store_true")
+    parser.add_argument("--write-comparison", action="store_true")
+    parser.add_argument("--command-executable", default="molsimflow")
+    parser.add_argument("--create-dirs", action="store_true")
+    return parser.parse_args(argv)
+
+
+def run_fes2d_batch_manifest(argv: Optional[Sequence[str]] = None) -> int:
+    """Run 2D FES batch manifest generation from CLI-style arguments."""
+
+    args = get_fes2d_batch_manifest_args(argv)
+    try:
+        if args.case_manifest is not None:
+            cases = load_fes2d_batch_case_manifest(args.case_manifest)
+        else:
+            cases = []
+            for raw in args.case_path_list or []:
+                family, path = parse_case_path_list_spec(raw)
+                cases.extend(read_fes2d_case_path_list(path, family=family))
+        config = Fes2DBatchConfig(
+            colvar_name=args.colvar_name,
+            run_subdir=args.run_subdir,
+            fes_name=args.fes_name,
+            output_subdir=args.output_subdir,
+            prefix_template=args.prefix_template,
+            x_low=float(args.x_range[0]),
+            x_high=float(args.x_range[1]),
+            y_low=float(args.y_range[0]),
+            y_high=float(args.y_range[1]),
+            max_fes=float(args.max_fes),
+            smooth_sigma=float(args.smooth_sigma),
+            smooth_valid_threshold=float(args.smooth_valid_threshold),
+            contour_levels=int(args.contour_levels),
+            dpi=int(args.dpi),
+            zero_scope=args.zero_scope,
+            missing_plot_value=args.missing_plot_value,
+            write_plots=bool(args.write_plots or args.write_comparison),
+            write_comparison=bool(args.write_comparison),
+        )
+        rows = prepare_fes2d_batch_manifest(
+            cases,
+            output_manifest=args.output_manifest,
+            config=config,
+            command_executable=args.command_executable,
+            create_dirs=bool(args.create_dirs),
+        )
+    except Exception as exc:
+        print(f"2D FES batch manifest generation failed: {exc}")
+        return 1
+    print(args.output_manifest)
+    print(f"cases={len(rows)}")
     return 0
 
 

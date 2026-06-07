@@ -5,9 +5,11 @@ import math
 import numpy as np
 
 from molsimflow.postprocess.fes_analysis import (
+    Fes2DBatchConfig,
     FesCurveSpec,
     analyze_fes_barriers,
     analyze_fes_convergence,
+    load_fes2d_batch_case_manifest,
     load_curve_manifest,
     load_fes_convergence_manifest,
     load_fes2d_grid,
@@ -15,6 +17,7 @@ from molsimflow.postprocess.fes_analysis import (
     moving_average_smooth,
     normalized_gaussian_smooth_2d,
     parse_window,
+    prepare_fes2d_batch_manifest,
     process_fes2d_grid,
     process_curve,
 )
@@ -253,3 +256,42 @@ def test_fes_convergence_manifest_and_outputs(tmp_path):
         cumulative_rows = list(csv.DictReader(handle))
     assert math.isclose(float(cumulative_rows[0]["trajectory_fraction"]), 0.5)
     assert math.isclose(float(cumulative_rows[1]["trajectory_fraction"]), 1.0)
+
+
+def test_prepare_fes2d_batch_manifest_from_case_manifest(tmp_path):
+    bias_dir = tmp_path / "caseA" / "bias_100_50"
+    bias_dir.mkdir(parents=True)
+    (bias_dir / "COLVAR_tmp").write_text("#! FIELDS time d bridge\n")
+    manifest = tmp_path / "cases.csv"
+    with manifest.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["bias_dir", "case_label", "family"])
+        writer.writeheader()
+        writer.writerow({"bias_dir": "caseA/bias_100_50", "case_label": "Case A", "family": "S"})
+
+    cases = load_fes2d_batch_case_manifest(manifest)
+    rows = prepare_fes2d_batch_manifest(
+        cases,
+        tmp_path / "batch.csv",
+        config=Fes2DBatchConfig(
+            output_subdir="plots",
+            prefix_template="{safe_label}_d3d_bridge",
+            x_low=1.0,
+            x_high=2.0,
+            y_low=3.0,
+            y_high=4.0,
+            write_plots=True,
+        ),
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["safe_label"] == "case_a"
+    assert row["colvar_tmp_exists"] == 1
+    assert row["fes_file"].endswith("caseA/bias_100_50/fes2D/bins50/fes-rew.dat")
+    assert row["plot_dir"].endswith("caseA/bias_100_50/fes2D/bins50/plots")
+    assert "--x-range 1.0 2.0" in row["fes2d_grid_command"]
+    assert "--write-plots" in row["fes2d_grid_command"]
+
+    with (tmp_path / "batch.csv").open() as handle:
+        written = list(csv.DictReader(handle))
+    assert written[0]["case_label"] == "Case A"

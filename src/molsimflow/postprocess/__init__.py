@@ -28,7 +28,14 @@ from molsimflow.postprocess.contact_graph import (
 )
 from molsimflow.postprocess.coupling import CouplingConfig
 from molsimflow.postprocess.events import TransitionEventConfig
-from molsimflow.postprocess.fes_analysis import Fes2DGrid, FesConvergenceSpec, FesCurve, FesCurveSpec
+from molsimflow.postprocess.fes_analysis import (
+    Fes2DBatchCaseSpec,
+    Fes2DBatchConfig,
+    Fes2DGrid,
+    FesConvergenceSpec,
+    FesCurve,
+    FesCurveSpec,
+)
 from molsimflow.postprocess.gas_connectivity import GasContactConfig
 from molsimflow.postprocess.hbond_network import (
     HbondEdgeRow,
@@ -84,6 +91,8 @@ __all__ = [
     "ContactGraphConfig",
     "CouplingConfig",
     "DescriptorTableSpec",
+    "Fes2DBatchCaseSpec",
+    "Fes2DBatchConfig",
     "Fes2DGrid",
     "FesConvergenceSpec",
     "FesCurve",

@@ -53,6 +53,7 @@ molsimflow postprocess ion-water-coupling --feature-table transition_feature_tab
 molsimflow postprocess bridge-ion-occupancy --positions tracked_bridge_ion_positions.csv --gap-table coalescence_state_table.csv --output-dir bridge_ion_descriptors
 molsimflow postprocess fes-barriers --curve fes-rew.dat "case A" tio2 --output-dir fes_barrier_results
 molsimflow postprocess fes2d-grid --fes-file fes-rew-2d.dat --output-dir fes2d_grid --x-range 20 52 --y-range 50 380
+molsimflow postprocess fes2d-batch-manifest --case-manifest fes2d_cases.csv --output-manifest fes2d_batch_manifest.csv
 molsimflow postprocess fes-convergence --manifest fes_convergence_manifest.csv --output-dir fes_convergence --window-low 20 --window-high 52
 molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results
 molsimflow plot line --input fes_processed_curves.csv --x-column cv --y-column free_energy_smooth_zeroed_kj_mol --group-column label --output fes_curves.png
