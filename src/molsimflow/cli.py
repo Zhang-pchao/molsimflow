@@ -1356,6 +1356,94 @@ def _cmd_postprocess_gas_contact_summary(args: argparse.Namespace) -> int:
     return gas_main(workflow_args)
 
 
+def _cmd_postprocess_bridge_electrostatics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.bridge_electrostatics import main as bridge_electrostatics_main
+
+    workflow_args = [
+        "--ion-table",
+        str(args.ion_table),
+        "--output-dir",
+        str(args.output_dir),
+        "--case-label",
+        args.case_label,
+        "--frame-column",
+        args.frame_column,
+        "--time-column",
+        args.time_column,
+        "--species-column",
+        args.species_column,
+        "--charge-column",
+        args.charge_column,
+        "--s-column",
+        args.s_column,
+        "--rho-column",
+        args.rho_column,
+        "--gap-column",
+        args.gap_column,
+        "--profile-s-min-A",
+        str(args.profile_s_min_A),
+        "--profile-s-max-A",
+        str(args.profile_s_max_A),
+        "--profile-bin-width-A",
+        str(args.profile_bin_width_A),
+        "--profile-rho-max-A",
+        str(args.profile_rho_max_A),
+        "--core-s-half-width-A",
+        str(args.core_s_half_width_A),
+        "--core-rho-max-A",
+        str(args.core_rho_max_A),
+        "--surface-shell-width-A",
+        str(args.surface_shell_width_A),
+        "--shell-s-inner-A",
+        str(args.shell_s_inner_A),
+        "--shell-s-outer-A",
+        str(args.shell_s_outer_A),
+        "--shell-rho-max-A",
+        str(args.shell_rho_max_A),
+        "--gap-bin-width-A",
+        str(args.gap_bin_width_A),
+        "--epsilon-r",
+        str(args.epsilon_r),
+        "--gap-mode",
+        args.gap_mode,
+        "--dynamic-gap-column",
+        args.dynamic_gap_column,
+        "--d3d-column",
+        args.d3d_column,
+        "--nominal-radius-a-A",
+        str(args.nominal_radius_a_A),
+        "--nominal-radius-b-A",
+        str(args.nominal_radius_b_A),
+        "--strict-gap-max-tolerance-A",
+        str(args.strict_gap_max_tolerance_A),
+    ]
+    if args.frame_table is not None:
+        workflow_args.extend(["--frame-table", str(args.frame_table)])
+    for species in args.species_order or []:
+        workflow_args.extend(["--species-order", species])
+    if args.box_lengths_A is not None:
+        workflow_args.extend(["--box-lengths-A", *(str(value) for value in args.box_lengths_A)])
+    if args.derive_bridge_coordinates:
+        workflow_args.append("--derive-bridge-coordinates")
+    if args.force_derive_bridge_coordinates:
+        workflow_args.append("--force-derive-bridge-coordinates")
+    if args.strict_gap_precontact_only:
+        workflow_args.append("--strict-gap-precontact-only")
+    if args.strict_gap_max_A is not None:
+        workflow_args.extend(["--strict-gap-max-A", str(args.strict_gap_max_A)])
+    if args.start_time_ns is not None:
+        workflow_args.extend(["--start-time-ns", str(args.start_time_ns)])
+    if args.end_time_ns is not None:
+        workflow_args.extend(["--end-time-ns", str(args.end_time_ns)])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.disjoining_area_A2 is not None:
+        workflow_args.extend(["--disjoining-area-A2", str(args.disjoining_area_A2)])
+    if args.no_coupling:
+        workflow_args.append("--no-coupling")
+    return bridge_electrostatics_main(workflow_args)
+
+
 
 def _cmd_postprocess_case_scorecard(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.case_comparison import main as case_main
@@ -1463,6 +1551,49 @@ def _add_gas_contact_summary_postprocess_args(parser: argparse.ArgumentParser) -
     parser.add_argument("--d-bin-width-A", type=float, default=2.0)
     parser.add_argument("--window", action="append", help="Window as name:low:high; may be repeated")
     parser.add_argument("--min-bin-frames", type=int, default=3)
+
+
+def _add_bridge_electrostatics_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ion-table", type=Path, required=True, help="Long CSV with ion positions/species/charge")
+    parser.add_argument("--frame-table", type=Path, help="Optional frame-level bridge geometry/FES table")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--case-label", default="")
+    parser.add_argument("--frame-column", default="global_frame")
+    parser.add_argument("--time-column", default="time_ns")
+    parser.add_argument("--species-column", default="species_canonical")
+    parser.add_argument("--charge-column", default="species_charge_e")
+    parser.add_argument("--s-column", default="bridge_axis_s_A")
+    parser.add_argument("--rho-column", default="bridge_axis_rho_A")
+    parser.add_argument("--gap-column", default="analysis_surface_gap_A")
+    parser.add_argument("--species-order", action="append", help="Species order entry; may be repeated or comma separated")
+    parser.add_argument("--profile-s-min-A", type=float, default=-35.0)
+    parser.add_argument("--profile-s-max-A", type=float, default=35.0)
+    parser.add_argument("--profile-bin-width-A", type=float, default=1.0)
+    parser.add_argument("--profile-rho-max-A", type=float, default=10.0)
+    parser.add_argument("--core-s-half-width-A", type=float, default=8.0)
+    parser.add_argument("--core-rho-max-A", type=float, default=6.5)
+    parser.add_argument("--surface-shell-width-A", type=float, default=4.0)
+    parser.add_argument("--shell-s-inner-A", type=float, default=8.0)
+    parser.add_argument("--shell-s-outer-A", type=float, default=22.0)
+    parser.add_argument("--shell-rho-max-A", type=float, default=10.0)
+    parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--epsilon-r", type=float, default=78.5)
+    parser.add_argument("--box-lengths-A", type=float, nargs=3)
+    parser.add_argument("--derive-bridge-coordinates", action="store_true")
+    parser.add_argument("--force-derive-bridge-coordinates", action="store_true")
+    parser.add_argument("--gap-mode", choices=["asis", "dynamic", "nominal"], default="asis")
+    parser.add_argument("--dynamic-gap-column", default="dynamic_surface_gap_est_A")
+    parser.add_argument("--d3d-column", default="d3d_all")
+    parser.add_argument("--nominal-radius-a-A", type=float, default=19.0)
+    parser.add_argument("--nominal-radius-b-A", type=float, default=19.0)
+    parser.add_argument("--strict-gap-precontact-only", action="store_true")
+    parser.add_argument("--strict-gap-max-A", type=float)
+    parser.add_argument("--strict-gap-max-tolerance-A", type=float, default=0.5)
+    parser.add_argument("--start-time-ns", type=float)
+    parser.add_argument("--end-time-ns", type=float)
+    parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--disjoining-area-A2", type=float)
+    parser.add_argument("--no-coupling", action="store_true")
 
 
 
@@ -2308,6 +2439,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_gas_contact_summary_postprocess_args(gas_contact)
     gas_contact.set_defaults(func=_cmd_postprocess_gas_contact_summary)
+
+    bridge_electrostatics = postprocess_subparsers.add_parser(
+        "bridge-electrostatics",
+        help="Compute bridge-centered charge profile, EDL, and electrostatic-coupling proxies",
+    )
+    _add_bridge_electrostatics_postprocess_args(bridge_electrostatics)
+    bridge_electrostatics.set_defaults(func=_cmd_postprocess_bridge_electrostatics)
 
     silica_surface = postprocess_subparsers.add_parser(
         "silica-surface",

@@ -6,6 +6,10 @@ from molsimflow.postprocess.bubble_surface_distance import (
     FrameDistanceResult,
 )
 from molsimflow.postprocess.bridge_descriptors import BridgeCylinder
+from molsimflow.postprocess.bridge_electrostatics import (
+    BridgeElectrostaticsConfig,
+    analyze_bridge_electrostatics,
+)
 from molsimflow.postprocess.bridge_film import BridgeFilmConfig
 from molsimflow.postprocess.bridge_water_dynamics import BridgeWaterDynamicsConfig, TraceInputSpec
 from molsimflow.postprocess.bridge_water_dewetting import BridgeWaterDewettingConfig
@@ -67,6 +71,7 @@ from molsimflow.postprocess.water_orientation import (
 __all__ = [
     "AtomRecord",
     "BridgeCylinder",
+    "BridgeElectrostaticsConfig",
     "BridgeFilmConfig",
     "BridgeWaterDynamicsConfig",
     "BridgeWaterDewettingConfig",
@@ -101,6 +106,7 @@ __all__ = [
     "UnionFind",
     "WaterOrientationSummaryConfig",
     "angle_to_axis_deg",
+    "analyze_bridge_electrostatics",
     "assign_hydrogen_to_nearest_oxygen",
     "build_seed_escape_events",
     "build_contact_graph_summary",

@@ -40,6 +40,7 @@ molsimflow postprocess plumed-cv-diagnostics --run-dir run --output-dir cv_diagn
 molsimflow postprocess silica-surface --case model:model.xyz --output-dir silica_surface_summary --no-plots
 molsimflow postprocess particle-flotation --trajectory dump.lammpstrj --model-summary model_summary.json --output-dir particle_flotation
 molsimflow postprocess gas-contact-summary --input-table gas_connectivity_frame_table.csv --output-dir gas_contact_summary --radius-sum-A 38
+molsimflow postprocess bridge-electrostatics --ion-table bridge_species_position_table.csv --frame-table bridge_microstate_frame_table.csv --output-dir bridge_electrostatics
 molsimflow postprocess ion-species --traj run.lammpstrj --output-dir ion_analysis_results
 molsimflow postprocess ion-z-distribution --species-statistics ion_analysis_results/species_statistics.txt --h3o-file ion_analysis_results/solution_bulk_h3o.xyz
 molsimflow postprocess bridge-water-density --input coalescence_state_table.csv --output-dir bridge_water_descriptors
