@@ -18,13 +18,15 @@ public repository does not record private absolute paths.
 - `gas_connectivity_validation` / `radius_sum_contact_validation`: reusable gas contact-graph metrics and radius-sum summary tables migrated into `molsimflow.postprocess.gas_connectivity` with CLI `molsimflow postprocess gas-contact-summary`.
 - `bridge_electrostatics_edl` / `bridge_electrostatic_coupling`: reusable bridge-axis charge profile, Poisson proxy, gap-binned EDL summaries, and prepared-trace charge-coupling descriptors migrated into `molsimflow.postprocess.bridge_electrostatics` with CLI `molsimflow postprocess bridge-electrostatics`; hardcoded case discovery, legacy-profile lookup, scheduler submission, and publication plotting remain out of the public API.
 
-## Recent Reusable Candidates Still Pending
+## Closed Or Future-Adapter Only
 
 - Related 2D FES reweight execution wrappers: manifest generation is migrated; actual reweight driver execution and scheduler submission should stay as explicit workflow scripts/templates.
 - Cumulative reweight execution scripts: command-table planning is migrated; actually running external reweight drivers should remain an explicit workflow script or scheduler job.
-- `merge_gas_connectivity_summary`: keep 2x5 aggregation, figure styling, and manuscript-language summary as a case-specific workflow adapter unless a broader multi-case manifest need appears.
+- `merge_gas_connectivity_summary`: closed as a fixed 2 x 5 manuscript aggregation and figure layer.  Reusable frame metrics and radius-sum summaries are already migrated.
 - `bridge_electrostatics_edl_from_traces`: optional future workflow adapter only.  The core prepared-table electrostatics logic is migrated; the trace adapter should remain path-explicit if it is added later.
-- `analyze_hcl_event_aligned_sequence` and same-gap mechanism audit scripts: compare against existing `events`, `coupling`, and `case_comparison` modules before adding new APIs.
+- `analyze_hcl_event_aligned_sequence` and same-gap mechanism audit scripts: closed as fixed-input audit/publication packages.  Generic event-aligned profiles, coupling, case comparison, and gap-binned summaries are already covered by existing package modules.
+
+See `docs/recent_md_postprocess_completion_audit.md` for the completion audit.
 
 ## Mostly Case-Specific Or Publication Layers
 
