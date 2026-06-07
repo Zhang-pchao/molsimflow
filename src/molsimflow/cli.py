@@ -1124,6 +1124,138 @@ def _cmd_postprocess_fes_barriers(args: argparse.Namespace) -> int:
     return fes_main(workflow_args)
 
 
+
+def _cmd_postprocess_silica_surface(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.silica_surface import main as silica_surface_main
+
+    workflow_args = [
+        "--output-dir",
+        str(args.output_dir),
+        "--c-h-cutoff-A",
+        str(args.c_h_cutoff_A),
+        "--o-h-cutoff-A",
+        str(args.o_h_cutoff_A),
+    ]
+    if args.manifest is not None:
+        workflow_args.extend(["--manifest", str(args.manifest)])
+    for case in args.case or []:
+        workflow_args.extend(["--case", case])
+    if args.figure_dir is not None:
+        workflow_args.extend(["--figure-dir", str(args.figure_dir)])
+    if args.reference_case:
+        workflow_args.extend(["--reference-case", args.reference_case])
+    if args.target_case:
+        workflow_args.extend(["--target-case", args.target_case])
+    if args.comparison_label:
+        workflow_args.extend(["--comparison-label", args.comparison_label])
+    if args.side_split_z_A is not None:
+        workflow_args.extend(["--side-split-z-A", str(args.side_split_z_A)])
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return silica_surface_main(workflow_args)
+
+
+def _cmd_postprocess_plumed_cv_diagnostics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.plumed_cv_diagnostics import main as diagnostics_main
+
+    workflow_args = [
+        "--run-dir",
+        str(args.run_dir),
+        "--output-dir",
+        str(args.output_dir),
+        "--cv-kind",
+        args.cv_kind,
+        "--colvar-name",
+        args.colvar_name,
+        "--hills-name",
+        args.hills_name,
+        "--plumed-name",
+        args.plumed_name,
+        "--trajectory-name",
+        args.trajectory_name,
+        "--fs-per-step",
+        str(args.fs_per_step),
+        "--hard-contact-cutoff-A",
+        str(args.hard_contact_cutoff_A),
+        "--colvar-time-tolerance-ps",
+        str(args.colvar_time_tolerance_ps),
+        "--dpi",
+        str(args.dpi),
+    ]
+    if args.case_label:
+        workflow_args.extend(["--case-label", args.case_label])
+    if args.target_cv:
+        workflow_args.extend(["--target-cv", args.target_cv])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    if args.skip_last_data_line:
+        workflow_args.append("--skip-last-data-line")
+    return diagnostics_main(workflow_args)
+
+
+def _cmd_postprocess_particle_flotation(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.particle_flotation import main as flotation_main
+
+    workflow_args = [
+        "--output-dir",
+        str(args.output_dir),
+        "--timestep-ps",
+        str(args.timestep_ps),
+        "--contact-shell-A",
+        str(args.contact_shell_A),
+        "--coverage-probe-radius-A",
+        str(args.coverage_probe_radius_A),
+        "--coverage-z-bins",
+        str(args.coverage_z_bins),
+        "--coverage-phi-bins",
+        str(args.coverage_phi_bins),
+        "--n2-volume-voxel-A",
+        str(args.n2_volume_voxel_A),
+        "--n2-volume-probe-radius-A",
+        str(args.n2_volume_probe_radius_A),
+        "--radial-bin-width-A",
+        str(args.radial_bin_width_A),
+        "--radial-max-A",
+        str(args.radial_max_A),
+        "--dpi",
+        str(args.dpi),
+    ]
+    for trajectory in args.trajectory or []:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for force_dump in args.force_dump or []:
+        workflow_args.extend(["--force-dump", str(force_dump)])
+    for velocity_dump in args.velocity_dump or []:
+        workflow_args.extend(["--velocity-dump", str(velocity_dump)])
+    for type_map in args.type_map or []:
+        workflow_args.extend(["--type-map", type_map])
+    if args.model_summary is not None:
+        workflow_args.extend(["--model-summary", str(args.model_summary)])
+    if args.slab_range is not None:
+        workflow_args.extend(["--slab-range", args.slab_range])
+    if args.particle_range is not None:
+        workflow_args.extend(["--particle-range", args.particle_range])
+    if args.n2_range is not None:
+        workflow_args.extend(["--n2-range", args.n2_range])
+    if args.particle_radius_A is not None:
+        workflow_args.extend(["--particle-radius-A", str(args.particle_radius_A)])
+    if args.figure_dir is not None:
+        workflow_args.extend(["--figure-dir", str(args.figure_dir)])
+    if args.start_time_ps is not None:
+        workflow_args.extend(["--start-time-ps", str(args.start_time_ps)])
+    if args.end_time_ps is not None:
+        workflow_args.extend(["--end-time-ps", str(args.end_time_ps)])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.keep_duplicate_steps:
+        workflow_args.append("--keep-duplicate-steps")
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return flotation_main(workflow_args)
+
+
+
 def _cmd_postprocess_case_scorecard(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.case_comparison import main as case_main
 
@@ -1147,6 +1279,79 @@ def _cmd_postprocess_case_scorecard(args: argparse.Namespace) -> int:
     if args.correlate is not None:
         workflow_args.extend(["--correlate", args.correlate])
     return case_main(workflow_args)
+
+
+
+def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
+    input_group.add_argument(
+        "--case",
+        action="append",
+        help="Case spec as LABEL:XYZ_PATH[:SURFACE_ATOM_COUNT]; may be repeated",
+    )
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--figure-dir", type=Path)
+    parser.add_argument("--reference-case")
+    parser.add_argument("--target-case")
+    parser.add_argument("--comparison-label", default="")
+    parser.add_argument("--side-split-z-A", type=float)
+    parser.add_argument("--c-h-cutoff-A", type=float, default=1.25)
+    parser.add_argument("--o-h-cutoff-A", type=float, default=1.25)
+    parser.add_argument("--no-plots", action="store_true")
+
+
+def _add_plumed_cv_diagnostics_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-dir", type=Path, required=True, help="Directory containing COLVAR/HILLS/in.plumed")
+    parser.add_argument("--output-dir", type=Path, required=True, help="Directory for diagnostic outputs")
+    parser.add_argument("--case-label", default="")
+    parser.add_argument("--cv-kind", choices=["auto", "nfilm", "cgs", "footprint", "dz", "sum_cn"], default="auto")
+    parser.add_argument("--target-cv", help="Override target CV column for generic diagnostics")
+    parser.add_argument("--colvar-name", default="COLVAR")
+    parser.add_argument("--hills-name", default="HILLS")
+    parser.add_argument("--plumed-name", default="in.plumed")
+    parser.add_argument("--trajectory-name", default="bubble_1k.lammpstrj")
+    parser.add_argument("--fs-per-step", type=float, default=1.0)
+    parser.add_argument("--hard-contact-cutoff-A", type=float, default=6.0)
+    parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--colvar-time-tolerance-ps", type=float, default=0.002)
+    parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument(
+        "--skip-last-data-line",
+        action="store_true",
+        help="Drop the final parsed COLVAR row while a run is still writing",
+    )
+
+
+def _add_particle_flotation_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--trajectory", type=Path, action="append", required=True)
+    parser.add_argument("--force-dump", type=Path, action="append")
+    parser.add_argument("--velocity-dump", type=Path, action="append")
+    parser.add_argument("--model-summary", type=Path)
+    parser.add_argument("--slab-range")
+    parser.add_argument("--particle-range")
+    parser.add_argument("--n2-range")
+    parser.add_argument("--type-map", action="append", help="LAMMPS type mapping such as 1=H")
+    parser.add_argument("--particle-radius-A", type=float)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--figure-dir", type=Path)
+    parser.add_argument("--timestep-ps", type=float, default=0.0005)
+    parser.add_argument("--start-time-ps", type=float)
+    parser.add_argument("--end-time-ps", type=float)
+    parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--keep-duplicate-steps", action="store_true")
+    parser.add_argument("--contact-shell-A", type=float, default=5.0)
+    parser.add_argument("--coverage-probe-radius-A", type=float, default=2.0)
+    parser.add_argument("--coverage-z-bins", type=int, default=8)
+    parser.add_argument("--coverage-phi-bins", type=int, default=16)
+    parser.add_argument("--n2-volume-voxel-A", type=float, default=3.0)
+    parser.add_argument("--n2-volume-probe-radius-A", type=float, default=3.0)
+    parser.add_argument("--radial-bin-width-A", type=float, default=2.0)
+    parser.add_argument("--radial-max-A", type=float, default=80.0)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--no-plots", action="store_true")
+
 
 
 def _add_centroid_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -1934,6 +2139,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_coalescence_state_postprocess_args(coalescence_state)
     coalescence_state.set_defaults(func=_cmd_postprocess_coalescence_state)
+
+    plumed_cv_diagnostics = postprocess_subparsers.add_parser(
+        "plumed-cv-diagnostics",
+        help="Diagnose PLUMED CV sampling from COLVAR/HILLS and optional geometry checks",
+    )
+    _add_plumed_cv_diagnostics_postprocess_args(plumed_cv_diagnostics)
+    plumed_cv_diagnostics.set_defaults(func=_cmd_postprocess_plumed_cv_diagnostics)
+
+
+    particle_flotation = postprocess_subparsers.add_parser(
+        "particle-flotation",
+        help="Analyze silica-particle flotation and N2 coverage from LAMMPS dumps",
+    )
+    _add_particle_flotation_postprocess_args(particle_flotation)
+    particle_flotation.set_defaults(func=_cmd_postprocess_particle_flotation)
+
+
+    silica_surface = postprocess_subparsers.add_parser(
+        "silica-surface",
+        help="Analyze silica surface CH3/OH terminations from extended XYZ models",
+    )
+    _add_silica_surface_postprocess_args(silica_surface)
+    silica_surface.set_defaults(func=_cmd_postprocess_silica_surface)
 
     ion_species = postprocess_subparsers.add_parser(
         "ion-species",

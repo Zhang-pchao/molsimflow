@@ -91,6 +91,17 @@ analysis and the first ion-analysis core:
   - joins case-level descriptor tables through explicit CSV manifests;
   - computes target-minus-reference case deltas;
   - ranks descriptor correlations against a selected scorecard target.
+- `molsimflow.postprocess.plumed_cv_diagnostics`
+  - reads PLUMED COLVAR/HILLS and generated PLUMED definitions;
+  - summarizes CV ranges, duplicate headers, bias columns, and physical checks;
+  - optionally validates simple geometry against selected LAMMPS dump frames.
+- `molsimflow.postprocess.silica_surface`
+  - reads extended XYZ silica-surface models;
+  - infers fixed surface atoms from explicit counts or requested-count metadata;
+  - summarizes CH3/OH terminations, side splits, densities, warnings, and comparisons.
+- `molsimflow.postprocess.particle_flotation`
+  - analyzes silica-particle and N2 flotation trajectories from LAMMPS dumps;
+  - computes particle lift, slab gap, N2 contact/coverage, radial density, and optional force/velocity summaries.
 
 The migrated commands intentionally do not provide case-layout defaults such as
 relative trajectory or ion-analysis directories.  Pass every trajectory, data,
@@ -132,6 +143,27 @@ molsimflow postprocess coalescence-state \
   --colvar-post COLVAR_POST \
   --bubble-evolution data_bubble_evolution.txt \
   --output-dir coalescence_state
+```
+
+```bash
+molsimflow postprocess plumed-cv-diagnostics \
+  --run-dir run \
+  --output-dir cv_diagnostics \
+  --cv-kind auto
+```
+
+```bash
+molsimflow postprocess silica-surface \
+  --case model:model.xyz \
+  --output-dir silica_surface_summary \
+  --no-plots
+```
+
+```bash
+molsimflow postprocess particle-flotation \
+  --trajectory dump.lammpstrj \
+  --model-summary model_summary.json \
+  --output-dir particle_flotation
 ```
 
 ```bash

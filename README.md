@@ -36,6 +36,9 @@ molsimflow plumed n2-com --structure model.xyz --with-surface --surface-element 
 molsimflow postprocess centroids --traj_file run.lammpstrj --output bubble_centroids.txt --disable_ions
 molsimflow postprocess bubble-surface-distance --traj_file run.lammpstrj --output bubble_surface_distance.txt
 molsimflow postprocess coalescence-state --colvar COLVAR --output-dir coalescence_state
+molsimflow postprocess plumed-cv-diagnostics --run-dir run --output-dir cv_diagnostics
+molsimflow postprocess silica-surface --case model:model.xyz --output-dir silica_surface_summary --no-plots
+molsimflow postprocess particle-flotation --trajectory dump.lammpstrj --model-summary model_summary.json --output-dir particle_flotation
 molsimflow postprocess ion-species --traj run.lammpstrj --output-dir ion_analysis_results
 molsimflow postprocess ion-z-distribution --species-statistics ion_analysis_results/species_statistics.txt --h3o-file ion_analysis_results/solution_bulk_h3o.xyz
 molsimflow postprocess bridge-water-density --input coalescence_state_table.csv --output-dir bridge_water_descriptors

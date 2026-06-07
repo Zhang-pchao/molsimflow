@@ -64,6 +64,9 @@ These legacy areas have first-pass engineered replacements:
   - water-orientation geometry and explicit sample-table summaries;
   - 1D FES processing and barrier summaries;
   - case scorecards, case-pair deltas, and descriptor correlations.
+  - PLUMED CV diagnostic summaries for COLVAR/HILLS and optional dump geometry checks;
+  - silica-surface CH3/OH termination summaries from extended XYZ models;
+  - silica-particle flotation/N2 coverage summaries from LAMMPS dump trajectories.
 - plotting/config:
   - generic CSV-driven line, scatter, and heatmap plots;
   - external workflow config helper;
