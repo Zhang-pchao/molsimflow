@@ -157,6 +157,15 @@ molsimflow postprocess plumed-cv-diagnostics \
   --cv-kind auto
 ```
 
+For coupled CVs, request one or more phase-plane maps. Each pair produces a
+total-bias-colored map and a time-colored map:
+
+```bash
+molsimflow postprocess plumed-cv-diagnostics \
+  --run-dir run --output-dir cv_diagnostics \
+  --phase-plane sum_cn.sum nads_total
+```
+
 ```bash
 molsimflow postprocess silica-surface \
   --case model:model.xyz \
@@ -334,6 +343,34 @@ molsimflow postprocess fes-barriers \
   --curve fes-rew.dat "case A" tio2 \
   --output-dir fes_barrier_results \
   --barrier-window contact:0:5
+```
+
+Direct OPES-style reweighting can combine restart segments and produce 1D and
+2D projections:
+
+```bash
+molsimflow postprocess fes-reweight \
+  --run-dir run \
+  --colvar segment_1/COLVAR \
+  --colvar segment_2/COLVAR \
+  --hills segment_1/HILLS \
+  --hills segment_2/HILLS \
+  --cv sum_cn.sum \
+  --pair sum_cn.sum foot_total \
+  --bias opes.bias \
+  --bias opes_e.bias
+```
+
+Printed CV traces from multiple cases can be compared with reconstructed
+segment times when `in.plumed`, `lmp.out`, and a trajectory dump are available:
+
+```bash
+molsimflow postprocess sphere-cv-compare \
+  --case sphere15=case15 \
+  --case sphere17=case17 \
+  --output-dir sphere_cv_compare \
+  --cv foot_total \
+  --cv sum_cn.sum
 ```
 
 ```bash

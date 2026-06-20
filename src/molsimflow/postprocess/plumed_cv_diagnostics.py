@@ -82,6 +82,7 @@ class DiagnosticConfig:
     make_plots: bool = True
     dpi: int = 180
     skip_last_data_line: bool = False
+    phase_planes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,18 @@ def resolve_target_cv(table: PlumedTable, cv_kind: str, requested: Optional[str]
     if not table.has(target):
         raise KeyError(f"Missing target CV column {target!r} in {table.path}")
     return target
+
+
+def validate_phase_planes(
+    table: PlumedTable,
+    phase_planes: Sequence[tuple[str, str]],
+) -> None:
+    """Validate requested phase-plane columns before writing diagnostics."""
+
+    for x_column, y_column in phase_planes:
+        missing = [column for column in (x_column, y_column) if not table.has(column)]
+        if missing:
+            raise KeyError(f"Missing phase-plane column(s) {missing!r} in {table.path}")
 
 
 def cv_columns(table: PlumedTable) -> list[str]:
@@ -773,6 +786,43 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
 
 
+def _plot_phase_plane(
+    plt,
+    output_dir: Path,
+    x_column: str,
+    y_column: str,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    color_values: np.ndarray,
+    color_name: str,
+    color_label: str,
+    dpi: int,
+) -> Path:
+    mask = np.isfinite(x_values) & np.isfinite(y_values) & np.isfinite(color_values)
+    fig, ax = plt.subplots(figsize=(7.2, 5.8), dpi=dpi)
+    scatter = ax.scatter(
+        x_values[mask],
+        y_values[mask],
+        c=color_values[mask],
+        s=4,
+        alpha=0.5,
+        cmap="viridis",
+        linewidths=0,
+        rasterized=True,
+    )
+    ax.set_xlabel(x_column)
+    ax.set_ylabel(y_column)
+    ax.set_title(f"{x_column} vs {y_column} colored by {color_label}")
+    fig.colorbar(scatter, ax=ax, label=color_label)
+    out = output_dir / (
+        f"phase_plane_{_safe_filename(x_column)}_vs_{_safe_filename(y_column)}"
+        f"_by_{color_name}.png"
+    )
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    return out
+
+
 def make_plots(
     output_dir: Path,
     table: PlumedTable,
@@ -780,6 +830,7 @@ def make_plots(
     target: str,
     geometry_rows: Sequence[Mapping[str, object]],
     dpi: int,
+    phase_planes: Sequence[tuple[str, str]] = (),
 ) -> list[Path]:
     plt = _load_matplotlib()
     written: list[Path] = []
@@ -828,6 +879,40 @@ def make_plots(
         fig.savefig(out, bbox_inches="tight")
         plt.close(fig)
         written.append(out)
+
+    for x_column, y_column in phase_planes:
+        x_values = table.column(x_column)
+        y_values = table.column(y_column)
+        if total_bias is not None:
+            written.append(
+                _plot_phase_plane(
+                    plt,
+                    output_dir,
+                    x_column,
+                    y_column,
+                    x_values,
+                    y_values,
+                    total_bias,
+                    "bias_total",
+                    "opes.bias + opes_e.bias",
+                    dpi,
+                )
+            )
+        written.append(
+            _plot_phase_plane(
+                plt,
+                output_dir,
+                x_column,
+                y_column,
+                x_values,
+                y_values,
+                time,
+                "time",
+                "Time (ps)",
+                dpi,
+            )
+        )
+
     columns = cv_columns(table)
     if len(columns) >= 2:
         corr = np.asarray(
@@ -971,6 +1056,7 @@ def run_diagnostics(config: DiagnosticConfig) -> DiagnosticResult:
     hills = read_plumed_table(hills_path, skip_last_data_line=False) if hills_path.exists() else None
     cv_kind = infer_cv_kind(colvar, config.cv_kind)
     target = resolve_target_cv(colvar, cv_kind, config.target_cv)
+    validate_phase_planes(colvar, config.phase_planes)
     definitions = parse_plumed_definitions(config.run_dir / config.plumed_name)
 
     clean_rows = colvar.data.tolist()
@@ -1048,7 +1134,15 @@ def run_diagnostics(config: DiagnosticConfig) -> DiagnosticResult:
     )
     plot_paths: list[Path] = []
     if config.make_plots:
-        plot_paths = make_plots(config.output_dir, colvar, cv_kind, target, geometry_rows, config.dpi)
+        plot_paths = make_plots(
+            config.output_dir,
+            colvar,
+            cv_kind,
+            target,
+            geometry_rows,
+            config.dpi,
+            config.phase_planes,
+        )
     report_path = config.output_dir / "analysis_report.md"
     write_report(report_path, config, cv_kind, target, colvar, hills, summary_rows, checks, geometry_rows, plot_paths)
     return DiagnosticResult(
@@ -1078,6 +1172,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
+        "--phase-plane",
+        action="append",
+        nargs=2,
+        metavar=("X_COLUMN", "Y_COLUMN"),
+        help="Plot X_COLUMN versus Y_COLUMN colored by total bias and time; may be repeated",
+    )
+    parser.add_argument(
         "--skip-last-data-line",
         action="store_true",
         help="Drop the final parsed COLVAR data row, useful while COLVAR is still being written",
@@ -1105,6 +1206,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             make_plots=not args.no_plots,
             dpi=args.dpi,
             skip_last_data_line=args.skip_last_data_line,
+            phase_planes=tuple(tuple(pair) for pair in (args.phase_plane or [])),
         )
     )
     print(f"output_dir={result.output_dir}")

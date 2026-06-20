@@ -143,6 +143,40 @@ class FesCumulativeReweightConfig:
     temperature: float = 330.0
 
 
+@dataclass(frozen=True)
+class PlumedTable:
+    """A numeric PLUMED table with its first FIELDS header."""
+
+    path: Path
+    fields: Tuple[str, ...]
+    data: np.ndarray
+
+
+@dataclass(frozen=True)
+class BandwidthChoice:
+    """Smoothing width selected for one projected CV."""
+
+    cv_name: str
+    value: Optional[float]
+    sigma_bins: float
+    source: str
+
+
+@dataclass(frozen=True)
+class ReweightProjectionResult:
+    """Output metadata for one reweighted FES projection."""
+
+    kind: str
+    cvs: Tuple[str, ...]
+    safe_label: str
+    fes_path: Path
+    plot_path: Optional[Path]
+    sample_size: int
+    effective_sample_size: float
+    finite_points: int
+    bandwidth_sources: Tuple[str, ...]
+
+
 def _as_float(value: str) -> float:
     text = str(value).strip()
     if text.lower() in {"inf", "+inf", "infinity", "+infinity"}:
@@ -1287,6 +1321,903 @@ def process_fes2d_grid(
     return outputs
 
 
+def read_plumed_numeric_table(
+    path: Path,
+    *,
+    skiprows: int = 0,
+    skip_last_data_line: bool = False,
+    deduplicate_time: bool = True,
+) -> PlumedTable:
+    """Read a PLUMED-style numeric table using the first FIELDS header."""
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    fields: Tuple[str, ...] = ()
+    data_lines: List[Tuple[int, str]] = []
+    rows: List[List[float]] = []
+    bad_lines: List[int] = []
+    data_seen = 0
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#!"):
+            parts = line.split()
+            if len(parts) >= 3 and parts[1] == "FIELDS" and not fields:
+                fields = tuple(parts[2:])
+            continue
+        if line.startswith("#"):
+            continue
+        if not fields:
+            raise ValueError(f"No FIELDS header found before data in {path}")
+        data_seen += 1
+        if data_seen <= int(skiprows):
+            continue
+        data_lines.append((line_number, line))
+    if not fields:
+        raise ValueError(f"No FIELDS header found in {path}")
+    if skip_last_data_line and data_lines:
+        data_lines = data_lines[:-1]
+    for line_number, line in data_lines:
+        parts = line.split()
+        if len(parts) != len(fields):
+            bad_lines.append(line_number)
+            continue
+        try:
+            row = [float(value) for value in parts]
+        except ValueError:
+            bad_lines.append(line_number)
+            continue
+        if not all(math.isfinite(value) for value in row):
+            bad_lines.append(line_number)
+            continue
+        rows.append(row)
+    if bad_lines:
+        raise ValueError(
+            f"Skipped malformed/non-finite data lines in {path}: "
+            + ",".join(str(value) for value in bad_lines[:8])
+        )
+    if not rows:
+        raise ValueError(f"No numeric data rows left in {path} after skiprows={skiprows}")
+    data = np.asarray(rows, dtype=float)
+    if deduplicate_time and "time" in fields:
+        time_index = fields.index("time")
+        _, first_indices = np.unique(data[:, time_index], return_index=True)
+        first_indices.sort()
+        data = data[first_indices]
+    return PlumedTable(path=path, fields=fields, data=data)
+
+
+def read_plumed_numeric_tables(
+    paths: Sequence[Path],
+    *,
+    skiprows: int = 0,
+    skip_last_data_line_per_file: bool = False,
+    deduplicate_time: bool = True,
+) -> PlumedTable:
+    """Read and concatenate multiple PLUMED tables with matching fields."""
+
+    resolved_paths = tuple(Path(path) for path in paths)
+    if not resolved_paths:
+        raise ValueError("At least one PLUMED table path is required")
+    tables = [
+        read_plumed_numeric_table(
+            path,
+            skiprows=0,
+            skip_last_data_line=bool(skip_last_data_line_per_file),
+            deduplicate_time=False,
+        )
+        for path in resolved_paths
+    ]
+    fields = tables[0].fields
+    for table in tables[1:]:
+        if table.fields != fields:
+            raise ValueError(
+                "Cannot concatenate PLUMED tables with different FIELDS headers: "
+                f"{tables[0].path} has {fields}; {table.path} has {table.fields}"
+            )
+    data = np.vstack([table.data for table in tables])
+    if deduplicate_time and "time" in fields:
+        time_index = fields.index("time")
+        _unique_times, first_indices = np.unique(data[:, time_index], return_index=True)
+        first_indices.sort()
+        data = data[first_indices]
+    if int(skiprows) > 0:
+        data = data[int(skiprows) :]
+    if data.size == 0:
+        raise ValueError(f"No numeric data rows left after concatenating {len(resolved_paths)} tables")
+    return PlumedTable(path=resolved_paths[0], fields=fields, data=data)
+
+
+def _resolve_run_file(run_dir: Path, value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path(run_dir) / path
+    return path
+
+
+def _field_index(fields: Sequence[str], name: str) -> int:
+    try:
+        return tuple(fields).index(name)
+    except ValueError as exc:
+        raise ValueError(f"Column not found in PLUMED table: {name}") from exc
+
+
+def _select_bias_indices(fields: Sequence[str], bias_names: Sequence[str]) -> Tuple[int, ...]:
+    if not bias_names:
+        bias_names = (".bias",)
+    if len(bias_names) == 1 and str(bias_names[0]).upper() == "NO":
+        return ()
+    indices: List[int] = []
+    for name in bias_names:
+        if name in {".bias", ".rbias"}:
+            matches = [
+                index
+                for index, field in enumerate(fields)
+                if ".bias" in field or ".rbias" in field
+            ]
+            indices.extend(matches)
+            continue
+        indices.append(_field_index(fields, str(name)))
+    unique: List[int] = []
+    for index in indices:
+        if index not in unique:
+            unique.append(index)
+    return tuple(unique)
+
+
+def _sum_bias_columns(table: PlumedTable, bias_names: Sequence[str]) -> Tuple[np.ndarray, Tuple[str, ...]]:
+    indices = _select_bias_indices(table.fields, bias_names)
+    if not indices:
+        return np.zeros(table.data.shape[0], dtype=float), ()
+    bias = np.zeros(table.data.shape[0], dtype=float)
+    names: List[str] = []
+    for index in indices:
+        bias += table.data[:, index]
+        names.append(table.fields[index])
+    return bias, tuple(names)
+
+
+def boltzmann_kbt(temperature: float) -> float:
+    """Return kBT in kJ/mol for a temperature in Kelvin."""
+
+    return float(temperature) * 0.0083144621
+
+
+def reweight_weights(bias_kj_mol: np.ndarray, temperature: float) -> Tuple[np.ndarray, float]:
+    """Return numerically stable OPES reweighting weights and Neff."""
+
+    if bias_kj_mol.size == 0:
+        raise ValueError("No bias values available for reweighting")
+    kbt = boltzmann_kbt(float(temperature))
+    scaled = np.asarray(bias_kj_mol, dtype=float) / kbt
+    shifted = scaled - float(np.max(scaled))
+    weights = np.exp(shifted)
+    denom = float(np.sum(weights**2))
+    effective = float(np.sum(weights) ** 2 / denom) if denom > 0.0 else math.nan
+    return weights, effective
+
+
+def parse_named_float_map(values: Optional[Sequence[Sequence[str]]]) -> Dict[str, float]:
+    """Parse repeated `NAME VALUE` pairs from argparse."""
+
+    parsed: Dict[str, float] = {}
+    for item in values or []:
+        if len(item) != 2:
+            raise ValueError("Expected NAME VALUE")
+        parsed[str(item[0])] = float(item[1])
+    return parsed
+
+
+def parse_named_ranges(values: Optional[Sequence[Sequence[str]]]) -> Dict[str, Tuple[float, float]]:
+    """Parse repeated `CV LOW HIGH` ranges from argparse."""
+
+    parsed: Dict[str, Tuple[float, float]] = {}
+    for item in values or []:
+        if len(item) != 3:
+            raise ValueError("Expected CV LOW HIGH")
+        low = float(item[1])
+        high = float(item[2])
+        if high <= low:
+            raise ValueError(f"Invalid range for {item[0]}: high <= low")
+        parsed[str(item[0])] = (low, high)
+    return parsed
+
+
+def infer_table_ranges(
+    table: PlumedTable,
+    cv_names: Sequence[str],
+    *,
+    explicit_ranges: Optional[Mapping[str, Tuple[float, float]]] = None,
+    padding_fraction: float = 0.05,
+) -> Dict[str, Tuple[float, float]]:
+    """Infer plotting/reweight ranges for CVs not specified explicitly."""
+
+    explicit_ranges = explicit_ranges or {}
+    ranges: Dict[str, Tuple[float, float]] = {}
+    for cv_name in cv_names:
+        if cv_name in explicit_ranges:
+            ranges[cv_name] = explicit_ranges[cv_name]
+            continue
+        values = table.data[:, _field_index(table.fields, cv_name)]
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            raise ValueError(f"No finite values for CV {cv_name}")
+        low = float(np.min(finite))
+        high = float(np.max(finite))
+        width = high - low
+        if width <= 0.0:
+            pad = max(1.0, abs(low) * 0.01)
+        else:
+            pad = width * float(padding_fraction)
+        ranges[cv_name] = (low - pad, high + pad)
+    return ranges
+
+
+def infer_hills_bandwidths(path: Optional[Path]) -> Dict[str, float]:
+    """Infer last finite OPES sigma values from a HILLS file."""
+
+    if path is None or not Path(path).exists():
+        return {}
+    try:
+        table = read_plumed_numeric_table(path, deduplicate_time=False)
+    except Exception:
+        return {}
+    bandwidths: Dict[str, float] = {}
+    for index, field in enumerate(table.fields):
+        if not field.startswith("sigma_"):
+            continue
+        cv_name = field[len("sigma_") :]
+        values = table.data[:, index]
+        finite = values[np.isfinite(values) & (values > 0.0)]
+        if finite.size:
+            bandwidths[cv_name] = float(finite[-1])
+    return bandwidths
+
+
+def infer_hills_bandwidths_from_paths(paths: Sequence[Path]) -> Dict[str, float]:
+    """Infer sigma values from one or more HILLS files, with later files winning."""
+
+    merged: Dict[str, float] = {}
+    for path in paths:
+        merged.update(infer_hills_bandwidths(Path(path)))
+    return merged
+
+
+def choose_bandwidth(
+    cv_name: str,
+    *,
+    ranges: Mapping[str, Tuple[float, float]],
+    bins: int,
+    explicit_bandwidths: Mapping[str, float],
+    hills_bandwidths: Mapping[str, float],
+    default_smooth_bins: float,
+) -> BandwidthChoice:
+    """Choose histogram-smoothing bandwidth for one CV."""
+
+    value: Optional[float] = None
+    source = "default_bins"
+    if cv_name in explicit_bandwidths:
+        value = float(explicit_bandwidths[cv_name])
+        source = "explicit"
+    elif cv_name in hills_bandwidths:
+        value = float(hills_bandwidths[cv_name])
+        source = "hills"
+    low, high = ranges[cv_name]
+    width = (float(high) - float(low)) / max(1, int(bins))
+    if value is not None and width > 0.0:
+        sigma_bins = max(0.0, float(value) / width)
+    else:
+        sigma_bins = max(0.0, float(default_smooth_bins))
+    return BandwidthChoice(cv_name=cv_name, value=value, sigma_bins=sigma_bins, source=source)
+
+
+def _smooth_hist1d(counts: np.ndarray, sigma_bins: float) -> np.ndarray:
+    kernel = gaussian_kernel1d(float(sigma_bins))
+    return np.convolve(np.asarray(counts, dtype=float), kernel, mode="same")
+
+
+def _smooth_hist2d(counts: np.ndarray, sigma_bins_x: float, sigma_bins_y: float) -> np.ndarray:
+    out = np.asarray(counts, dtype=float)
+    if float(sigma_bins_x) > 0.0:
+        out = _convolve_along_axis(out, gaussian_kernel1d(float(sigma_bins_x)), axis=0)
+    if float(sigma_bins_y) > 0.0:
+        out = _convolve_along_axis(out, gaussian_kernel1d(float(sigma_bins_y)), axis=1)
+    return out
+
+
+def _fes_from_probability(probability: np.ndarray, temperature: float) -> np.ndarray:
+    kbt = boltzmann_kbt(float(temperature))
+    prob = np.asarray(probability, dtype=float)
+    fes = np.full(prob.shape, np.nan, dtype=float)
+    positive = np.isfinite(prob) & (prob > 0.0)
+    fes[positive] = -kbt * np.log(prob[positive])
+    if np.any(np.isfinite(fes)):
+        fes -= float(np.nanmin(fes))
+    return fes
+
+
+def _uncertainty_from_blocks(block_fes: Sequence[np.ndarray], shape: Tuple[int, ...]) -> np.ndarray:
+    if len(block_fes) <= 1:
+        return np.full(shape, np.nan, dtype=float)
+    stack = np.asarray(block_fes, dtype=float)
+    flat = stack.reshape((stack.shape[0], -1))
+    uncertainty = np.full(flat.shape[1], np.nan, dtype=float)
+    for index in range(flat.shape[1]):
+        values = flat[:, index]
+        finite = values[np.isfinite(values)]
+        if finite.size > 1:
+            uncertainty[index] = float(np.std(finite, ddof=1))
+    return uncertainty.reshape(shape)
+
+
+def _format_float(value: float) -> str:
+    if not np.isfinite(float(value)):
+        return "nan"
+    return f"{float(value): .10g}"
+
+
+def write_fes1d_file(
+    path: Path,
+    cv_name: str,
+    centers: np.ndarray,
+    free_energy: np.ndarray,
+    uncertainty: Optional[np.ndarray],
+    *,
+    sample_size: int,
+    effective_sample_size: float,
+    cv_range: Tuple[float, float],
+    bandwidth: BandwidthChoice,
+    temperature: float,
+    bias_columns: Sequence[str],
+) -> None:
+    """Write a PLUMED-style 1D reweighted FES table."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    has_uncertainty = uncertainty is not None
+    with path.open("w", encoding="utf-8") as handle:
+        fields = f"#! FIELDS {cv_name} file.free"
+        if has_uncertainty:
+            fields += " uncertainty"
+        handle.write(fields + "\n")
+        handle.write(f"#! SET sample_size {int(sample_size)}\n")
+        handle.write(f"#! SET effective_sample_size {_format_float(effective_sample_size)}\n")
+        handle.write(f"#! SET temperature_K {_format_float(float(temperature))}\n")
+        handle.write(f"#! SET bias_columns {','.join(bias_columns) if bias_columns else 'NO'}\n")
+        handle.write(f"#! SET min_{cv_name} {_format_float(cv_range[0])}\n")
+        handle.write(f"#! SET max_{cv_name} {_format_float(cv_range[1])}\n")
+        handle.write(f"#! SET nbins_{cv_name} {int(centers.size)}\n")
+        handle.write(f"#! SET bandwidth_{cv_name} {_format_float(bandwidth.value) if bandwidth.value is not None else 'nan'}\n")
+        handle.write(f"#! SET bandwidth_source_{cv_name} {bandwidth.source}\n")
+        handle.write(f"#! SET bandwidth_bins_{cv_name} {_format_float(bandwidth.sigma_bins)}\n")
+        for index, (cv_value, fes_value) in enumerate(zip(centers, free_energy)):
+            line = f"{_format_float(cv_value)}  {_format_float(fes_value)}"
+            if has_uncertainty and uncertainty is not None:
+                line += f" {_format_float(float(uncertainty[index]))}"
+            handle.write(line + "\n")
+
+
+def write_fes2d_file(
+    path: Path,
+    x_name: str,
+    y_name: str,
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    free_energy: np.ndarray,
+    uncertainty: Optional[np.ndarray],
+    *,
+    sample_size: int,
+    effective_sample_size: float,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    x_bandwidth: BandwidthChoice,
+    y_bandwidth: BandwidthChoice,
+    temperature: float,
+    bias_columns: Sequence[str],
+) -> None:
+    """Write a PLUMED-style 2D reweighted FES table."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    has_uncertainty = uncertainty is not None
+    with path.open("w", encoding="utf-8") as handle:
+        fields = f"#! FIELDS {x_name} {y_name} file.free"
+        if has_uncertainty:
+            fields += " uncertainty"
+        handle.write(fields + "\n")
+        handle.write(f"#! SET sample_size {int(sample_size)}\n")
+        handle.write(f"#! SET effective_sample_size {_format_float(effective_sample_size)}\n")
+        handle.write(f"#! SET temperature_K {_format_float(float(temperature))}\n")
+        handle.write(f"#! SET bias_columns {','.join(bias_columns) if bias_columns else 'NO'}\n")
+        handle.write(f"#! SET min_{x_name} {_format_float(x_range[0])}\n")
+        handle.write(f"#! SET max_{x_name} {_format_float(x_range[1])}\n")
+        handle.write(f"#! SET nbins_{x_name} {int(x_centers.size)}\n")
+        handle.write(f"#! SET min_{y_name} {_format_float(y_range[0])}\n")
+        handle.write(f"#! SET max_{y_name} {_format_float(y_range[1])}\n")
+        handle.write(f"#! SET nbins_{y_name} {int(y_centers.size)}\n")
+        handle.write(f"#! SET bandwidth_{x_name} {_format_float(x_bandwidth.value) if x_bandwidth.value is not None else 'nan'}\n")
+        handle.write(f"#! SET bandwidth_source_{x_name} {x_bandwidth.source}\n")
+        handle.write(f"#! SET bandwidth_bins_{x_name} {_format_float(x_bandwidth.sigma_bins)}\n")
+        handle.write(f"#! SET bandwidth_{y_name} {_format_float(y_bandwidth.value) if y_bandwidth.value is not None else 'nan'}\n")
+        handle.write(f"#! SET bandwidth_source_{y_name} {y_bandwidth.source}\n")
+        handle.write(f"#! SET bandwidth_bins_{y_name} {_format_float(y_bandwidth.sigma_bins)}\n")
+        for ix, x_value in enumerate(x_centers):
+            for iy, y_value in enumerate(y_centers):
+                line = (
+                    f"{_format_float(float(x_value))} "
+                    f"{_format_float(float(y_value))}  "
+                    f"{_format_float(float(free_energy[ix, iy]))}"
+                )
+                if has_uncertainty and uncertainty is not None:
+                    line += f" {_format_float(float(uncertainty[ix, iy]))}"
+                handle.write(line + "\n")
+            handle.write("\n")
+
+
+def _histogram_fes_1d(
+    values: np.ndarray,
+    weights: np.ndarray,
+    cv_range: Tuple[float, float],
+    bins: int,
+    sigma_bins: float,
+    temperature: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    edges = np.linspace(float(cv_range[0]), float(cv_range[1]), int(bins) + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    counts, _edges = np.histogram(values, bins=edges, weights=weights)
+    smooth_counts = _smooth_hist1d(counts, sigma_bins=sigma_bins)
+    return centers, _fes_from_probability(smooth_counts, temperature=temperature), smooth_counts
+
+
+def _histogram_fes_2d(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    weights: np.ndarray,
+    x_range: Tuple[float, float],
+    y_range: Tuple[float, float],
+    bins: Tuple[int, int],
+    sigma_bins: Tuple[float, float],
+    temperature: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    x_edges = np.linspace(float(x_range[0]), float(x_range[1]), int(bins[0]) + 1)
+    y_edges = np.linspace(float(y_range[0]), float(y_range[1]), int(bins[1]) + 1)
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+    counts, _x_edges, _y_edges = np.histogram2d(
+        x_values,
+        y_values,
+        bins=[x_edges, y_edges],
+        weights=weights,
+    )
+    smooth_counts = _smooth_hist2d(
+        counts,
+        sigma_bins_x=float(sigma_bins[0]),
+        sigma_bins_y=float(sigma_bins[1]),
+    )
+    return x_centers, y_centers, _fes_from_probability(smooth_counts, temperature=temperature), smooth_counts
+
+
+def _split_block_indices(n_rows: int, blocks: int) -> List[np.ndarray]:
+    blocks = max(1, int(blocks))
+    if blocks <= 1 or n_rows < blocks:
+        return []
+    return [part for part in np.array_split(np.arange(n_rows), blocks) if part.size > 0]
+
+
+def _write_reweight_summary(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    fields = (
+        "kind",
+        "cvs",
+        "safe_label",
+        "fes_path",
+        "plot_path",
+        "sample_size",
+        "effective_sample_size",
+        "finite_points",
+        "bandwidth_sources",
+    )
+    _write_csv_with_fields(path, rows, fields)
+
+
+def plot_fes1d_curve(
+    output_path: Path,
+    cv_name: str,
+    centers: np.ndarray,
+    free_energy: np.ndarray,
+    uncertainty: Optional[np.ndarray],
+    *,
+    max_fes: float = 200.0,
+    dpi: int = 180,
+) -> None:
+    """Write one 1D FES PNG."""
+
+    plt = _require_matplotlib()
+    y_values = np.asarray(free_energy, dtype=float)
+    y_plot = np.where(np.isfinite(y_values), np.clip(y_values, 0.0, float(max_fes)), np.nan)
+    fig, ax = plt.subplots(figsize=(6.5, 4.5), dpi=int(dpi), constrained_layout=True)
+    ax.plot(centers, y_plot, lw=1.8)
+    if uncertainty is not None:
+        unc = np.asarray(uncertainty, dtype=float)
+        valid = np.isfinite(y_plot) & np.isfinite(unc)
+        if np.any(valid):
+            ax.fill_between(
+                np.asarray(centers)[valid],
+                np.clip(y_plot[valid] - unc[valid], 0.0, float(max_fes)),
+                np.clip(y_plot[valid] + unc[valid], 0.0, float(max_fes)),
+                alpha=0.22,
+                linewidth=0,
+            )
+    ax.set_xlabel(cv_name)
+    ax.set_ylabel("Delta F (kJ/mol)")
+    ax.set_ylim(bottom=0.0)
+    fig.savefig(output_path, dpi=int(dpi), bbox_inches="tight")
+    plt.close(fig)
+
+
+def reweight_plumed_colvar(
+    run_dir: Path,
+    *,
+    colvar_name: str = "COLVAR",
+    hills_name: str = "HILLS",
+    colvar_names: Optional[Sequence[str]] = None,
+    hills_names: Optional[Sequence[str]] = None,
+    output_root: Optional[Path] = None,
+    cv_names: Sequence[str] = (),
+    pairs: Sequence[Tuple[str, str]] = (),
+    bias_names: Sequence[str] = (".bias",),
+    ranges: Optional[Mapping[str, Tuple[float, float]]] = None,
+    bandwidths: Optional[Mapping[str, float]] = None,
+    temperature: float = 330.0,
+    skiprows: int = 0,
+    blocks: int = 3,
+    bins: int = 160,
+    pair_bins: Tuple[int, int] = (90, 90),
+    default_smooth_bins: float = 1.5,
+    range_padding_fraction: float = 0.05,
+    skip_last_data_line: bool = False,
+    skip_last_data_line_per_file: bool = False,
+    deduplicate_time: bool = True,
+    max_fes: float = 200.0,
+    write_plots: bool = False,
+    write_comparison: bool = False,
+    contour_levels: int = 16,
+    dpi: int = 180,
+    cmap: str = "viridis",
+) -> Dict[str, Path]:
+    """Run OPES-style reweighting for 1D CVs and 2D CV pairs from COLVAR."""
+
+    run_dir = Path(run_dir)
+    output_root = Path(output_root) if output_root is not None else run_dir
+    raw_colvar_names = tuple(colvar_names) if colvar_names is not None else (colvar_name,)
+    raw_hills_names = tuple(hills_names) if hills_names is not None else (hills_name,)
+    colvar_paths = tuple(_resolve_run_file(run_dir, name) for name in raw_colvar_names)
+    hills_paths = tuple(_resolve_run_file(run_dir, name) for name in raw_hills_names)
+    table = read_plumed_numeric_tables(
+        colvar_paths,
+        skiprows=int(skiprows),
+        skip_last_data_line_per_file=bool(skip_last_data_line or skip_last_data_line_per_file),
+        deduplicate_time=bool(deduplicate_time),
+    )
+    hills_bandwidths = infer_hills_bandwidths_from_paths(hills_paths)
+    bias, bias_columns = _sum_bias_columns(table, bias_names)
+    weights, effective_sample_size = reweight_weights(bias, temperature=temperature)
+
+    pair_list = [(str(x), str(y)) for x, y in pairs]
+    requested_cvs: List[str] = []
+    for cv_name in cv_names:
+        if cv_name not in requested_cvs:
+            requested_cvs.append(str(cv_name))
+    for x_name, y_name in pair_list:
+        for cv_name in (x_name, y_name):
+            if cv_name not in requested_cvs:
+                requested_cvs.append(cv_name)
+    if not requested_cvs:
+        requested_cvs = [
+            field
+            for field in table.fields
+            if field != "time" and field not in bias_columns and not field.startswith("sigma_")
+        ]
+    for cv_name in requested_cvs:
+        _field_index(table.fields, cv_name)
+
+    explicit_ranges = dict(ranges or {})
+    all_ranges = infer_table_ranges(
+        table,
+        requested_cvs,
+        explicit_ranges=explicit_ranges,
+        padding_fraction=float(range_padding_fraction),
+    )
+    explicit_bandwidths = dict(bandwidths or {})
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "fes_reweight").mkdir(parents=True, exist_ok=True)
+    (output_root / "fes1D").mkdir(parents=True, exist_ok=True)
+    (output_root / "fes2D").mkdir(parents=True, exist_ok=True)
+
+    results: List[ReweightProjectionResult] = []
+    manifest_rows: List[Dict[str, object]] = []
+    block_indices = _split_block_indices(table.data.shape[0], blocks)
+
+    for cv_name in cv_names:
+        cv_name = str(cv_name)
+        safe = safe_file_label(cv_name)
+        values = table.data[:, _field_index(table.fields, cv_name)]
+        bandwidth = choose_bandwidth(
+            cv_name,
+            ranges=all_ranges,
+            bins=int(bins),
+            explicit_bandwidths=explicit_bandwidths,
+            hills_bandwidths=hills_bandwidths,
+            default_smooth_bins=float(default_smooth_bins),
+        )
+        centers, fes, _counts = _histogram_fes_1d(
+            values,
+            weights,
+            all_ranges[cv_name],
+            bins=int(bins),
+            sigma_bins=bandwidth.sigma_bins,
+            temperature=float(temperature),
+        )
+        block_fes: List[np.ndarray] = []
+        reweight_dir = output_root / "fes_reweight" / safe
+        reweight_dir.mkdir(parents=True, exist_ok=True)
+        for block_number, indices in enumerate(block_indices, start=1):
+            _centers, block_curve, _block_counts = _histogram_fes_1d(
+                values[indices],
+                weights[indices],
+                all_ranges[cv_name],
+                bins=int(bins),
+                sigma_bins=bandwidth.sigma_bins,
+                temperature=float(temperature),
+            )
+            block_fes.append(block_curve)
+            write_fes1d_file(
+                reweight_dir / f"fes-rew_{block_number}.dat",
+                cv_name,
+                centers,
+                block_curve,
+                None,
+                sample_size=int(indices.size),
+                effective_sample_size=math.nan,
+                cv_range=all_ranges[cv_name],
+                bandwidth=bandwidth,
+                temperature=float(temperature),
+                bias_columns=bias_columns,
+            )
+        uncertainty = _uncertainty_from_blocks(block_fes, fes.shape)
+        fes_path = reweight_dir / "fes-rew.dat"
+        write_fes1d_file(
+            fes_path,
+            cv_name,
+            centers,
+            fes,
+            uncertainty,
+            sample_size=int(table.data.shape[0]),
+            effective_sample_size=effective_sample_size,
+            cv_range=all_ranges[cv_name],
+            bandwidth=bandwidth,
+            temperature=float(temperature),
+            bias_columns=bias_columns,
+        )
+        plot_path: Optional[Path] = None
+        if write_plots:
+            plot_path = output_root / "fes1D" / f"{safe}_fes1d.png"
+            plot_fes1d_curve(
+                plot_path,
+                cv_name,
+                centers,
+                fes,
+                uncertainty,
+                max_fes=float(max_fes),
+                dpi=int(dpi),
+            )
+        result = ReweightProjectionResult(
+            kind="1d",
+            cvs=(cv_name,),
+            safe_label=safe,
+            fes_path=fes_path,
+            plot_path=plot_path,
+            sample_size=int(table.data.shape[0]),
+            effective_sample_size=effective_sample_size,
+            finite_points=int(np.count_nonzero(np.isfinite(fes))),
+            bandwidth_sources=(f"{cv_name}:{bandwidth.source}",),
+        )
+        results.append(result)
+        manifest_rows.append(
+            {
+                "kind": result.kind,
+                "cvs": ",".join(result.cvs),
+                "safe_label": result.safe_label,
+                "fes_path": str(result.fes_path),
+                "plot_path": str(result.plot_path) if result.plot_path is not None else "",
+                "sample_size": result.sample_size,
+                "effective_sample_size": result.effective_sample_size,
+                "finite_points": result.finite_points,
+                "bandwidth_sources": ";".join(result.bandwidth_sources),
+            }
+        )
+
+    for x_name, y_name in pair_list:
+        safe = f"{safe_file_label(x_name)}__{safe_file_label(y_name)}"
+        x_values = table.data[:, _field_index(table.fields, x_name)]
+        y_values = table.data[:, _field_index(table.fields, y_name)]
+        x_bandwidth = choose_bandwidth(
+            x_name,
+            ranges=all_ranges,
+            bins=int(pair_bins[0]),
+            explicit_bandwidths=explicit_bandwidths,
+            hills_bandwidths=hills_bandwidths,
+            default_smooth_bins=float(default_smooth_bins),
+        )
+        y_bandwidth = choose_bandwidth(
+            y_name,
+            ranges=all_ranges,
+            bins=int(pair_bins[1]),
+            explicit_bandwidths=explicit_bandwidths,
+            hills_bandwidths=hills_bandwidths,
+            default_smooth_bins=float(default_smooth_bins),
+        )
+        x_centers, y_centers, fes2d, _counts2d = _histogram_fes_2d(
+            x_values,
+            y_values,
+            weights,
+            all_ranges[x_name],
+            all_ranges[y_name],
+            bins=(int(pair_bins[0]), int(pair_bins[1])),
+            sigma_bins=(x_bandwidth.sigma_bins, y_bandwidth.sigma_bins),
+            temperature=float(temperature),
+        )
+        block_fes2d: List[np.ndarray] = []
+        pair_dir = output_root / "fes2D" / safe
+        pair_dir.mkdir(parents=True, exist_ok=True)
+        for block_number, indices in enumerate(block_indices, start=1):
+            _x, _y, block_grid, _block_counts = _histogram_fes_2d(
+                x_values[indices],
+                y_values[indices],
+                weights[indices],
+                all_ranges[x_name],
+                all_ranges[y_name],
+                bins=(int(pair_bins[0]), int(pair_bins[1])),
+                sigma_bins=(x_bandwidth.sigma_bins, y_bandwidth.sigma_bins),
+                temperature=float(temperature),
+            )
+            block_fes2d.append(block_grid)
+            write_fes2d_file(
+                pair_dir / f"fes-rew_{block_number}.dat",
+                x_name,
+                y_name,
+                x_centers,
+                y_centers,
+                block_grid,
+                None,
+                sample_size=int(indices.size),
+                effective_sample_size=math.nan,
+                x_range=all_ranges[x_name],
+                y_range=all_ranges[y_name],
+                x_bandwidth=x_bandwidth,
+                y_bandwidth=y_bandwidth,
+                temperature=float(temperature),
+                bias_columns=bias_columns,
+            )
+        uncertainty2d = _uncertainty_from_blocks(block_fes2d, fes2d.shape)
+        fes_path = pair_dir / "fes-rew.dat"
+        write_fes2d_file(
+            fes_path,
+            x_name,
+            y_name,
+            x_centers,
+            y_centers,
+            fes2d,
+            uncertainty2d,
+            sample_size=int(table.data.shape[0]),
+            effective_sample_size=effective_sample_size,
+            x_range=all_ranges[x_name],
+            y_range=all_ranges[y_name],
+            x_bandwidth=x_bandwidth,
+            y_bandwidth=y_bandwidth,
+            temperature=float(temperature),
+            bias_columns=bias_columns,
+        )
+        plot_path = None
+        if write_plots or write_comparison:
+            plot_outputs = process_fes2d_grid(
+                fes_path,
+                pair_dir / "plot",
+                max_fes=float(max_fes),
+                smooth_sigma=0.0,
+                valid_threshold=0.0,
+                prefix=safe,
+                zero_scope="all",
+                missing_plot_value="max",
+                write_grid=True,
+                write_plots=True,
+                write_comparison=bool(write_comparison),
+                contour_levels=int(contour_levels),
+                dpi=int(dpi),
+                title=f"{x_name} vs {y_name}",
+                x_label=x_name,
+                y_label=y_name,
+                cmap=cmap,
+            )
+            plot_path = plot_outputs.get("smooth_png")
+        result = ReweightProjectionResult(
+            kind="2d",
+            cvs=(x_name, y_name),
+            safe_label=safe,
+            fes_path=fes_path,
+            plot_path=plot_path,
+            sample_size=int(table.data.shape[0]),
+            effective_sample_size=effective_sample_size,
+            finite_points=int(np.count_nonzero(np.isfinite(fes2d))),
+            bandwidth_sources=(f"{x_name}:{x_bandwidth.source}", f"{y_name}:{y_bandwidth.source}"),
+        )
+        results.append(result)
+        manifest_rows.append(
+            {
+                "kind": result.kind,
+                "cvs": ",".join(result.cvs),
+                "safe_label": result.safe_label,
+                "fes_path": str(result.fes_path),
+                "plot_path": str(result.plot_path) if result.plot_path is not None else "",
+                "sample_size": result.sample_size,
+                "effective_sample_size": result.effective_sample_size,
+                "finite_points": result.finite_points,
+                "bandwidth_sources": ";".join(result.bandwidth_sources),
+            }
+        )
+
+    summary_path = output_root / "fes_reweight" / "reweight_summary.csv"
+    _write_reweight_summary(summary_path, manifest_rows)
+    metadata = {
+        "run_dir": str(run_dir),
+        "colvar": str(colvar_paths[0]),
+        "hills": str(hills_paths[0]),
+        "colvar_paths": [str(path) for path in colvar_paths],
+        "hills_paths": [str(path) for path in hills_paths],
+        "output_root": str(output_root),
+        "fields": list(table.fields),
+        "skiprows": int(skiprows),
+        "rows_after_filters": int(table.data.shape[0]),
+        "temperature_K": float(temperature),
+        "kbt_kj_mol": boltzmann_kbt(float(temperature)),
+        "bias_columns": list(bias_columns),
+        "effective_sample_size": effective_sample_size,
+        "ranges": {name: [float(low), float(high)] for name, (low, high) in all_ranges.items()},
+        "hills_bandwidths": hills_bandwidths,
+        "outputs": [str(result.fes_path) for result in results],
+    }
+    metadata_path = output_root / "fes_reweight" / "reweight_metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    report_path = output_root / "fes_reweight" / "analysis_report.md"
+    report_lines = [
+        "# OPES FES reweighting report",
+        "",
+        f"- Run directory: `{run_dir}`",
+        f"- COLVAR inputs: {', '.join(f'`{path}`' for path in colvar_paths)}",
+        f"- HILLS inputs: {', '.join(f'`{path}`' for path in hills_paths)}",
+        f"- Rows after filters: {table.data.shape[0]}",
+        f"- Temperature: {float(temperature):.3f} K",
+        f"- Bias columns: {', '.join(bias_columns) if bias_columns else 'NO'}",
+        f"- Effective sample size: {effective_sample_size:.6g}",
+        "",
+        "## Projections",
+        "",
+    ]
+    for row in manifest_rows:
+        report_lines.append(
+            f"- {row['kind']} `{row['cvs']}` -> `{row['fes_path']}` "
+            f"(finite points: {row['finite_points']}, bandwidth: {row['bandwidth_sources']})"
+        )
+    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    return {
+        "summary": summary_path,
+        "metadata": metadata_path,
+        "report": report_path,
+    }
+
+
 def zero_curve(
     cv: np.ndarray,
     free_energy: np.ndarray,
@@ -2043,6 +2974,79 @@ def run_fes2d_grid(argv: Optional[Sequence[str]] = None) -> int:
         )
     except Exception as exc:
         print(f"2D FES grid processing failed: {exc}")
+        return 1
+
+    for path in outputs.values():
+        print(path)
+    return 0
+
+
+def get_fes_reweight_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Build arguments for direct COLVAR reweighting."""
+
+    parser = argparse.ArgumentParser(description="Reweight OPES COLVAR data into 1D and 2D FES projections")
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--colvar", action="append", default=[], help="COLVAR path relative to run dir; may be repeated")
+    parser.add_argument("--hills", action="append", default=[], help="HILLS path relative to run dir; may be repeated")
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--cv", action="append", default=[], help="1D projected CV name; may be repeated")
+    parser.add_argument("--pair", nargs=2, action="append", default=[], metavar=("X_CV", "Y_CV"))
+    parser.add_argument("--bias", action="append", default=[], help="Bias column name; repeat to sum biases")
+    parser.add_argument("--range", nargs=3, action="append", default=[], metavar=("CV", "LOW", "HIGH"))
+    parser.add_argument("--bandwidth", nargs=2, action="append", default=[], metavar=("CV", "SIGMA"))
+    parser.add_argument("--temperature", type=float, default=330.0)
+    parser.add_argument("--skiprows", type=int, default=0)
+    parser.add_argument("--blocks", type=int, default=3)
+    parser.add_argument("--bins", type=int, default=160)
+    parser.add_argument("--pair-bins", type=int, nargs=2, default=(90, 90), metavar=("NX", "NY"))
+    parser.add_argument("--default-smooth-bins", type=float, default=1.5)
+    parser.add_argument("--range-padding-fraction", type=float, default=0.05)
+    parser.add_argument("--skip-last-data-line", action="store_true")
+    parser.add_argument("--skip-last-data-line-per-file", action="store_true")
+    parser.add_argument("--keep-duplicate-times", action="store_true")
+    parser.add_argument("--max-fes", type=float, default=200.0)
+    parser.add_argument("--write-plots", action="store_true")
+    parser.add_argument("--write-comparison", action="store_true")
+    parser.add_argument("--contour-levels", type=int, default=16)
+    parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--cmap", default="viridis")
+    return parser.parse_args(argv)
+
+
+def run_fes_reweight(argv: Optional[Sequence[str]] = None) -> int:
+    """Run direct COLVAR reweighting from CLI-style arguments."""
+
+    args = get_fes_reweight_args(argv)
+    try:
+        outputs = reweight_plumed_colvar(
+            args.run_dir,
+            colvar_names=tuple(args.colvar or ("COLVAR",)),
+            hills_names=tuple(args.hills or ("HILLS",)),
+            output_root=args.output_root,
+            cv_names=tuple(args.cv or ()),
+            pairs=tuple((str(x), str(y)) for x, y in (args.pair or ())),
+            bias_names=tuple(args.bias or (".bias",)),
+            ranges=parse_named_ranges(args.range),
+            bandwidths=parse_named_float_map(args.bandwidth),
+            temperature=float(args.temperature),
+            skiprows=int(args.skiprows),
+            blocks=int(args.blocks),
+            bins=int(args.bins),
+            pair_bins=(int(args.pair_bins[0]), int(args.pair_bins[1])),
+            default_smooth_bins=float(args.default_smooth_bins),
+            range_padding_fraction=float(args.range_padding_fraction),
+            skip_last_data_line=bool(args.skip_last_data_line),
+            skip_last_data_line_per_file=bool(args.skip_last_data_line_per_file),
+            deduplicate_time=not bool(args.keep_duplicate_times),
+            max_fes=float(args.max_fes),
+            write_plots=bool(args.write_plots or args.write_comparison),
+            write_comparison=bool(args.write_comparison),
+            contour_levels=int(args.contour_levels),
+            dpi=int(args.dpi),
+            cmap=str(args.cmap),
+        )
+    except Exception as exc:
+        print(f"FES reweighting failed: {exc}")
         return 1
 
     for path in outputs.values():

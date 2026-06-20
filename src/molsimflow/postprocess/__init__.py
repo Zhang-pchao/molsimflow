@@ -27,6 +27,10 @@ from molsimflow.postprocess.contact_graph import (
     build_contact_graph_summary,
 )
 from molsimflow.postprocess.coupling import CouplingConfig
+from molsimflow.postprocess.deepmd_dataset_sketch import (
+    DeepmdDatasetSketchConfig,
+    DeepmdDatasetSketchResult,
+)
 from molsimflow.postprocess.events import TransitionEventConfig
 from molsimflow.postprocess.fes_analysis import (
     Fes2DBatchCaseSpec,
@@ -62,6 +66,7 @@ from molsimflow.postprocess.species_assignment import (
     assign_hydrogen_to_nearest_oxygen,
     classify_oxygen_species_indices,
 )
+from molsimflow.postprocess.sphere_cv_compare import CaseSpec as SphereCvCaseSpec
 from molsimflow.postprocess.time_alignment import infer_timestep_time_scale, nearest_row_index
 from molsimflow.postprocess.transitions import (
     SpeciesStateRow,
@@ -93,6 +98,8 @@ __all__ = [
     "ContactGraphConfig",
     "CouplingConfig",
     "DescriptorTableSpec",
+    "DeepmdDatasetSketchConfig",
+    "DeepmdDatasetSketchResult",
     "Fes2DBatchCaseSpec",
     "Fes2DBatchConfig",
     "Fes2DGrid",
@@ -112,6 +119,7 @@ __all__ = [
     "MoleculeRecord",
     "OxygenHydrogenAssignment",
     "SeedPositionRow",
+    "SphereCvCaseSpec",
     "SpeciesStateRow",
     "SpeciesTransitionResult",
     "TraceInputSpec",

@@ -23,6 +23,7 @@ from molsimflow.postprocess.fes_analysis import (
     prepare_fes2d_batch_manifest,
     process_fes2d_grid,
     process_curve,
+    reweight_plumed_colvar,
 )
 
 
@@ -337,3 +338,127 @@ def test_prepare_fes_cumulative_reweight_manifest(tmp_path):
     with (tmp_path / "cumulative_manifest.csv").open() as handle:
         written = list(csv.DictReader(handle))
     assert written[1]["trajectory_fraction"] == "1.0"
+
+
+def test_reweight_plumed_colvar_writes_1d_and_2d_outputs(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "COLVAR").write_text(
+        "\n".join(
+            [
+                "#! FIELDS time sum_cn.sum cgs foot_total opes.bias opes_e.bias",
+                "0.0 10.0 2.0 5.0 -1.0 -0.5",
+                "1.0 11.0 2.5 5.5 -0.8 -0.4",
+                "2.0 12.0 3.0 6.0 -0.5 -0.3",
+                "3.0 13.0 3.5 7.0 -0.2 -0.1",
+                "4.0 14.0 4.0 8.0 -0.1 -0.1",
+                "5.0 15.0 4.5 9.0 -0.1 -0.1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "HILLS").write_text(
+        "#! FIELDS time sum_cn.sum cgs sigma_sum_cn.sum sigma_cgs height logweight\n"
+        "0.0 10.0 2.0 0.5 0.2 1.0 0.0\n"
+        "5.0 15.0 4.5 0.7 0.3 1.0 0.0\n",
+        encoding="utf-8",
+    )
+
+    outputs = reweight_plumed_colvar(
+        run_dir,
+        output_root=run_dir,
+        cv_names=("sum_cn.sum", "foot_total"),
+        pairs=(("sum_cn.sum", "cgs"),),
+        bias_names=("opes.bias", "opes_e.bias"),
+        ranges={
+            "sum_cn.sum": (9.0, 16.0),
+            "cgs": (1.5, 5.0),
+            "foot_total": (4.0, 10.0),
+        },
+        temperature=330.0,
+        blocks=2,
+        bins=12,
+        pair_bins=(8, 6),
+    )
+
+    assert outputs["summary"].exists()
+    assert outputs["metadata"].exists()
+    assert outputs["report"].exists()
+
+    sumcn_fes = run_dir / "fes_reweight" / "sum_cn_sum" / "fes-rew.dat"
+    foot_fes = run_dir / "fes_reweight" / "foot_total" / "fes-rew.dat"
+    pair_fes = run_dir / "fes2D" / "sum_cn_sum__cgs" / "fes-rew.dat"
+    assert sumcn_fes.exists()
+    assert foot_fes.exists()
+    assert pair_fes.exists()
+    assert (run_dir / "fes_reweight" / "sum_cn_sum" / "fes-rew_1.dat").exists()
+
+    summary_rows = list(csv.DictReader(outputs["summary"].open()))
+    by_cv = {row["cvs"]: row for row in summary_rows}
+    assert by_cv["sum_cn.sum"]["bandwidth_sources"] == "sum_cn.sum:hills"
+    assert by_cv["foot_total"]["bandwidth_sources"] == "foot_total:default_bins"
+    assert by_cv["sum_cn.sum,cgs"]["kind"] == "2d"
+    assert int(by_cv["sum_cn.sum"]["finite_points"]) > 0
+
+
+def test_reweight_plumed_colvar_concatenates_restart_segments(tmp_path):
+    run_dir = tmp_path / "restart"
+    run_dir.mkdir()
+    (run_dir / "seg1.COLVAR").write_text(
+        "\n".join(
+            [
+                "#! FIELDS time sum_cn.sum foot_total opes.bias opes_e.bias",
+                "0.0 10.0 5.0 -1.0 -0.5",
+                "1.0 11.0 5.5 -0.8 -0.4",
+                "2.0 12.0 6.0 -0.5 -0.3",
+                "3.0 13.0 6.5 -0.2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "seg2.COLVAR").write_text(
+        "\n".join(
+            [
+                "#! FIELDS time sum_cn.sum foot_total opes.bias opes_e.bias",
+                "2.0 12.5 6.1 -0.4 -0.2",
+                "3.0 13.0 7.0 -0.2 -0.1",
+                "4.0 14.0 8.0 -0.1 -0.1",
+                "5.0 15.0 9.0 -0.1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "seg1.HILLS").write_text(
+        "#! FIELDS time sum_cn.sum sigma_sum_cn.sum height logweight\n"
+        "0.0 10.0 0.5 1.0 0.0\n",
+        encoding="utf-8",
+    )
+    (run_dir / "seg2.HILLS").write_text(
+        "#! FIELDS time sum_cn.sum sigma_sum_cn.sum height logweight\n"
+        "4.0 14.0 0.8 1.0 0.0\n",
+        encoding="utf-8",
+    )
+
+    outputs = reweight_plumed_colvar(
+        run_dir,
+        output_root=run_dir,
+        colvar_names=("seg1.COLVAR", "seg2.COLVAR"),
+        hills_names=("seg1.HILLS", "seg2.HILLS"),
+        cv_names=("sum_cn.sum", "foot_total"),
+        pairs=(("sum_cn.sum", "foot_total"),),
+        bias_names=("opes.bias", "opes_e.bias"),
+        ranges={"sum_cn.sum": (9.0, 16.0), "foot_total": (4.0, 10.0)},
+        skip_last_data_line_per_file=True,
+        blocks=2,
+        bins=12,
+        pair_bins=(8, 6),
+    )
+
+    rows = list(csv.DictReader(outputs["summary"].open()))
+    by_cv = {row["cvs"]: row for row in rows}
+    assert by_cv["sum_cn.sum"]["sample_size"] == "5"
+    assert by_cv["sum_cn.sum"]["bandwidth_sources"] == "sum_cn.sum:hills"
+    assert by_cv["foot_total"]["bandwidth_sources"] == "foot_total:default_bins"

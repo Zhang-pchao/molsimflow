@@ -22,6 +22,13 @@ analysis = [
 structure = [
   "ase",
 ]
+deepmd-sketch = [
+  "ase",
+  "deepmd-kit",
+  "dpdata",
+  "matplotlib",
+  "scikit-learn",
+]
 dev = [
   "pytest",
   "ruff",

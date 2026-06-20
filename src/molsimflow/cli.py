@@ -1124,6 +1124,65 @@ def _cmd_postprocess_fes_barriers(args: argparse.Namespace) -> int:
     return fes_main(workflow_args)
 
 
+def _cmd_postprocess_fes_reweight(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.fes_analysis import run_fes_reweight
+
+    workflow_args = [
+        "--run-dir",
+        str(args.run_dir),
+        "--temperature",
+        str(args.temperature),
+        "--skiprows",
+        str(args.skiprows),
+        "--blocks",
+        str(args.blocks),
+        "--bins",
+        str(args.bins),
+        "--pair-bins",
+        str(args.pair_bins[0]),
+        str(args.pair_bins[1]),
+        "--default-smooth-bins",
+        str(args.default_smooth_bins),
+        "--range-padding-fraction",
+        str(args.range_padding_fraction),
+        "--max-fes",
+        str(args.max_fes),
+        "--contour-levels",
+        str(args.contour_levels),
+        "--dpi",
+        str(args.dpi),
+        "--cmap",
+        args.cmap,
+    ]
+    if args.output_root is not None:
+        workflow_args.extend(["--output-root", str(args.output_root)])
+    for colvar_name in args.colvar or ["COLVAR"]:
+        workflow_args.extend(["--colvar", colvar_name])
+    for hills_name in args.hills or ["HILLS"]:
+        workflow_args.extend(["--hills", hills_name])
+    for cv_name in args.cv or []:
+        workflow_args.extend(["--cv", cv_name])
+    for x_name, y_name in args.pair or []:
+        workflow_args.extend(["--pair", x_name, y_name])
+    for bias_name in args.bias or []:
+        workflow_args.extend(["--bias", bias_name])
+    for cv_name, low, high in args.range or []:
+        workflow_args.extend(["--range", cv_name, str(low), str(high)])
+    for cv_name, sigma in args.bandwidth or []:
+        workflow_args.extend(["--bandwidth", cv_name, str(sigma)])
+    if args.skip_last_data_line:
+        workflow_args.append("--skip-last-data-line")
+    if args.skip_last_data_line_per_file:
+        workflow_args.append("--skip-last-data-line-per-file")
+    if args.keep_duplicate_times:
+        workflow_args.append("--keep-duplicate-times")
+    if args.write_plots:
+        workflow_args.append("--write-plots")
+    if args.write_comparison:
+        workflow_args.append("--write-comparison")
+    return run_fes_reweight(workflow_args)
+
+
 def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.fes_analysis import run_fes2d_grid
 
@@ -1358,6 +1417,8 @@ def _cmd_postprocess_plumed_cv_diagnostics(args: argparse.Namespace) -> int:
         workflow_args.extend(["--max-frames", str(args.max_frames)])
     if args.no_plots:
         workflow_args.append("--no-plots")
+    for x_column, y_column in args.phase_plane or []:
+        workflow_args.extend(["--phase-plane", x_column, y_column])
     if args.skip_last_data_line:
         workflow_args.append("--skip-last-data-line")
     return diagnostics_main(workflow_args)
@@ -1562,6 +1623,72 @@ def _cmd_postprocess_case_scorecard(args: argparse.Namespace) -> int:
     return case_main(workflow_args)
 
 
+def _cmd_postprocess_deepmd_dataset_sketch(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.deepmd_dataset_sketch import (
+        DeepmdDatasetSketchConfig,
+        run_deepmd_dataset_sketch,
+    )
+
+    result = run_deepmd_dataset_sketch(
+        DeepmdDatasetSketchConfig(
+            dataset_roots=tuple(args.dataset),
+            model=args.model,
+            output_dir=args.output,
+            batch_size=args.batch_size,
+            sample_count=args.sample_count,
+            random_state=args.random_state,
+            overwrite=args.overwrite,
+            gpu=args.gpu,
+            method=args.method,
+            perplexity=args.perplexity,
+            tsne_early_exaggeration=args.tsne_early_exaggeration,
+            tsne_learning_rate=args.tsne_learning_rate,
+            descriptor_preprocess=args.descriptor_preprocess,
+            descriptor_pca_components=args.descriptor_pca_components,
+            max_per_config=args.max_per_config,
+            write_structure_images=not args.no_structure_images,
+            write_latex_table=not args.no_latex_table,
+        )
+    )
+    print(result.output_dir)
+    print(
+        "datasets="
+        f"{result.dataset_count} "
+        f"frames={result.n_frames_total} "
+        f"selected={result.n_frames_after_downsample}"
+    )
+    print(f"configs={result.config_count}")
+    print(f"points={result.csv_path}")
+    print(f"metadata={result.metadata_path}")
+    print(
+        "figures="
+        f"{result.figure_path},"
+        f"{result.numbered_figure_path},"
+        f"{result.dataset_numbered_figure_path}"
+    )
+    return 0
+
+
+def _cmd_postprocess_sphere_cv_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.sphere_cv_compare import main as sphere_cv_compare_main
+
+    workflow_args = [
+        "--output-dir",
+        str(args.output_dir),
+        "--colvar-name",
+        args.colvar_name,
+        "--dpi",
+        str(args.dpi),
+    ]
+    for case in args.case:
+        workflow_args.extend(["--case", case])
+    for cv_name in args.cv or []:
+        workflow_args.extend(["--cv", cv_name])
+    if args.skip_last_data_line:
+        workflow_args.append("--skip-last-data-line")
+    return sphere_cv_compare_main(workflow_args)
+
+
 
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -1598,6 +1725,13 @@ def _add_plumed_cv_diagnostics_postprocess_args(parser: argparse.ArgumentParser)
     parser.add_argument("--colvar-time-tolerance-ps", type=float, default=0.002)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument(
+        "--phase-plane",
+        action="append",
+        nargs=2,
+        metavar=("X_COLUMN", "Y_COLUMN"),
+        help="Plot X_COLUMN versus Y_COLUMN colored by total bias and time; may be repeated",
+    )
     parser.add_argument(
         "--skip-last-data-line",
         action="store_true",
@@ -2056,6 +2190,34 @@ def _add_fes_barriers_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--uncertainty-column", type=int, default=2, help="Zero-based uncertainty column index; use -1 to disable")
 
 
+def _add_fes_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--colvar", action="append", default=[], help="COLVAR path relative to run dir; may be repeated")
+    parser.add_argument("--hills", action="append", default=[], help="HILLS path relative to run dir; may be repeated")
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--cv", action="append", default=[], help="1D projected CV name; may be repeated")
+    parser.add_argument("--pair", nargs=2, action="append", default=[], metavar=("X_CV", "Y_CV"))
+    parser.add_argument("--bias", action="append", default=[], help="Bias column name; repeat to sum biases")
+    parser.add_argument("--range", nargs=3, action="append", default=[], metavar=("CV", "LOW", "HIGH"))
+    parser.add_argument("--bandwidth", nargs=2, action="append", default=[], metavar=("CV", "SIGMA"))
+    parser.add_argument("--temperature", type=float, default=330.0)
+    parser.add_argument("--skiprows", type=int, default=0)
+    parser.add_argument("--blocks", type=int, default=3)
+    parser.add_argument("--bins", type=int, default=160)
+    parser.add_argument("--pair-bins", type=int, nargs=2, default=(90, 90), metavar=("NX", "NY"))
+    parser.add_argument("--default-smooth-bins", type=float, default=1.5)
+    parser.add_argument("--range-padding-fraction", type=float, default=0.05)
+    parser.add_argument("--skip-last-data-line", action="store_true")
+    parser.add_argument("--skip-last-data-line-per-file", action="store_true")
+    parser.add_argument("--keep-duplicate-times", action="store_true")
+    parser.add_argument("--max-fes", type=float, default=200.0)
+    parser.add_argument("--write-plots", action="store_true")
+    parser.add_argument("--write-comparison", action="store_true")
+    parser.add_argument("--contour-levels", type=int, default=16)
+    parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument("--cmap", default="viridis")
+
+
 def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fes-file", type=Path, required=True, help="PLUMED-style 2D FES table")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -2164,6 +2326,49 @@ def _add_case_scorecard_postprocess_args(parser: argparse.ArgumentParser) -> Non
     parser.add_argument("--pair", action="append", help="Case pair as REFERENCE:TARGET[:LABEL]; may be repeated")
     parser.add_argument("--target-column", help="Scorecard column used as the correlation target")
     parser.add_argument("--correlate", help="Comma, semicolon, or pipe separated scorecard columns for deltas/correlations")
+
+
+def _add_deepmd_dataset_sketch_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dataset", type=Path, nargs="+", required=True, help="Dataset root(s) to scan"
+    )
+    parser.add_argument("--model", type=Path, required=True, help="Path to frozen_model.pb")
+    parser.add_argument("--output", type=Path, required=True, help="Output directory")
+    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--sample-count", type=int, default=4)
+    parser.add_argument("--random-state", type=int, default=0)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--gpu", default="0", help="CUDA_VISIBLE_DEVICES value; use empty string for CPU"
+    )
+    parser.add_argument("--method", choices=("pca", "tsne"), default="tsne")
+    parser.add_argument("--perplexity", type=int, default=30)
+    parser.add_argument("--tsne-early-exaggeration", type=float, default=12.0)
+    parser.add_argument("--tsne-learning-rate", type=float)
+    parser.add_argument(
+        "--descriptor-preprocess",
+        choices=("none", "standardize", "pca", "standardize-pca"),
+        default="none",
+    )
+    parser.add_argument("--descriptor-pca-components", type=int, default=50)
+    parser.add_argument("--max-per-config", type=int, default=200)
+    parser.add_argument("--no-structure-images", action="store_true")
+    parser.add_argument("--no-latex-table", action="store_true")
+
+
+def _add_sphere_cv_compare_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--case",
+        action="append",
+        required=True,
+        metavar="LABEL=RUN_DIR",
+        help="Case label and run directory; may be repeated",
+    )
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--colvar-name", default="COLVAR")
+    parser.add_argument("--cv", action="append", default=[], help="CV column to compare; may be repeated")
+    parser.add_argument("--skip-last-data-line", action="store_true")
+    parser.add_argument("--dpi", type=int, default=220)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2713,6 +2918,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_fes_barriers_postprocess_args(fes_barriers)
     fes_barriers.set_defaults(func=_cmd_postprocess_fes_barriers)
 
+    fes_reweight = postprocess_subparsers.add_parser(
+        "fes-reweight",
+        help="Reweight OPES COLVAR data into 1D and 2D FES projections",
+    )
+    _add_fes_reweight_postprocess_args(fes_reweight)
+    fes_reweight.set_defaults(func=_cmd_postprocess_fes_reweight)
+
     fes2d_grid = postprocess_subparsers.add_parser(
         "fes2d-grid",
         help="Process a regular 2D FES grid into tables and optional plots",
@@ -2747,6 +2959,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_case_scorecard_postprocess_args(case_scorecard)
     case_scorecard.set_defaults(func=_cmd_postprocess_case_scorecard)
+
+    deepmd_sketch = postprocess_subparsers.add_parser(
+        "deepmd-dataset-sketch",
+        help="Visualize DeepMD training datasets with frozen-model descriptors",
+    )
+    _add_deepmd_dataset_sketch_postprocess_args(deepmd_sketch)
+    deepmd_sketch.set_defaults(func=_cmd_postprocess_deepmd_dataset_sketch)
+
+    sphere_cv_compare = postprocess_subparsers.add_parser(
+        "sphere-cv-compare",
+        help="Compare printed PLUMED CV traces across multiple run directories",
+    )
+    _add_sphere_cv_compare_postprocess_args(sphere_cv_compare)
+    sphere_cv_compare.set_defaults(func=_cmd_postprocess_sphere_cv_compare)
 
     return parser
 

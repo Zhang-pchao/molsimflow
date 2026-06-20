@@ -1,6 +1,6 @@
 # Recent md_postprocess Updates
 
-Inventory date: 2026-06-07.
+Inventory date: 2026-06-20.
 
 This note tracks recently modified legacy `md_postprocess` files that were not
 part of the first migration snapshot.  It is intentionally path-neutral so the
@@ -27,6 +27,13 @@ public repository does not record private absolute paths.
 - `analyze_hcl_event_aligned_sequence` and same-gap mechanism audit scripts: closed as fixed-input audit/publication packages.  Generic event-aligned profiles, coupling, case comparison, and gap-binned summaries are already covered by existing package modules.
 
 See `docs/recent_md_postprocess_completion_audit.md` for the completion audit.
+
+## 2026-06-20 Incremental Review
+
+Files modified after the 2026-06-07 cutoff were reviewed by modification time.
+The new files were TOC/Figure 6/Figure 7/JACS replot publication scripts; no new
+reusable analysis kernel required migration. See
+`docs/md_postprocess_incremental_audit_20260620.md`.
 
 ## Mostly Case-Specific Or Publication Layers
 

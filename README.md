@@ -52,10 +52,13 @@ molsimflow postprocess bridge-film --frame-table bridge_liquid_film_frame_metric
 molsimflow postprocess ion-water-coupling --feature-table transition_feature_table.csv --output-dir ion_water_coupling
 molsimflow postprocess bridge-ion-occupancy --positions tracked_bridge_ion_positions.csv --gap-table coalescence_state_table.csv --output-dir bridge_ion_descriptors
 molsimflow postprocess fes-barriers --curve fes-rew.dat "case A" tio2 --output-dir fes_barrier_results
+molsimflow postprocess fes-reweight --run-dir run --cv sum_cn.sum --pair sum_cn.sum foot_total --bias opes.bias --bias opes_e.bias
 molsimflow postprocess fes2d-grid --fes-file fes-rew-2d.dat --output-dir fes2d_grid --x-range 20 52 --y-range 50 380
 molsimflow postprocess fes2d-batch-manifest --case-manifest fes2d_cases.csv --output-manifest fes2d_batch_manifest.csv
 molsimflow postprocess fes-cumulative-reweight-manifest --manifest cumulative_cases.csv --driver FES_from_Reweighting4Gly_skipfooter.py --output-root cumulative_reweight --output-manifest cumulative_reweight_manifest.csv
 molsimflow postprocess fes-convergence --manifest fes_convergence_manifest.csv --output-dir fes_convergence --window-low 20 --window-high 52
+molsimflow postprocess deepmd-dataset-sketch --dataset dp_train_data --model frozen_model.pb --output sketch_map_output --method tsne --perplexity 20
+molsimflow postprocess sphere-cv-compare --case sphere15=case15 --case sphere17=case17 --output-dir sphere_cv_compare --cv foot_total
 molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results
 molsimflow plot line --input fes_processed_curves.csv --x-column cv --y-column free_energy_smooth_zeroed_kj_mol --group-column label --output fes_curves.png
 molsimflow plot scatter --input case_scorecard.csv --x-column bridge__bridge_waters --y-column barrier__barrier_kjmol --label-column case_label --fit-line --output descriptor_vs_barrier.png
@@ -81,7 +84,7 @@ python -m pip install -e .
 Install optional runtime groups only when needed:
 
 ```bash
-python -m pip install -e ".[analysis,structure,dev]"
+python -m pip install -e ".[analysis,structure,deepmd-sketch,dev]"
 ```
 
 ## Verification

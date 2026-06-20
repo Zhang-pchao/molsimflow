@@ -10,6 +10,7 @@ from molsimflow.postprocess.plumed_cv_diagnostics import (
     infer_cv_kind,
     parse_plumed_definitions,
     read_plumed_table,
+    run_diagnostics,
 )
 
 
@@ -125,7 +126,7 @@ def test_physical_checks_detect_cgs_split_sum(tmp_path: Path):
     table = read_plumed_table(colvar)
 
     assert infer_cv_kind(table, "auto") == "cgs"
-    checks = build_physical_checks(table, None, "cgs", None)
+    checks = build_physical_checks(table, None, "cgs", "cgs")
     by_name = {row["check"]: row for row in checks}
     assert by_name["cgs_equals_split_sum"]["status"] == "PASS"
     assert by_name["gas_surface_contact_sampled"]["status"] == "PASS"
@@ -208,3 +209,39 @@ def test_read_colvar_can_skip_last_valid_data_line(tmp_path: Path):
     assert table.row_count == 1
     np.testing.assert_allclose(table.column("time"), [0.0])
     np.testing.assert_allclose(table.column("nfilm"), [1.0])
+
+
+def test_run_diagnostics_writes_requested_phase_plane_maps(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    out_dir = tmp_path / "diag"
+    run_dir.mkdir()
+    (run_dir / "COLVAR").write_text(
+        "#! FIELDS time sum_cn.sum nads_total opes.bias opes_e.bias\n"
+        "0.0 10.0 20.0 -3.0 -1.0\n"
+        "1.0 12.0 24.0 -2.0 -0.5\n"
+        "2.0 14.0 28.0 -1.0 0.0\n",
+        encoding="utf-8",
+    )
+    (run_dir / "HILLS").write_text(
+        "#! FIELDS time sum_cn.sum nads_total sigma_sum_cn.sum sigma_nads_total height\n"
+        "0.0 10.0 20.0 1.0 1.0 0.5\n",
+        encoding="utf-8",
+    )
+    (run_dir / "in.plumed").write_text("", encoding="utf-8")
+
+    result = run_diagnostics(
+        DiagnosticConfig(
+            run_dir=run_dir,
+            output_dir=out_dir,
+            cv_kind="sum_cn",
+            phase_planes=(("sum_cn.sum", "nads_total"),),
+        )
+    )
+
+    bias_plot = out_dir / "phase_plane_sum_cn.sum_vs_nads_total_by_bias_total.png"
+    time_plot = out_dir / "phase_plane_sum_cn.sum_vs_nads_total_by_time.png"
+    assert bias_plot.is_file()
+    assert time_plot.is_file()
+    report = result.report_path.read_text(encoding="utf-8")
+    assert bias_plot.name in report
+    assert time_plot.name in report
