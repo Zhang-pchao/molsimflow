@@ -1689,6 +1689,58 @@ def _cmd_postprocess_sphere_cv_compare(args: argparse.Namespace) -> int:
     return sphere_cv_compare_main(workflow_args)
 
 
+def _cmd_postprocess_sphere_interface_structure(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.sphere_interface_structure import main as interface_main
+
+    workflow_args = [
+        "--output-dir",
+        str(args.output_dir),
+        "--dump-name",
+        args.dump_name,
+        "--plumed-name",
+        args.plumed_name,
+        "--framework-atom-type",
+        str(args.framework_atom_type),
+        "--oxygen-atom-type",
+        str(args.oxygen_atom_type),
+        "--carbon-atom-type",
+        str(args.carbon_atom_type),
+        "--hydrogen-atom-type",
+        str(args.hydrogen_atom_type),
+        "--last-frames-per-case",
+        str(args.last_frames_per_case),
+        "--frame-stride",
+        str(args.frame_stride),
+        "--timestep-ps",
+        str(args.timestep_ps),
+        "--interface-z-min-A",
+        str(args.interface_z_min_A),
+        "--interface-z-max-A",
+        str(args.interface_z_max_A),
+        "--bubble-radius-A",
+        str(args.bubble_radius_A),
+        "--outside-margin-A",
+        str(args.outside_margin_A),
+        "--si-o-cutoff-A",
+        str(args.si_o_cutoff_A),
+        "--si-c-cutoff-A",
+        str(args.si_c_cutoff_A),
+        "--hbond-oo-cutoff-A",
+        str(args.hbond_oo_cutoff_A),
+        "--hbond-angle-deg",
+        str(args.hbond_angle_deg),
+        "--dpi",
+        str(args.dpi),
+    ]
+    if args.data_name:
+        workflow_args.extend(["--data-name", args.data_name])
+    for case in args.case:
+        workflow_args.extend(["--case", case])
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return interface_main(workflow_args)
+
+
 
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -2371,6 +2423,37 @@ def _add_sphere_cv_compare_postprocess_args(parser: argparse.ArgumentParser) -> 
     parser.add_argument("--dpi", type=int, default=220)
 
 
+def _add_sphere_interface_structure_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--case",
+        action="append",
+        required=True,
+        metavar="LABEL=RUN_DIR",
+        help="Case label and run directory; may be repeated",
+    )
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--dump-name", default="trajectory.lammpstrj")
+    parser.add_argument("--plumed-name", default="in.plumed")
+    parser.add_argument("--data-name", help="Optional LAMMPS data filename relative to each case directory")
+    parser.add_argument("--framework-atom-type", type=int, required=True)
+    parser.add_argument("--oxygen-atom-type", type=int, required=True)
+    parser.add_argument("--carbon-atom-type", type=int, required=True)
+    parser.add_argument("--hydrogen-atom-type", type=int, required=True)
+    parser.add_argument("--last-frames-per-case", type=int, default=200)
+    parser.add_argument("--frame-stride", type=int, default=2)
+    parser.add_argument("--timestep-ps", type=float, default=0.001)
+    parser.add_argument("--interface-z-min-A", type=float, default=0.0)
+    parser.add_argument("--interface-z-max-A", type=float, default=12.0)
+    parser.add_argument("--bubble-radius-A", type=float, default=21.0)
+    parser.add_argument("--outside-margin-A", type=float, default=5.0)
+    parser.add_argument("--si-o-cutoff-A", type=float, default=2.20)
+    parser.add_argument("--si-c-cutoff-A", type=float, default=2.35)
+    parser.add_argument("--hbond-oo-cutoff-A", type=float, default=3.50)
+    parser.add_argument("--hbond-angle-deg", type=float, default=30.0)
+    parser.add_argument("--dpi", type=int, default=220)
+    parser.add_argument("--no-plots", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argument parser."""
     parser = argparse.ArgumentParser(prog="molsimflow")
@@ -2973,6 +3056,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_sphere_cv_compare_postprocess_args(sphere_cv_compare)
     sphere_cv_compare.set_defaults(func=_cmd_postprocess_sphere_cv_compare)
+
+    sphere_interface_structure = postprocess_subparsers.add_parser(
+        "sphere-interface-structure",
+        help="Analyze SiO2 topology, terminal motion, interfacial water, and H-bond networks",
+    )
+    _add_sphere_interface_structure_postprocess_args(sphere_interface_structure)
+    sphere_interface_structure.set_defaults(func=_cmd_postprocess_sphere_interface_structure)
 
     return parser
 

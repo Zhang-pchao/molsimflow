@@ -23,6 +23,7 @@ analysis = [
   "matplotlib",
   "MDAnalysis",
   "pandas",
+  "seaborn",
   "scipy",
 ]
 structure = [

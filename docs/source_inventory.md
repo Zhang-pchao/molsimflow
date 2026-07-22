@@ -2,7 +2,7 @@
 
 Inventory date: 2026-05-25.
 
-Host: `ssh 11`.
+Acquisition host: omitted from public documentation.
 
 ## Main Post-Processing Project
 

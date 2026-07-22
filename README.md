@@ -7,6 +7,7 @@
   LAMMPS dump frames;
 - PLUMED input generation for double-bubble enhanced-sampling cases;
 - a migration target for existing MD post-processing and visualization workflows;
+- reusable interface-structure, solvent-orientation, and hydrogen-bond summaries;
 - CSV-driven plotting helpers for reusable analysis figures.
 
 The package is being migrated from project-specific research scripts.  The new
@@ -59,6 +60,7 @@ molsimflow postprocess fes-cumulative-reweight-manifest --manifest cumulative_ca
 molsimflow postprocess fes-convergence --manifest fes_convergence_manifest.csv --output-dir fes_convergence --window-low 20 --window-high 52
 molsimflow postprocess deepmd-dataset-sketch --dataset dp_train_data --model frozen_model.pb --output sketch_map_output --method tsne --perplexity 20
 molsimflow postprocess sphere-cv-compare --case sphere15=case15 --case sphere17=case17 --output-dir sphere_cv_compare --cv foot_total
+molsimflow postprocess sphere-interface-structure --case case_a=/path/to/run_a --case case_b=/path/to/run_b --output-dir interface_structure --framework-atom-type 1 --oxygen-atom-type 2 --carbon-atom-type 3 --hydrogen-atom-type 4 --dump-name trajectory.lammpstrj --no-plots
 molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results
 molsimflow plot line --input fes_processed_curves.csv --x-column cv --y-column free_energy_smooth_zeroed_kj_mol --group-column label --output fes_curves.png
 molsimflow plot scatter --input case_scorecard.csv --x-column bridge__bridge_waters --y-column barrier__barrier_kjmol --label-column case_label --fit-line --output descriptor_vs_barrier.png
@@ -99,6 +101,28 @@ PYTHONPATH=src python -m pytest -q
 
 `pytest` is part of the `dev` extra.  If it is not available in a cluster
 environment, run the documented smoke commands for the workflow being migrated.
+
+The `sphere-interface-structure` command requires explicit LAMMPS atom-type
+IDs because type numbers are defined by each input system.  It also accepts
+case labels and paths from the command line; no project directory layout is
+embedded in the package.
+
+## Public Repository Safety
+
+This repository is intended for reusable code and small synthetic tests only.
+Do not commit credentials, API keys, private keys, server aliases or addresses,
+private filesystem paths, real trajectories, generated figures, scheduler logs,
+or project-specific output directories.  Run the public-readiness audit before
+staging changes:
+
+```bash
+python scripts/audit_public_repo.py
+```
+
+The audit checks private path/environment references, common SSH aliases,
+IPv4 addresses, token-like strings, private-key markers, and generated-output
+files.  Keep project-specific settings in an external configuration file or
+pass them explicitly at runtime.
 
 ## Layout
 

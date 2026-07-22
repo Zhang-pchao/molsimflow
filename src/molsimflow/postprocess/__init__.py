@@ -67,6 +67,13 @@ from molsimflow.postprocess.species_assignment import (
     classify_oxygen_species_indices,
 )
 from molsimflow.postprocess.sphere_cv_compare import CaseSpec as SphereCvCaseSpec
+from molsimflow.postprocess.sphere_interface_structure import (
+    AnalysisConfig as SphereInterfaceStructureConfig,
+    AtomTypeMap as SphereInterfaceAtomTypeMap,
+)
+from molsimflow.postprocess.sphere_interface_structure import (
+    CaseSpec as SphereInterfaceCaseSpec,
+)
 from molsimflow.postprocess.time_alignment import infer_timestep_time_scale, nearest_row_index
 from molsimflow.postprocess.transitions import (
     SpeciesStateRow,
@@ -120,6 +127,9 @@ __all__ = [
     "OxygenHydrogenAssignment",
     "SeedPositionRow",
     "SphereCvCaseSpec",
+    "SphereInterfaceAtomTypeMap",
+    "SphereInterfaceCaseSpec",
+    "SphereInterfaceStructureConfig",
     "SpeciesStateRow",
     "SpeciesTransitionResult",
     "TraceInputSpec",

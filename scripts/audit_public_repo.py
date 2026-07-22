@@ -18,6 +18,11 @@ PRIVATE_TEXT_PATTERNS = [
         "/opt/" + "gengzi",
         "bubble_ion/" + "TiO",
         r"conda activate\s+/(?:home|opt|WORK)",
+        r"(?im)(?:^|[`$;&|])\s*(?:ssh|scp)\s+(?:[A-Za-z][A-Za-z0-9_.-]*|[0-9]+)\b",
+        r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])",
+        r"(?i)\b(?:ghp|github_pat|glpat|sk)[_-][A-Za-z0-9_-]{20,}\b",
+        r"-----BEGIN [A-Z ]+ PRIVATE KEY-----",
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|secret[_-]?key|password)\s*[:=]",
     ]
 ]
 
