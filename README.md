@@ -1,97 +1,129 @@
 # molsimflow
 
-`molsimflow` is a reusable Python package for molecular-simulation workflows:
+`molsimflow` is a Python package and command-line interface for reusable
+molecular-simulation workflows. It turns one-off structure preparation,
+PLUMED setup, trajectory analysis, and plotting scripts into explicit,
+testable commands.
 
-- structure preparation utilities for slab, bubble, and electrolyte systems;
-- file conversion helpers for extended XYZ, LAMMPS data files, and selected
-  LAMMPS dump frames;
-- PLUMED input generation for double-bubble enhanced-sampling cases;
-- a migration target for existing MD post-processing and visualization workflows;
-- reusable interface-structure, solvent-orientation, and hydrogen-bond summaries;
-- CSV-driven plotting helpers for reusable analysis figures.
+The project follows three rules:
 
-The package is being migrated from project-specific research scripts.  The new
-code avoids user-specific absolute paths and exposes paths, environments, and
-case settings as command-line arguments or configuration values.
+- inputs and outputs are supplied by the user, never embedded as private paths;
+- command and module names describe the operation they perform;
+- reusable code, small synthetic tests, and essential documentation are kept in
+  Git, while trajectories and generated results stay outside the repository.
 
-## Current Status
+## Requirements
 
-This repository is an engineering scaffold plus the first sanitized utilities.
-Legacy sources may be kept locally under `legacy_sources/` for migration
-reference, but that directory is intentionally ignored by Git.  Only sanitized
-package code, reusable scripts, tests, and necessary documentation should be
-tracked.
-
-Implemented first-pass commands:
-
-```bash
-molsimflow structure add-extxyz-pbc --poscar POSCAR --xyz packed.xyz --output model.xyz
-molsimflow structure extxyz-to-lammps-data --xyz model.xyz --output model_atomic.data
-molsimflow structure equal-volume-radius --radii 19 14
-molsimflow structure slab-double-bubble --interface-structure interface.xyz --molecule-dir molecules --output-dir case
-molsimflow structure slab-double-bubble --interface-structure interface.xyz --molecule-dir molecules --output-dir case --run-packmol
-molsimflow structure tio2-double-bubble --bulk-structure bulk.cif --molecule-dir molecules --output-dir case
-molsimflow plumed double-bubble --data model_atomic.data --packmol packmol.in --build-py build.py --output in.plumed
-molsimflow plumed n2-com --structure model.xyz --with-surface --surface-element Si --surface-stride 10 --output in.plumed
-molsimflow plumed n2-com --structure model.xyz --with-surface --surface-element Si --surface-stride 10 --bias-mode opes --output in_surface_opes.plumed
-molsimflow postprocess centroids --traj_file run.lammpstrj --output bubble_centroids.txt --disable_ions
-molsimflow postprocess bubble-surface-distance --traj_file run.lammpstrj --output bubble_surface_distance.txt
-molsimflow postprocess coalescence-state --colvar COLVAR --output-dir coalescence_state
-molsimflow postprocess plumed-cv-diagnostics --run-dir run --output-dir cv_diagnostics
-molsimflow postprocess silica-surface --case model:model.xyz --output-dir silica_surface_summary --no-plots
-molsimflow postprocess particle-flotation --trajectory dump.lammpstrj --model-summary model_summary.json --output-dir particle_flotation
-molsimflow postprocess gas-contact-summary --input-table gas_connectivity_frame_table.csv --output-dir gas_contact_summary --radius-sum-A 38
-molsimflow postprocess bridge-electrostatics --ion-table bridge_species_position_table.csv --frame-table bridge_microstate_frame_table.csv --output-dir bridge_electrostatics
-molsimflow postprocess ion-species --traj run.lammpstrj --output-dir ion_analysis_results
-molsimflow postprocess ion-z-distribution --species-statistics ion_analysis_results/species_statistics.txt --h3o-file ion_analysis_results/solution_bulk_h3o.xyz
-molsimflow postprocess bridge-water-density --input coalescence_state_table.csv --output-dir bridge_water_descriptors
-molsimflow postprocess bridge-water-dewetting --dump dump.lammpstrj --water-oxygen-atoms 1201-9000:3 --plumed in.plumed --output-dir bridge_water_dewetting
-molsimflow postprocess bridge-water-flux --manifest bridge_water_trace_manifest.csv --output-dir bridge_water_flux
-molsimflow postprocess bridge-seed-survival --manifest bridge_water_trace_manifest.csv --output-dir seed_water_survival
-molsimflow postprocess transition-events --input bridge_water_dewetting.csv --output-dir transition_events
-molsimflow postprocess bridge-film --frame-table bridge_liquid_film_frame_metrics.csv --output-dir bridge_film
-molsimflow postprocess ion-water-coupling --feature-table transition_feature_table.csv --output-dir ion_water_coupling
-molsimflow postprocess bridge-ion-occupancy --positions tracked_bridge_ion_positions.csv --gap-table coalescence_state_table.csv --output-dir bridge_ion_descriptors
-molsimflow postprocess fes-barriers --curve fes-rew.dat "case A" tio2 --output-dir fes_barrier_results
-molsimflow postprocess fes-reweight --run-dir run --cv sum_cn.sum --pair sum_cn.sum foot_total --bias opes.bias --bias opes_e.bias
-molsimflow postprocess fes2d-grid --fes-file fes-rew-2d.dat --output-dir fes2d_grid --x-range 20 52 --y-range 50 380
-molsimflow postprocess fes2d-batch-manifest --case-manifest fes2d_cases.csv --output-manifest fes2d_batch_manifest.csv
-molsimflow postprocess fes-cumulative-reweight-manifest --manifest cumulative_cases.csv --driver FES_from_Reweighting4Gly_skipfooter.py --output-root cumulative_reweight --output-manifest cumulative_reweight_manifest.csv
-molsimflow postprocess fes-convergence --manifest fes_convergence_manifest.csv --output-dir fes_convergence --window-low 20 --window-high 52
-molsimflow postprocess deepmd-dataset-sketch --dataset dp_train_data --model frozen_model.pb --output sketch_map_output --method tsne --perplexity 20
-molsimflow postprocess sphere-cv-compare --case sphere15=case15 --case sphere17=case17 --output-dir sphere_cv_compare --cv foot_total
-molsimflow postprocess sphere-interface-structure --case case_a=/path/to/run_a --case case_b=/path/to/run_b --output-dir interface_structure --framework-atom-type 1 --oxygen-atom-type 2 --carbon-atom-type 3 --hydrogen-atom-type 4 --dump-name trajectory.lammpstrj --no-plots
-molsimflow postprocess case-scorecard --cases cases.csv --descriptor-manifest descriptor_manifest.csv --output-dir case_comparison_results
-molsimflow plot line --input fes_processed_curves.csv --x-column cv --y-column free_energy_smooth_zeroed_kj_mol --group-column label --output fes_curves.png
-molsimflow plot scatter --input case_scorecard.csv --x-column bridge__bridge_waters --y-column barrier__barrier_kjmol --label-column case_label --fit-line --output descriptor_vs_barrier.png
-molsimflow plot heatmap --input case_descriptor_delta.csv --row-column descriptor --column-column case_pair_label --value-column delta_target_minus_reference --output descriptor_delta_heatmap.png
-molsimflow config summary --config workflow.ini
-molsimflow config env --config workflow.ini --section scheduler --section structure
-```
-
-For direct source-tree execution before installation:
-
-```bash
-PYTHONPATH=src python -m molsimflow.cli --help
-```
+- Python 3.9 or newer;
+- NumPy for the core package;
+- optional dependencies only for workflows that need plotting, structure
+  handling, or DeepMD data.
 
 ## Installation
 
-From a checkout:
+Install the core package from a checkout:
 
 ```bash
 python -m pip install -e .
 ```
 
-Install optional runtime groups only when needed:
+Install only the optional groups you need:
 
 ```bash
-python -m pip install -e ".[analysis,structure,deepmd-sketch,dev]"
+python -m pip install -e ".[analysis]"
+python -m pip install -e ".[structure]"
+python -m pip install -e ".[deepmd-sketch]"
+python -m pip install -e ".[dev]"
 ```
 
-## Verification
+## Discovering commands
 
-Before publishing or committing a migration batch:
+The CLI is organized by task. Start from the built-in help instead of copying a
+project-specific script:
+
+```bash
+molsimflow --help
+molsimflow structure --help
+molsimflow plumed --help
+molsimflow postprocess --help
+molsimflow plot --help
+```
+
+For direct execution from an uninstalled source checkout:
+
+```bash
+PYTHONPATH=src python -m molsimflow.cli --help
+```
+
+## Quick examples
+
+Convert an extended XYZ structure to a LAMMPS data file:
+
+```bash
+molsimflow structure extxyz-to-lammps-data \
+  --xyz model.xyz \
+  --output model_atomic.data
+```
+
+Run generic PLUMED diagnostics for selected collective variables:
+
+```bash
+molsimflow postprocess plumed-cv-diagnostics \
+  --run-dir run \
+  --output-dir diagnostics \
+  --cv-kind generic \
+  --target-cv coordination \
+  --plot-column coordination \
+  --plot-column distance
+```
+
+Describe configured reactive-path frames without embedding case paths in code:
+
+```bash
+molsimflow postprocess reactive-path-frames \
+  --manifest frames.tsv \
+  --site-config reactive_sites.json \
+  --output-dir reactive_path_results
+```
+
+Every command accepts `--help` and writes only to paths supplied through its
+arguments or configuration.
+
+## Capabilities
+
+| Area | Examples | Documentation |
+| --- | --- | --- |
+| Structure and I/O | extended XYZ, LAMMPS data, double-bubble slabs | [Configuration](docs/configuration.md) |
+| PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
+| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events | [Post-processing](docs/postprocess_migration.md) |
+| Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
+| Plotting | line, scatter, and heatmap figures from tabular data | `molsimflow plot --help` |
+
+The package is still migrating from research-specific scripts. The public API
+contains only workflows that have explicit inputs, reusable names, and focused
+tests. Local migration snapshots belong in the ignored `legacy_sources/`
+directory and must never be imported by package code.
+
+## Repository layout
+
+```text
+src/molsimflow/
+  config/        External workflow configuration.
+  io/            Simulation file readers and writers.
+  plotting/      Table-driven plotting helpers.
+  plumed/        PLUMED input generators.
+  postprocess/   Reusable analysis workflows.
+  structure/     Geometry and structure preparation.
+  workflows/     Composed multi-step workflows.
+docs/             Workflow and migration documentation.
+templates/        Generic configuration and scheduler templates.
+tests/            Small synthetic tests.
+legacy_sources/   Ignored local migration references.
+```
+
+## Development and public-safety checks
+
+Before committing a migration batch:
 
 ```bash
 python scripts/audit_public_repo.py
@@ -99,61 +131,15 @@ python -m compileall -q src scripts tests
 PYTHONPATH=src python -m pytest -q
 ```
 
-`pytest` is part of the `dev` extra.  If it is not available in a cluster
-environment, run the documented smoke commands for the workflow being migrated.
+The audit checks tracked files and unignored new files for private paths,
+credentials, host aliases, addresses, generated results, logs, and backups.
+Keep scheduler settings, environments, real trajectories, and case outputs in
+external configuration or private working directories.
 
-The `sphere-interface-structure` command requires explicit LAMMPS atom-type
-IDs because type numbers are defined by each input system.  It also accepts
-case labels and paths from the command line; no project directory layout is
-embedded in the package.
+Contributions should keep source code, comments, docstrings, CLI help, tests,
+and commit messages in English. Add a focused synthetic test for non-trivial
+logic and avoid introducing a dependency when the standard library is enough.
 
-## Public Repository Safety
+## License
 
-This repository is intended for reusable code and small synthetic tests only.
-Do not commit credentials, API keys, private keys, server aliases or addresses,
-private filesystem paths, real trajectories, generated figures, scheduler logs,
-or project-specific output directories.  Run the public-readiness audit before
-staging changes:
-
-```bash
-python scripts/audit_public_repo.py
-```
-
-The audit checks private path/environment references, common SSH aliases,
-IPv4 addresses, token-like strings, private-key markers, and generated-output
-files.  Keep project-specific settings in an external configuration file or
-pass them explicitly at runtime.
-
-## Layout
-
-```text
-src/molsimflow/
-  config/        External workflow configuration helpers.
-  io/             File readers, writers, converters, and trajectory helpers.
-  structure/      Geometry helpers and future structure builders.
-  plumed/         PLUMED generators.
-  postprocess/    Migrated MD analysis workflows.
-  plotting/       CSV-driven plotting helpers.
-  workflows/      Project workflow composition namespaces.
-docs/             Migration plan and publicization notes.
-templates/        Generic scheduler templates.
-tests/            Small unit tests for reusable utilities.
-legacy_sources/   Local migration snapshot, ignored by Git.
-```
-
-## Migration Rule
-
-New package code should be public-facing by default:
-
-- no hardcoded personal absolute input or output paths;
-- no mandatory conda/module environment strings inside Python logic;
-- no hidden assumptions about one case directory layout unless documented;
-- all code comments, docstrings, CLI help, and commit messages in English;
-- project-specific examples belong in `examples/` or docs, not in library defaults;
-- generated outputs, plots, scheduler logs, and backup files do not belong in Git.
-
-Run the public-readiness audit before committing:
-
-```bash
-python scripts/audit_public_repo.py
-```
+MIT. See [LICENSE](LICENSE).

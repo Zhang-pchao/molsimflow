@@ -685,10 +685,17 @@ def descriptor_summary(
         xs = np.asarray([_as_float(row.get("s_center_A")) for row in profile_rows], dtype=float)
         ys = np.asarray([abs(_as_float(row.get("charge_density_e_per_A3"), 0.0)) for row in profile_rows], dtype=float)
         finite = np.isfinite(xs) & np.isfinite(ys)
+        finite_x = xs[finite]
+        finite_y = ys[finite]
+        integrated = (
+            float(np.sum(np.diff(finite_x) * (finite_y[:-1] + finite_y[1:]) * 0.5))
+            if finite_x.size >= 2
+            else math.nan
+        )
         rows.append(
             {
                 "descriptor": "axial_profile_integrated_abs_charge_density_e_A2",
-                "mean": float(np.trapz(ys[finite], xs[finite])) if np.count_nonzero(finite) >= 2 else math.nan,
+                "mean": integrated,
                 "std": math.nan,
                 "n_frames": _count_frames(frame_metric_rows, (), cfg.frame_column),
             }

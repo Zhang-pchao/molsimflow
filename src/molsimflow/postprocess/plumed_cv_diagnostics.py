@@ -83,6 +83,7 @@ class DiagnosticConfig:
     dpi: int = 180
     skip_last_data_line: bool = False
     phase_planes: tuple[tuple[str, str], ...] = ()
+    plot_columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,8 @@ def infer_cv_kind(table: PlumedTable, requested: str) -> str:
 def resolve_target_cv(table: PlumedTable, cv_kind: str, requested: Optional[str]) -> str:
     """Resolve and validate the target CV column."""
 
+    if cv_kind == "generic" and requested is None:
+        raise ValueError("--target-cv is required when --cv-kind=generic")
     target = requested or PRIMARY_CV_BY_KIND[cv_kind]
     if not table.has(target):
         raise KeyError(f"Missing target CV column {target!r} in {table.path}")
@@ -289,6 +292,16 @@ def validate_phase_planes(
             raise KeyError(f"Missing phase-plane column(s) {missing!r} in {table.path}")
 
 
+def resolve_plot_columns(table: PlumedTable, requested: Sequence[str]) -> list[str]:
+    """Resolve optional plot-column selection and preserve user order."""
+
+    columns = list(dict.fromkeys(requested)) if requested else cv_columns(table)
+    missing = [column for column in columns if not table.has(column)]
+    if missing:
+        raise KeyError(f"Missing plot column(s) {missing!r} in {table.path}")
+    return columns
+
+
 def cv_columns(table: PlumedTable) -> list[str]:
     return [column for column in table.columns if column not in DIAGNOSTIC_COLUMNS]
 
@@ -301,6 +314,10 @@ def bias_total(table: PlumedTable) -> Optional[np.ndarray]:
     for values in parts:
         total = total + values
     return total
+
+
+def bias_label(table: PlumedTable) -> str:
+    return " + ".join(column for column in BIAS_COLUMNS if table.has(column))
 
 
 def _check(status: str, name: str, value: object, note: str) -> dict[str, object]:
@@ -806,7 +823,7 @@ def _plot_phase_plane(
         c=color_values[mask],
         s=4,
         alpha=0.5,
-        cmap="viridis",
+        cmap="cividis",
         linewidths=0,
         rasterized=True,
     )
@@ -831,12 +848,15 @@ def make_plots(
     geometry_rows: Sequence[Mapping[str, object]],
     dpi: int,
     phase_planes: Sequence[tuple[str, str]] = (),
+    plot_columns: Sequence[str] = (),
 ) -> list[Path]:
     plt = _load_matplotlib()
     written: list[Path] = []
     time = table.column("time") if table.has("time") else np.arange(table.row_count)
     total_bias = bias_total(table)
-    for column in cv_columns(table):
+    total_bias_label = bias_label(table)
+    columns = resolve_plot_columns(table, plot_columns)
+    for column in columns:
         values = table.column(column)
         fig, ax = plt.subplots(figsize=(8, 4.5), dpi=dpi)
         ax.plot(time, values, lw=1.0)
@@ -860,9 +880,9 @@ def make_plots(
 
         if total_bias is not None:
             fig, ax = plt.subplots(figsize=(6, 4.8), dpi=dpi)
-            scatter = ax.scatter(values, total_bias, s=4, alpha=0.45, c=time, cmap="viridis")
+            scatter = ax.scatter(values, total_bias, s=4, alpha=0.45, c=time, cmap="cividis")
             ax.set_xlabel(column)
-            ax.set_ylabel("opes.bias + opes_e.bias")
+            ax.set_ylabel(total_bias_label)
             ax.set_title(f"Bias vs {column}")
             fig.colorbar(scatter, ax=ax, label="Time (ps)")
             out = output_dir / f"bias_vs_{_safe_filename(column)}.png"
@@ -873,7 +893,7 @@ def make_plots(
         fig, ax = plt.subplots(figsize=(8, 4.5), dpi=dpi)
         ax.plot(time, total_bias, lw=1.0)
         ax.set_xlabel("Time (ps)")
-        ax.set_ylabel("opes.bias + opes_e.bias")
+        ax.set_ylabel(total_bias_label)
         ax.set_title("Total OPES bias vs time")
         out = output_dir / "timeseries_bias_total.png"
         fig.savefig(out, bbox_inches="tight")
@@ -894,7 +914,7 @@ def make_plots(
                     y_values,
                     total_bias,
                     "bias_total",
-                    "opes.bias + opes_e.bias",
+                    total_bias_label,
                     dpi,
                 )
             )
@@ -913,7 +933,6 @@ def make_plots(
             )
         )
 
-    columns = cv_columns(table)
     if len(columns) >= 2:
         corr = np.asarray(
             [[pearson(table.column(x), table.column(y)) for y in columns] for x in columns],
@@ -1035,7 +1054,7 @@ def write_report(
     warn_fail = [row for row in checks if row["status"] != "PASS"]
     if warn_fail:
         lines.append("")
-        lines.append("Warnings indicate either a possible definition issue or that the 50 ps test did not sample the relevant physical event.")
+        lines.append("Warnings indicate either a possible definition issue or that the sampled trajectory did not contain the relevant physical event.")
     if geometry_rows:
         lines.extend(["", f"Geometry validation frames: {len(geometry_rows)}"])
     if plot_paths:
@@ -1057,6 +1076,7 @@ def run_diagnostics(config: DiagnosticConfig) -> DiagnosticResult:
     cv_kind = infer_cv_kind(colvar, config.cv_kind)
     target = resolve_target_cv(colvar, cv_kind, config.target_cv)
     validate_phase_planes(colvar, config.phase_planes)
+    resolve_plot_columns(colvar, config.plot_columns)
     definitions = parse_plumed_definitions(config.run_dir / config.plumed_name)
 
     clean_rows = colvar.data.tolist()
@@ -1142,6 +1162,7 @@ def run_diagnostics(config: DiagnosticConfig) -> DiagnosticResult:
             geometry_rows,
             config.dpi,
             config.phase_planes,
+            config.plot_columns,
         )
     report_path = config.output_dir / "analysis_report.md"
     write_report(report_path, config, cv_kind, target, colvar, hills, summary_rows, checks, geometry_rows, plot_paths)
@@ -1159,7 +1180,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", type=Path, required=True, help="Directory containing COLVAR/HILLS/in.plumed")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for diagnostics")
     parser.add_argument("--case-label", default="")
-    parser.add_argument("--cv-kind", choices=["auto", "nfilm", "cgs", "footprint", "dz", "sum_cn"], default="auto")
+    parser.add_argument(
+        "--cv-kind",
+        choices=["auto", "generic", "nfilm", "cgs", "footprint", "dz", "sum_cn"],
+        default="auto",
+    )
     parser.add_argument("--target-cv", help="Override target CV column for generic diagnostics")
     parser.add_argument("--colvar-name", default="COLVAR")
     parser.add_argument("--hills-name", default="HILLS")
@@ -1171,6 +1196,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--colvar-time-tolerance-ps", type=float, default=0.002)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument(
+        "--plot-column",
+        action="append",
+        help="Plot only this COLVAR column; may be repeated",
+    )
     parser.add_argument(
         "--phase-plane",
         action="append",
@@ -1207,6 +1237,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             dpi=args.dpi,
             skip_last_data_line=args.skip_last_data_line,
             phase_planes=tuple(tuple(pair) for pair in (args.phase_plane or [])),
+            plot_columns=tuple(args.plot_column or []),
         )
     )
     print(f"output_dir={result.output_dir}")

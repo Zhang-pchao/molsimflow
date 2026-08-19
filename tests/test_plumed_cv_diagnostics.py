@@ -245,3 +245,44 @@ def test_run_diagnostics_writes_requested_phase_plane_maps(tmp_path: Path):
     report = result.report_path.read_text(encoding="utf-8")
     assert bias_plot.name in report
     assert time_plot.name in report
+
+
+def test_run_diagnostics_supports_generic_selected_cv_plots(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    out_dir = tmp_path / "diag"
+    run_dir.mkdir()
+    (run_dir / "COLVAR").write_text(
+        "#! FIELDS time logdistance ionization iondistance opes.bias\n"
+        "0.0 -0.2 0.1 1.2 -3.0\n"
+        "1.0 -0.1 0.2 1.1 -2.0\n"
+        "2.0 0.0 0.3 1.0 -1.0\n",
+        encoding="utf-8",
+    )
+    (run_dir / "in.plumed").write_text("", encoding="utf-8")
+
+    result = run_diagnostics(
+        DiagnosticConfig(
+            run_dir=run_dir,
+            output_dir=out_dir,
+            cv_kind="generic",
+            target_cv="logdistance",
+            plot_columns=("logdistance", "ionization"),
+            phase_planes=(
+                ("time", "logdistance"),
+                ("time", "ionization"),
+                ("logdistance", "ionization"),
+            ),
+        )
+    )
+
+    assert (out_dir / "timeseries_logdistance.png").is_file()
+    assert (out_dir / "timeseries_ionization.png").is_file()
+    assert not (out_dir / "timeseries_iondistance.png").exists()
+    for stem in (
+        "time_vs_logdistance",
+        "time_vs_ionization",
+        "logdistance_vs_ionization",
+    ):
+        assert (out_dir / f"phase_plane_{stem}_by_bias_total.png").is_file()
+        assert (out_dir / f"phase_plane_{stem}_by_time.png").is_file()
+    assert "target column: `logdistance`" in result.report_path.read_text(encoding="utf-8")

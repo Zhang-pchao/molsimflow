@@ -7,6 +7,7 @@ import argparse
 import fnmatch
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import List, Optional
 
@@ -75,8 +76,45 @@ TEXT_SUFFIXES = {
 }
 
 
+def _git_candidate_files(root: Path) -> Optional[list[Path]]:
+    """Return tracked and unignored untracked files for a Git worktree."""
+
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if Path(top_level).resolve() != root.resolve():
+            return None
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return sorted(Path(item.decode()) for item in result.stdout.split(b"\0") if item)
+
+
 def iter_files(root: Path, include_ignored: bool) -> list[Path]:
-    """Return repository files to audit."""
+    """Return public candidates, or all files when ignored content is requested."""
+
+    if not include_ignored:
+        candidates = _git_candidate_files(root)
+        if candidates is not None:
+            return candidates
+
     excluded_dirs = {".git"}
     if not include_ignored:
         excluded_dirs.add("legacy_sources")

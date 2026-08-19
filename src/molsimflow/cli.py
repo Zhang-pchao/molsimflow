@@ -799,6 +799,39 @@ def _cmd_postprocess_hbond_network(args: argparse.Namespace) -> int:
     return hbond_main(workflow_args)
 
 
+def _cmd_postprocess_reactive_path_frames(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.reactive_path import main as reactive_path_main
+
+    return reactive_path_main(
+        [
+            "--manifest",
+            str(args.manifest),
+            "--site-config",
+            str(args.site_config),
+            "--output-dir",
+            str(args.output_dir),
+        ]
+    )
+
+
+def _cmd_postprocess_electronic_path_profiles(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.electronic_path import main as electronic_path_main
+
+    workflow_args = [
+        "--atom-table",
+        str(args.atom_table),
+        "--frame-table",
+        str(args.frame_table),
+        "--config",
+        str(args.config),
+        "--output-dir",
+        str(args.output_dir),
+    ]
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return electronic_path_main(workflow_args)
+
+
 def _cmd_postprocess_contact_graph(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.contact_graph import main as contact_main
 
@@ -1417,6 +1450,8 @@ def _cmd_postprocess_plumed_cv_diagnostics(args: argparse.Namespace) -> int:
         workflow_args.extend(["--max-frames", str(args.max_frames)])
     if args.no_plots:
         workflow_args.append("--no-plots")
+    for column in args.plot_column or []:
+        workflow_args.extend(["--plot-column", column])
     for x_column, y_column in args.phase_plane or []:
         workflow_args.extend(["--phase-plane", x_column, y_column])
     if args.skip_last_data_line:
@@ -1765,7 +1800,11 @@ def _add_plumed_cv_diagnostics_postprocess_args(parser: argparse.ArgumentParser)
     parser.add_argument("--run-dir", type=Path, required=True, help="Directory containing COLVAR/HILLS/in.plumed")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for diagnostic outputs")
     parser.add_argument("--case-label", default="")
-    parser.add_argument("--cv-kind", choices=["auto", "nfilm", "cgs", "footprint", "dz", "sum_cn"], default="auto")
+    parser.add_argument(
+        "--cv-kind",
+        choices=["auto", "generic", "nfilm", "cgs", "footprint", "dz", "sum_cn"],
+        default="auto",
+    )
     parser.add_argument("--target-cv", help="Override target CV column for generic diagnostics")
     parser.add_argument("--colvar-name", default="COLVAR")
     parser.add_argument("--hills-name", default="HILLS")
@@ -1777,6 +1816,11 @@ def _add_plumed_cv_diagnostics_postprocess_args(parser: argparse.ArgumentParser)
     parser.add_argument("--colvar-time-tolerance-ps", type=float, default=0.002)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--no-plots", action="store_true")
+    parser.add_argument(
+        "--plot-column",
+        action="append",
+        help="Plot only this COLVAR column; may be repeated",
+    )
     parser.add_argument(
         "--phase-plane",
         action="append",
@@ -2075,6 +2119,30 @@ def _add_hbond_network_postprocess_args(parser: argparse.ArgumentParser) -> None
     parser.add_argument("--side-thickness-A", type=float, default=1.0)
     parser.add_argument("--gap-bin-width-A", type=float, default=2.0)
     parser.add_argument("--min-bin-count", type=int, default=1)
+
+
+def _add_reactive_path_frames_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--manifest", type=Path, required=True, help="Input frame manifest TSV or CSV"
+    )
+    parser.add_argument(
+        "--site-config", type=Path, required=True, help="Reactive-site JSON configuration"
+    )
+    parser.add_argument("--output-dir", type=Path, required=True, help="Directory for output tables")
+
+
+def _add_electronic_path_profiles_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--atom-table", type=Path, required=True, help="Atom-level CSV or TSV")
+    parser.add_argument("--frame-table", type=Path, required=True, help="Frame-level CSV or TSV")
+    parser.add_argument(
+        "--config", type=Path, required=True, help="Path-profile JSON configuration"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, required=True, help="Directory for tables and plots"
+    )
+    parser.add_argument(
+        "--no-plots", action="store_true", help="Write tables without matplotlib plots"
+    )
 
 
 def _add_contact_graph_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -2937,6 +3005,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_hbond_network_postprocess_args(hbond_network)
     hbond_network.set_defaults(func=_cmd_postprocess_hbond_network)
+
+    reactive_path = postprocess_subparsers.add_parser(
+        "reactive-path-frames",
+        help="Analyze manifest-backed reactive-path XYZ frames and water wires",
+    )
+    _add_reactive_path_frames_postprocess_args(reactive_path)
+    reactive_path.set_defaults(func=_cmd_postprocess_reactive_path_frames)
+
+    electronic_path = postprocess_subparsers.add_parser(
+        "electronic-path-profiles",
+        help="Build geometry-gated charge and spin profiles along configured paths",
+    )
+    _add_electronic_path_profiles_postprocess_args(electronic_path)
+    electronic_path.set_defaults(func=_cmd_postprocess_electronic_path_profiles)
 
     contact_graph = postprocess_subparsers.add_parser(
         "contact-graph",
