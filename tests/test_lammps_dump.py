@@ -4,8 +4,10 @@ from molsimflow.io.lammps_dump import (
     box_lengths,
     cylinder_membership,
     iter_lammps_dump_frames,
+    iter_lammps_dump_records,
     midpoint_minimum_image,
     periodic_center,
+    write_lammps_dump_frame,
 )
 
 
@@ -60,3 +62,22 @@ def test_periodic_midpoint_and_cylinder_membership():
     assert mask.tolist() == [True, True]
     assert np.allclose(np.abs(axial), [0.5, 0.5])
     assert np.allclose(radial, [0.0, 0.0])
+
+
+def test_full_dump_records_preserve_extra_atom_columns(tmp_path):
+    source = tmp_path / "input.lammpstrj"
+    source.write_text(
+        "ITEM: TIMESTEP\n0\n"
+        "ITEM: NUMBER OF ATOMS\n1\n"
+        "ITEM: BOX BOUNDS pp pp pp\n0 10\n0 10\n0 10\n"
+        "ITEM: ATOMS id type x y z charge\n1 2 1 2 3 -0.4\n",
+        encoding="utf-8",
+    )
+    frame = next(iter_lammps_dump_records(source))
+    output = tmp_path / "output.lammpstrj"
+    with output.open("w", encoding="utf-8") as handle:
+        write_lammps_dump_frame(handle, frame)
+
+    reread = next(iter_lammps_dump_records(output))
+    assert reread.atom_fields == ("id", "type", "x", "y", "z", "charge")
+    assert reread.atom_rows[0][-1] == "-0.4"

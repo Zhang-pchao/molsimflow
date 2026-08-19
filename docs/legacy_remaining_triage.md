@@ -60,11 +60,21 @@ These legacy areas have first-pass engineered replacements:
   - first shared LAMMPS dump reader, PBC geometry helpers, and nearest-time
     alignment helpers;
   - periodic O-H assignment and oxygen species grouping;
+  - CP2K final energy/force parsing and unit conversion;
+  - generic force-error, grouped relative-energy, and periodic
+    coordinate-neighbor metrics;
+  - temperature-configurable Eyring sensitivity and conditional two-channel
+    competition;
   - species transition matrix counting from explicit long-form state tables;
   - water-orientation geometry and explicit sample-table summaries;
   - 1D FES processing and barrier summaries;
-  - case scorecards, case-pair deltas, and descriptor correlations.
-  - PLUMED CV diagnostic summaries for COLVAR/HILLS and optional dump geometry checks;
+  - case scorecards, case-pair deltas, and descriptor correlations;
+  - streaming LAMMPS dump concatenation, frame selection, Z unwrapping, global
+    shifting, and configurable reference-layer alignment;
+  - naturally numbered image-sequence discovery, cropping, annotation, and
+    optional MP4 output;
+  - PLUMED CV diagnostic summaries for COLVAR/HILLS and optional dump geometry
+    checks;
   - silica-surface CH3/OH termination summaries from extended XYZ models;
   - silica-particle flotation/N2 coverage summaries from LAMMPS dump trajectories.
 - plotting/config:
@@ -130,11 +140,11 @@ sensitivity/reporting adapters.
     `molsimflow.workflows.double_bubble_merge.microstate`.
   - Residual trajectory extraction and plotting remain optional adapters.
 
-### Optional Low-Level Trajectory Utilities
+### Optional Domain-Specific Trajectory Adapters
 
-The first shared LAMMPS dump and time-alignment helpers are already migrated.
-Extend them only when adding a direct trajectory adapter that needs more raw
-atom-record outputs.
+Shared LAMMPS dump reading, transformation, and time-alignment helpers are
+already migrated. Extend them only when a direct domain-specific adapter needs
+additional atom-record outputs.
 
 - extend shared LAMMPS dump readers and time-alignment helpers for:
   - raw trajectory membership outputs needed by

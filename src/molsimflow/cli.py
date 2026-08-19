@@ -814,6 +814,85 @@ def _cmd_postprocess_reactive_path_frames(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_postprocess_reaction_kinetics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.reaction_kinetics import run_reaction_kinetics
+
+    outputs = run_reaction_kinetics(
+        args.input,
+        args.output_dir,
+        temperature_K=args.temperature_K,
+        transmission_coefficient=args.transmission_coefficient,
+        barrier_shifts_kj_mol=args.barrier_shifts_kj_mol,
+        competitor_rates_s_inv=args.competitor_rates_s_inv,
+    )
+    for path in outputs.values():
+        print(path)
+    return 0
+
+
+def _cmd_postprocess_prepare_trajectory(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.trajectory_transform import prepare_trajectory
+
+    metadata = prepare_trajectory(
+        args.input,
+        args.output,
+        frame_start=args.frame_start,
+        frame_stop=args.frame_stop,
+        stride=args.stride,
+        drop_first_each_input=args.drop_first_each_input,
+        unwrap_z=args.unwrap_z,
+        shift_min_z_A=args.shift_min_z_A,
+        require_within_box=args.require_within_box,
+    )
+    print(metadata["output"])
+    print(metadata["metadata"])
+    return 0
+
+
+def _cmd_postprocess_align_reference_layer(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.trajectory_transform import align_reference_layer
+
+    metadata = align_reference_layer(
+        args.input,
+        args.output,
+        reference_atom_ids=args.reference_atom_id,
+        reference_atom_type=args.reference_atom_type,
+        layer_edge=args.layer_edge,
+        layer_tolerance_A=args.layer_tolerance_A,
+        expected_atom_count=args.expected_atom_count,
+        reference_z_A=args.reference_z_A,
+        require_within_box=args.require_within_box,
+    )
+    print(metadata["output"])
+    print(metadata["metadata"])
+    return 0
+
+
+def _cmd_media_image_sequence_video(args: argparse.Namespace) -> int:
+    from molsimflow.media.image_sequence import make_video
+
+    metadata = make_video(
+        args.image_dir,
+        args.output,
+        pattern=args.pattern,
+        reference_image=args.reference_image,
+        crop_white_border=args.crop_white_border,
+        white_threshold=args.white_threshold,
+        cropped_frames_dir=args.cropped_frames_dir,
+        fps=args.fps,
+        time_start=args.time_start,
+        time_step=args.time_step,
+        time_end=args.time_end,
+        time_unit=args.time_unit,
+        font_path=args.font,
+        font_size=args.font_size,
+        require_contiguous=not args.allow_gaps,
+    )
+    print(metadata["output"])
+    print(metadata["metadata"])
+    return 0
+
+
 def _cmd_postprocess_electronic_path_profiles(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.electronic_path import main as electronic_path_main
 
@@ -2853,6 +2932,30 @@ def build_parser() -> argparse.ArgumentParser:
     n2_com.add_argument("--us-dz-basin-ul1", type=float, default=0.0)
     n2_com.set_defaults(func=_cmd_plumed_n2_com)
 
+    media = subparsers.add_parser("media", help="Optional trajectory-rendering media utilities")
+    media_subparsers = media.add_subparsers(dest="media_command", required=True)
+    image_video = media_subparsers.add_parser(
+        "image-sequence-video",
+        help="Create an MP4 from naturally numbered image files",
+    )
+    image_video.add_argument("--image-dir", type=Path, required=True)
+    image_video.add_argument("--output", type=Path, required=True)
+    image_video.add_argument("--pattern", default="*.bmp")
+    image_video.add_argument("--reference-image")
+    image_video.add_argument("--crop-white-border", action="store_true")
+    image_video.add_argument("--white-threshold", type=int, default=250)
+    image_video.add_argument("--cropped-frames-dir", type=Path)
+    image_video.add_argument("--fps", type=float, default=5.0)
+    image_video.add_argument("--time-start", type=float, default=0.0)
+    image_time = image_video.add_mutually_exclusive_group()
+    image_time.add_argument("--time-step", type=float)
+    image_time.add_argument("--time-end", type=float)
+    image_video.add_argument("--time-unit", default="ps")
+    image_video.add_argument("--font", type=Path)
+    image_video.add_argument("--font-size", type=int)
+    image_video.add_argument("--allow-gaps", action="store_true")
+    image_video.set_defaults(func=_cmd_media_image_sequence_video)
+
     plot = subparsers.add_parser("plot", help="CSV-driven plotting helpers")
     plot_subparsers = plot.add_subparsers(dest="plot_kind", required=True)
 
@@ -3012,6 +3115,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_reactive_path_frames_postprocess_args(reactive_path)
     reactive_path.set_defaults(func=_cmd_postprocess_reactive_path_frames)
+
+    reaction_kinetics = postprocess_subparsers.add_parser(
+        "reaction-kinetics",
+        help="Evaluate Eyring barrier sensitivity and optional two-channel competition",
+    )
+    reaction_kinetics.add_argument(
+        "--input", type=Path, required=True, help="CSV/TSV with label and barrier_kj_mol"
+    )
+    reaction_kinetics.add_argument("--output-dir", type=Path, required=True)
+    reaction_kinetics.add_argument("--temperature-K", type=float, default=298.15)
+    reaction_kinetics.add_argument("--transmission-coefficient", type=float, default=1.0)
+    reaction_kinetics.add_argument(
+        "--barrier-shifts-kj-mol",
+        type=float,
+        nargs="+",
+        default=[-10.0, -5.0, 0.0, 5.0, 10.0],
+    )
+    reaction_kinetics.add_argument("--competitor-rates-s-inv", type=float, nargs="+")
+    reaction_kinetics.set_defaults(func=_cmd_postprocess_reaction_kinetics)
+
+    prepare_trajectory = postprocess_subparsers.add_parser(
+        "prepare-trajectory",
+        help="Concatenate and select LAMMPS dump frames with optional Z unwrapping",
+    )
+    prepare_trajectory.add_argument("--input", type=Path, action="append", required=True)
+    prepare_trajectory.add_argument("--output", type=Path, required=True)
+    prepare_trajectory.add_argument("--frame-start", type=int, default=0)
+    prepare_trajectory.add_argument("--frame-stop", type=int)
+    prepare_trajectory.add_argument("--stride", type=int, default=1)
+    prepare_trajectory.add_argument("--drop-first-each-input", action="store_true")
+    prepare_trajectory.add_argument("--unwrap-z", action="store_true")
+    prepare_trajectory.add_argument("--shift-min-z-A", type=float)
+    prepare_trajectory.add_argument("--require-within-box", action="store_true")
+    prepare_trajectory.set_defaults(func=_cmd_postprocess_prepare_trajectory)
+
+    align_layer = postprocess_subparsers.add_parser(
+        "align-reference-layer",
+        help="Translate LAMMPS frames to fix a configured reference layer's mean Z",
+    )
+    align_layer.add_argument("--input", type=Path, required=True)
+    align_layer.add_argument("--output", type=Path, required=True)
+    align_layer.add_argument("--reference-atom-id", type=int, action="append")
+    align_layer.add_argument("--reference-atom-type", type=int)
+    align_layer.add_argument("--layer-edge", choices=("lowest", "highest"), default="lowest")
+    align_layer.add_argument("--layer-tolerance-A", type=float, default=1.0)
+    align_layer.add_argument("--expected-atom-count", type=int)
+    align_layer.add_argument("--reference-z-A", type=float)
+    align_layer.add_argument("--require-within-box", action="store_true")
+    align_layer.set_defaults(func=_cmd_postprocess_align_reference_layer)
 
     electronic_path = postprocess_subparsers.add_parser(
         "electronic-path-profiles",

@@ -17,7 +17,7 @@ The project follows three rules:
 - Python 3.9 or newer;
 - NumPy for the core package;
 - optional dependencies only for workflows that need plotting, structure
-  handling, or DeepMD data.
+  handling, DeepMD data, or video output.
 
 ## Installation
 
@@ -33,6 +33,7 @@ Install only the optional groups you need:
 python -m pip install -e ".[analysis]"
 python -m pip install -e ".[structure]"
 python -m pip install -e ".[deepmd-sketch]"
+python -m pip install -e ".[media]"
 python -m pip install -e ".[dev]"
 ```
 
@@ -47,6 +48,7 @@ molsimflow structure --help
 molsimflow plumed --help
 molsimflow postprocess --help
 molsimflow plot --help
+molsimflow media --help
 ```
 
 For direct execution from an uninstalled source checkout:
@@ -86,6 +88,28 @@ molsimflow postprocess reactive-path-frames \
   --output-dir reactive_path_results
 ```
 
+Evaluate transition-state rate sensitivity from a table whose required columns
+are `label` and `barrier_kj_mol`:
+
+```bash
+molsimflow postprocess reaction-kinetics \
+  --input pathway_barriers.tsv \
+  --output-dir kinetics_results \
+  --temperature-K 300 \
+  --competitor-rates-s-inv 0.1 1 10
+```
+
+Select and unwrap a LAMMPS dump without material-specific defaults:
+
+```bash
+molsimflow postprocess prepare-trajectory \
+  --input segment_1.lammpstrj \
+  --input segment_2.lammpstrj \
+  --output prepared.lammpstrj \
+  --stride 5 \
+  --unwrap-z
+```
+
 Every command accepts `--help` and writes only to paths supplied through its
 arguments or configuration.
 
@@ -97,6 +121,8 @@ arguments or configuration.
 | PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
 | Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events | [Post-processing](docs/postprocess_migration.md) |
 | Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
+| Model validation and kinetics | CP2K parsing, force errors, coordinate-neighbor checks, Eyring sensitivity | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
+| Trajectory and media preparation | dump selection, Z unwrapping, reference-layer alignment, image-sequence video | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
 | Plotting | line, scatter, and heatmap figures from tabular data | `molsimflow plot --help` |
 
 The package is still migrating from research-specific scripts. The public API
@@ -110,6 +136,7 @@ directory and must never be imported by package code.
 src/molsimflow/
   config/        External workflow configuration.
   io/            Simulation file readers and writers.
+  media/         Optional image-sequence and video tools.
   plotting/      Table-driven plotting helpers.
   plumed/        PLUMED input generators.
   postprocess/   Reusable analysis workflows.
@@ -139,6 +166,8 @@ external configuration or private working directories.
 Contributions should keep source code, comments, docstrings, CLI help, tests,
 and commit messages in English. Add a focused synthetic test for non-trivial
 logic and avoid introducing a dependency when the standard library is enough.
+Development is integrated on `devel`; validated changes are then merged into
+`main`. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

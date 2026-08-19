@@ -36,6 +36,11 @@ deepmd-sketch = [
   "matplotlib",
   "scikit-learn",
 ]
+media = [
+  "imageio",
+  "imageio-ffmpeg",
+  "Pillow",
+]
 dev = [
   "pytest",
   "ruff",

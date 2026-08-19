@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, Mapping, Optional, Sequence, TextIO, Tuple
 
 import numpy as np
 
@@ -17,6 +17,95 @@ class LammpsFrame:
     timestep: int
     bounds: np.ndarray
     selected_positions: Mapping[int, np.ndarray]
+
+
+@dataclass(frozen=True)
+class LammpsDumpFrame:
+    """One complete orthorhombic LAMMPS custom-dump frame."""
+
+    frame_index: int
+    timestep: int
+    bounds: np.ndarray
+    box_header: str
+    atom_fields: Tuple[str, ...]
+    atom_rows: Tuple[Tuple[str, ...], ...]
+
+    @property
+    def atom_count(self) -> int:
+        return len(self.atom_rows)
+
+
+def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
+    """Iterate complete dump rows while preserving every atom column."""
+
+    with Path(dump_path).open(encoding="utf-8") as handle:
+        frame_index = 0
+        while True:
+            line = handle.readline()
+            if not line:
+                return
+            if line.strip() != "ITEM: TIMESTEP":
+                raise ValueError("Unexpected dump format: expected ITEM: TIMESTEP")
+            timestep = int(handle.readline().strip())
+            if handle.readline().strip() != "ITEM: NUMBER OF ATOMS":
+                raise ValueError("Unexpected dump format: missing ITEM: NUMBER OF ATOMS")
+            atom_count = int(handle.readline().strip())
+            if atom_count <= 0:
+                raise ValueError(f"Invalid atom count at timestep {timestep}: {atom_count}")
+            box_header = handle.readline().strip()
+            if not box_header.startswith("ITEM: BOX BOUNDS"):
+                raise ValueError("Unexpected dump format: missing ITEM: BOX BOUNDS")
+            bounds = np.zeros((3, 2), dtype=float)
+            for dim in range(3):
+                parts = handle.readline().split()
+                if len(parts) != 2:
+                    raise ValueError("Only orthorhombic LAMMPS dump boxes are supported")
+                bounds[dim] = [float(parts[0]), float(parts[1])]
+            atom_header = handle.readline().strip()
+            if not atom_header.startswith("ITEM: ATOMS"):
+                raise ValueError("Unexpected dump format: missing ITEM: ATOMS")
+            atom_fields = tuple(atom_header.split()[2:])
+            if not atom_fields:
+                raise ValueError(f"LAMMPS dump has no atom columns at timestep {timestep}")
+            rows = []
+            for _ in range(atom_count):
+                parts = tuple(handle.readline().split())
+                if len(parts) != len(atom_fields):
+                    raise ValueError(
+                        f"Atom column count mismatch at timestep {timestep}: "
+                        f"expected {len(atom_fields)}, got {len(parts)}"
+                    )
+                rows.append(parts)
+            yield LammpsDumpFrame(
+                frame_index=frame_index,
+                timestep=timestep,
+                bounds=bounds,
+                box_header=box_header,
+                atom_fields=atom_fields,
+                atom_rows=tuple(rows),
+            )
+            frame_index += 1
+
+
+def write_lammps_dump_frame(
+    handle: TextIO,
+    frame: LammpsDumpFrame,
+    atom_rows: Optional[Sequence[Sequence[object]]] = None,
+) -> None:
+    """Write one parsed frame, optionally replacing its atom rows."""
+
+    rows = frame.atom_rows if atom_rows is None else atom_rows
+    if len(rows) != frame.atom_count:
+        raise ValueError("Replacement atom rows must preserve the atom count")
+    handle.write(f"ITEM: TIMESTEP\n{frame.timestep}\n")
+    handle.write(f"ITEM: NUMBER OF ATOMS\n{frame.atom_count}\n")
+    handle.write(frame.box_header + "\n")
+    handle.writelines(f"{low:.16g} {high:.16g}\n" for low, high in frame.bounds)
+    handle.write("ITEM: ATOMS " + " ".join(frame.atom_fields) + "\n")
+    for row in rows:
+        if len(row) != len(frame.atom_fields):
+            raise ValueError("Replacement atom row has the wrong number of columns")
+        handle.write(" ".join(str(value) for value in row) + "\n")
 
 
 def _choose_coord_field(fields: Sequence[str], dim: str) -> Tuple[int, bool]:
@@ -39,51 +128,36 @@ def iter_lammps_dump_frames(
     """
 
     needed = set(needed_atom_ids) if needed_atom_ids is not None else None
-    with Path(dump_path).open(encoding="utf-8") as handle:
-        frame_index = 0
-        while True:
-            line = handle.readline()
-            if not line:
-                break
-            if not line.startswith("ITEM: TIMESTEP"):
-                raise ValueError("Unexpected dump format: expected ITEM: TIMESTEP")
-            timestep = int(handle.readline().strip())
-            if not handle.readline().startswith("ITEM: NUMBER OF ATOMS"):
-                raise ValueError("Unexpected dump format: missing ITEM: NUMBER OF ATOMS")
-            n_atoms = int(handle.readline().strip())
-            if not handle.readline().startswith("ITEM: BOX BOUNDS"):
-                raise ValueError("Unexpected dump format: missing ITEM: BOX BOUNDS")
-            bounds = np.zeros((3, 2), dtype=float)
-            for dim in range(3):
-                parts = handle.readline().split()
-                bounds[dim, 0] = float(parts[0])
-                bounds[dim, 1] = float(parts[1])
-            atoms_header = handle.readline().strip()
-            if not atoms_header.startswith("ITEM: ATOMS"):
-                raise ValueError("Unexpected dump format: missing ITEM: ATOMS")
-            fields = atoms_header.split()[2:]
-            if "id" not in fields:
-                raise ValueError("LAMMPS dump ATOMS line must contain id")
-            id_index = fields.index("id")
-            x_index, x_scaled = _choose_coord_field(fields, "x")
-            y_index, y_scaled = _choose_coord_field(fields, "y")
-            z_index, z_scaled = _choose_coord_field(fields, "z")
-            lengths = bounds[:, 1] - bounds[:, 0]
-            selected: Dict[int, np.ndarray] = {}
-            for _ in range(n_atoms):
-                parts = handle.readline().split()
-                atom_id = int(parts[id_index])
-                if needed is not None and atom_id not in needed:
-                    continue
-                coords = np.asarray([float(parts[x_index]), float(parts[y_index]), float(parts[z_index])], dtype=float)
-                for dim, scaled in enumerate((x_scaled, y_scaled, z_scaled)):
-                    if scaled:
-                        coords[dim] = bounds[dim, 0] + coords[dim] * lengths[dim]
-                selected[atom_id] = coords
-            yield LammpsFrame(frame_index=frame_index, timestep=timestep, bounds=bounds, selected_positions=selected)
-            frame_index += 1
-            if max_frames is not None and frame_index >= int(max_frames):
-                break
+    for frame in iter_lammps_dump_records(dump_path):
+        fields = frame.atom_fields
+        if "id" not in fields:
+            raise ValueError("LAMMPS dump ATOMS line must contain id")
+        id_index = fields.index("id")
+        x_index, x_scaled = _choose_coord_field(fields, "x")
+        y_index, y_scaled = _choose_coord_field(fields, "y")
+        z_index, z_scaled = _choose_coord_field(fields, "z")
+        lengths = frame.bounds[:, 1] - frame.bounds[:, 0]
+        selected: Dict[int, np.ndarray] = {}
+        for parts in frame.atom_rows:
+            atom_id = int(parts[id_index])
+            if needed is not None and atom_id not in needed:
+                continue
+            coords = np.asarray(
+                [float(parts[x_index]), float(parts[y_index]), float(parts[z_index])],
+                dtype=float,
+            )
+            for dim, scaled in enumerate((x_scaled, y_scaled, z_scaled)):
+                if scaled:
+                    coords[dim] = frame.bounds[dim, 0] + coords[dim] * lengths[dim]
+            selected[atom_id] = coords
+        yield LammpsFrame(
+            frame_index=frame.frame_index,
+            timestep=frame.timestep,
+            bounds=frame.bounds,
+            selected_positions=selected,
+        )
+        if max_frames is not None and frame.frame_index + 1 >= int(max_frames):
+            break
 
 
 def box_lengths(bounds: np.ndarray) -> np.ndarray:

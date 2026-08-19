@@ -61,6 +61,15 @@ from molsimflow.postprocess.local_environment import (
     build_class_environment_summary,
     build_frame_environment_summary,
 )
+from molsimflow.postprocess.model_validation import (
+    ForceErrorMetrics,
+    NearestReference,
+    coordinate_coverage_status,
+    force_error_metrics,
+    nearest_coordinate_rmsd,
+    relative_energy_errors,
+)
+from molsimflow.postprocess.reaction_kinetics import PathwayBarrier, eyring_rate
 from molsimflow.postprocess.species_assignment import (
     OxygenHydrogenAssignment,
     assign_hydrogen_to_nearest_oxygen,
@@ -116,6 +125,7 @@ __all__ = [
     "FesCurve",
     "FesCurveSpec",
     "FrameDistanceResult",
+    "ForceErrorMetrics",
     "GasContactConfig",
     "HbondEdgeRow",
     "HbondNetworkConfig",
@@ -124,7 +134,9 @@ __all__ = [
     "IonZDistribution",
     "LocalEnvironmentConfig",
     "MoleculeRecord",
+    "NearestReference",
     "OxygenHydrogenAssignment",
+    "PathwayBarrier",
     "SeedPositionRow",
     "SphereCvCaseSpec",
     "SphereInterfaceAtomTypeMap",
@@ -149,10 +161,15 @@ __all__ = [
     "classify_hbond_type",
     "classify_ion_species",
     "classify_oxygen_species_indices",
+    "coordinate_coverage_status",
     "compute_s_rho",
     "compute_water_orientation_sample",
+    "eyring_rate",
+    "force_error_metrics",
     "infer_species_order",
     "infer_timestep_time_scale",
     "nematic_order",
     "nearest_row_index",
+    "nearest_coordinate_rmsd",
+    "relative_energy_errors",
 ]
