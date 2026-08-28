@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Optional
 
 from molsimflow.io.extxyz import add_pbc_lattice_to_xyz
 from molsimflow.io.lammps_data import convert_extxyz_to_lammps_atomic_data
@@ -320,7 +319,7 @@ def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
     return 0
 
 
-def _plot_common_args(args: argparse.Namespace, kind: str) -> List[str]:
+def _plot_common_args(args: argparse.Namespace, kind: str) -> list[str]:
     workflow_args = [
         kind,
         "--input",
@@ -484,6 +483,7 @@ def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
     workflow_args.extend(
         [
             "--output-dir", str(args.output_dir),
+            "--output-stem", args.output_stem,
             "--surface-range", args.surface_range,
             "--nitrogen-range", args.nitrogen_range,
             "--surface-z-A", str(args.surface_z_A),
@@ -501,6 +501,8 @@ def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
         workflow_args.extend(["--max-frames", str(args.max_frames)])
     if args.font_path is not None:
         workflow_args.extend(["--font-path", str(args.font_path)])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
     return attachment_main(workflow_args)
 
 
@@ -515,9 +517,181 @@ def _cmd_postprocess_nanodroplet_spreading(args: argparse.Namespace) -> int:
         workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
     if args.max_frames is not None:
         workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
     if not args.drop_first_frame:
         workflow_args.append("--no-drop-first-frame")
     return spreading_main(workflow_args)
+
+
+def _cmd_postprocess_planar_motion(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.planar_motion import main as motion_main
+
+    workflow_args = []
+    for name in ("input", "output_dir", "step_column", "x_column", "y_column", "box_x_A",
+                 "box_y_A", "timestep_fs", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return motion_main(workflow_args)
+
+
+def _cmd_postprocess_axisymmetric_contact_angle(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.axisymmetric_contact_angle import main as contact_angle_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "atom_range", "mode", "phase_label", "surface_z_A", "timestep_fs",
+        "start_ns", "end_ns", "minimum_frames", "block_frames", "cluster_cutoff_A", "reference_density_A3",
+        "r_max_A", "z_min_A", "z_max_A", "dr_A", "dz_A", "smoothing_sigma_bins",
+        "fit_z_min_A", "fit_z_max_A", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.atom_type is not None:
+        workflow_args.extend(["--atom-type", str(args.atom_type)])
+    if args.surface_range is not None:
+        workflow_args.extend(["--surface-range", args.surface_range])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    for fraction in args.threshold_fraction:
+        workflow_args.extend(["--threshold-fraction", str(fraction)])
+    return contact_angle_main(workflow_args)
+
+
+def _cmd_postprocess_contact_line(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.contact_line import main as contact_line_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "phase_range", "mode", "timestep_fs",
+        "cluster_cutoff_A", "contact_cutoff_A", "block_frames", "jump_sigma",
+        "minimum_jump_A", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    for name in ("atom_type", "start_ns", "end_ns", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return contact_line_main(workflow_args)
+
+
+def _cmd_postprocess_surface_site_enrichment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.surface_site_enrichment import main as enrichment_main
+
+    workflow_args = []
+    for name in (
+        "initial_xyz", "slab_range", "contact_line", "contact_line_points", "output_dir",
+        "surface_z_A", "surface_depth_A", "bond_cutoff_A", "tpcl_half_width_A",
+        "boundary_proximity_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return enrichment_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_density(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_density import main as density_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "water_range", "surface_range", "oxygen_type", "contact_line", "contact_line_points",
+        "surface_z_A", "tpcl_half_width_A", "area_grid_A", "z_min_A", "z_max_A",
+        "dz_A", "hydration_z_max_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    return density_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_orientation(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_orientation import main as orientation_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "water_range", "oxygen_type", "hydrogen_type",
+        "contact_line", "contact_line_points", "surface_z_A", "reference_structure",
+        "tpcl_half_width_A", "bond_cutoff_A", "z_min_A", "z_max_A", "cosine_bins",
+        "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return orientation_main(workflow_args)
+
+
+def _cmd_postprocess_contact_angle_line_alignment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.contact_angle_line_alignment import main as alignment_main
+
+    workflow_args = [
+        "--contact-angle-blocks", str(args.contact_angle_blocks),
+        "--output-dir", str(args.output_dir),
+        "--angle-column", args.angle_column,
+        "--radius-column", args.radius_column,
+        "--radius-stability-A", str(args.radius_stability_A),
+        "--angle-change-deg", str(args.angle_change_deg),
+        "--font-path", str(args.font_path),
+    ]
+    for value in args.contact_line:
+        workflow_args.extend(["--contact-line", value])
+    return alignment_main(workflow_args)
+
+
+def _cmd_postprocess_precontact_n2_enrichment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.precontact_n2_enrichment import main as enrichment_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "nitrogen_range", "surface_z_A",
+        "reference_structure", "end_ns", "timestep_fs", "cluster_cutoff_A",
+        "near_z_min_A", "near_z_max_A", "z_min_A", "z_max_A", "dz_A",
+        "projection_margin_A", "block_frames", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return enrichment_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_hbond(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_hbond import main as hbond_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "water_range", "oxygen_type", "hydrogen_type",
+        "contact_line", "contact_line_points", "surface_z_A", "reference_structure",
+        "surface_depth_A", "tpcl_half_width_A", "oh_cutoff_A", "oo_cutoff_A",
+        "angle_cutoff_deg", "z_min_A", "z_max_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return hbond_main(workflow_args)
+
+
+def _cmd_postprocess_surface_proton_transfer(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.surface_proton_transfer import main as transfer_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "initial_xyz", "surface_range", "water_range", "oxygen_type",
+        "hydrogen_type", "contact_line", "contact_line_points", "surface_z_A",
+        "surface_depth_A", "tpcl_half_width_A", "oh_cutoff_A", "ch_cutoff_A",
+        "min_persistence_frames", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return transfer_main(workflow_args)
 
 
 def _cmd_postprocess_coalescence_state(args: argparse.Namespace) -> int:
@@ -710,7 +884,7 @@ def _cmd_postprocess_bridge_water_dewetting(args: argparse.Namespace) -> int:
     return dewetting_main(workflow_args)
 
 
-def _bridge_water_dynamics_args(args: argparse.Namespace, command: str) -> List[str]:
+def _bridge_water_dynamics_args(args: argparse.Namespace, command: str) -> list[str]:
     workflow_args = [
         command,
         "--output-dir",
@@ -3061,9 +3235,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     nanobubble_attachment.add_argument("--trajectory", type=Path, action="append", required=True)
     nanobubble_attachment.add_argument("--output-dir", type=Path, required=True)
+    nanobubble_attachment.add_argument("--output-stem", default="attachment_kinetics")
     nanobubble_attachment.add_argument("--surface-range", required=True)
     nanobubble_attachment.add_argument("--nitrogen-range", required=True)
     nanobubble_attachment.add_argument("--surface-z-A", type=float, required=True)
+    nanobubble_attachment.add_argument("--reference-structure", type=Path)
     nanobubble_attachment.add_argument("--timestep-fs", type=float, default=0.5)
     nanobubble_attachment.add_argument("--cluster-cutoff-A", type=float, default=5.5)
     nanobubble_attachment.add_argument("--contact-cutoff-A", type=float, default=4.0)
@@ -3085,6 +3261,7 @@ def build_parser() -> argparse.ArgumentParser:
     nanodroplet_spreading.add_argument("--surface-range", required=True)
     nanodroplet_spreading.add_argument("--water-range", required=True)
     nanodroplet_spreading.add_argument("--surface-z-A", type=float, required=True)
+    nanodroplet_spreading.add_argument("--reference-structure", type=Path)
     nanodroplet_spreading.add_argument("--oxygen-type", type=int, default=2)
     nanodroplet_spreading.add_argument("--timestep-fs", type=float, default=0.5)
     nanodroplet_spreading.add_argument("--cluster-cutoff-A", type=float, default=3.5)
@@ -3095,6 +3272,233 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
     )
     nanodroplet_spreading.set_defaults(func=_cmd_postprocess_nanodroplet_spreading)
+
+    planar_motion = postprocess_subparsers.add_parser(
+        "planar-motion", help="Compute PBC-unwrapped planar displacement and MSD from CSV"
+    )
+    planar_motion.add_argument("--input", type=Path, required=True)
+    planar_motion.add_argument("--output-dir", type=Path, required=True)
+    planar_motion.add_argument("--step-column", default="step")
+    planar_motion.add_argument("--x-column", required=True)
+    planar_motion.add_argument("--y-column", required=True)
+    planar_motion.add_argument("--box-x-A", type=float, required=True)
+    planar_motion.add_argument("--box-y-A", type=float, required=True)
+    planar_motion.add_argument("--timestep-fs", type=float, default=0.5)
+    planar_motion.add_argument("--font-path", type=Path, required=True)
+    planar_motion.set_defaults(func=_cmd_postprocess_planar_motion)
+
+    contact_angle = postprocess_subparsers.add_parser(
+        "axisymmetric-contact-angle",
+        help="Build an axisymmetric density field and fit spherical-cap contact angles",
+    )
+    contact_angle.add_argument("--trajectory", type=Path, action="append", required=True)
+    contact_angle.add_argument("--output-dir", type=Path, required=True)
+    contact_angle.add_argument("--atom-range", required=True)
+    contact_angle.add_argument("--mode", choices=("paired-centers", "atom-type"), required=True)
+    contact_angle.add_argument("--atom-type", type=int)
+    contact_angle.add_argument("--phase-label", required=True)
+    contact_angle.add_argument("--surface-z-A", type=float, required=True)
+    contact_angle.add_argument("--surface-range")
+    contact_angle.add_argument("--reference-structure", type=Path)
+    contact_angle.add_argument("--timestep-fs", type=float, default=0.5)
+    contact_angle.add_argument("--start-ns", type=float, required=True)
+    contact_angle.add_argument("--end-ns", type=float, required=True)
+    contact_angle.add_argument("--minimum-frames", type=int, default=100)
+    contact_angle.add_argument("--block-frames", type=int, default=20)
+    contact_angle.add_argument("--cluster-cutoff-A", type=float, required=True)
+    contact_angle.add_argument("--reference-density-A3", type=float, required=True)
+    contact_angle.add_argument("--threshold-fraction", type=float, action="append", default=[])
+    contact_angle.add_argument("--r-max-A", type=float, default=40.0)
+    contact_angle.add_argument("--z-min-A", type=float, default=0.0)
+    contact_angle.add_argument("--z-max-A", type=float, default=60.0)
+    contact_angle.add_argument("--dr-A", type=float, default=1.0)
+    contact_angle.add_argument("--dz-A", type=float, default=1.0)
+    contact_angle.add_argument("--smoothing-sigma-bins", type=float, default=1.0)
+    contact_angle.add_argument("--fit-z-min-A", type=float, default=2.0)
+    contact_angle.add_argument("--fit-z-max-A", type=float, default=55.0)
+    contact_angle.add_argument("--font-path", type=Path, required=True)
+    contact_angle.set_defaults(func=_cmd_postprocess_axisymmetric_contact_angle)
+
+    contact_line = postprocess_subparsers.add_parser(
+        "contact-line", help="Analyze particle-level contact-line geometry and jump candidates"
+    )
+    contact_line.add_argument("--trajectory", type=Path, action="append", required=True)
+    contact_line.add_argument("--output-dir", type=Path, required=True)
+    contact_line.add_argument("--surface-range", required=True)
+    contact_line.add_argument("--phase-range", required=True)
+    contact_line.add_argument(
+        "--mode", choices=("paired-centers", "atom-type"), required=True
+    )
+    contact_line.add_argument("--atom-type", type=int)
+    contact_line.add_argument("--timestep-fs", type=float, default=0.5)
+    contact_line.add_argument("--start-ns", type=float)
+    contact_line.add_argument("--end-ns", type=float)
+    contact_line.add_argument("--cluster-cutoff-A", type=float, required=True)
+    contact_line.add_argument("--contact-cutoff-A", type=float, required=True)
+    contact_line.add_argument("--block-frames", type=int, default=20)
+    contact_line.add_argument("--jump-sigma", type=float, default=4.0)
+    contact_line.add_argument("--minimum-jump-A", type=float, default=2.0)
+    contact_line.add_argument("--font-path", type=Path, required=True)
+    contact_line.add_argument("--max-frames", type=int)
+    contact_line.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    contact_line.set_defaults(func=_cmd_postprocess_contact_line)
+
+    site_enrichment = postprocess_subparsers.add_parser(
+        "surface-site-enrichment",
+        help="Map footprint and TPCL regions onto initial CH3 and SiOH sites",
+    )
+    site_enrichment.add_argument("--initial-xyz", type=Path, required=True)
+    site_enrichment.add_argument("--slab-range", required=True)
+    site_enrichment.add_argument("--contact-line", type=Path, required=True)
+    site_enrichment.add_argument("--contact-line-points", type=Path, required=True)
+    site_enrichment.add_argument("--output-dir", type=Path, required=True)
+    site_enrichment.add_argument("--surface-z-A", type=float, required=True)
+    site_enrichment.add_argument("--surface-depth-A", type=float, default=3.0)
+    site_enrichment.add_argument("--bond-cutoff-A", type=float, default=1.25)
+    site_enrichment.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    site_enrichment.add_argument("--boundary-proximity-A", type=float, default=2.0)
+    site_enrichment.add_argument("--timestep-fs", type=float, default=0.5)
+    site_enrichment.add_argument("--font-path", type=Path, required=True)
+    site_enrichment.set_defaults(func=_cmd_postprocess_surface_site_enrichment)
+
+    water_density = postprocess_subparsers.add_parser(
+        "interfacial-water-density",
+        help="Compute water-oxygen density in footprint, TPCL, and far-field regions",
+    )
+    water_density.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_density.add_argument("--output-dir", type=Path, required=True)
+    water_density.add_argument("--water-range", required=True)
+    water_density.add_argument("--surface-range", required=True)
+    water_density.add_argument("--oxygen-type", type=int, default=2)
+    water_density.add_argument("--contact-line", type=Path, required=True)
+    water_density.add_argument("--contact-line-points", type=Path, required=True)
+    water_density.add_argument("--surface-z-A", type=float, required=True)
+    water_density.add_argument("--reference-structure", type=Path)
+    water_density.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_density.add_argument("--area-grid-A", type=float, default=1.0)
+    water_density.add_argument("--z-min-A", type=float, default=0.0)
+    water_density.add_argument("--z-max-A", type=float, default=15.0)
+    water_density.add_argument("--dz-A", type=float, default=0.5)
+    water_density.add_argument("--hydration-z-max-A", type=float, default=6.0)
+    water_density.add_argument("--timestep-fs", type=float, default=0.5)
+    water_density.add_argument("--font-path", type=Path, required=True)
+    water_density.set_defaults(func=_cmd_postprocess_interfacial_water_density)
+
+    water_orientation = postprocess_subparsers.add_parser(
+        "interfacial-water-orientation",
+        help="Compute first-layer water dipole and O-H orientation by surface region",
+    )
+    water_orientation.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_orientation.add_argument("--output-dir", type=Path, required=True)
+    water_orientation.add_argument("--surface-range", required=True)
+    water_orientation.add_argument("--water-range", required=True)
+    water_orientation.add_argument("--oxygen-type", type=int, default=2)
+    water_orientation.add_argument("--hydrogen-type", type=int, default=1)
+    water_orientation.add_argument("--contact-line", type=Path, required=True)
+    water_orientation.add_argument("--contact-line-points", type=Path, required=True)
+    water_orientation.add_argument("--surface-z-A", type=float, required=True)
+    water_orientation.add_argument("--reference-structure", type=Path, required=True)
+    water_orientation.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_orientation.add_argument("--bond-cutoff-A", type=float, default=1.25)
+    water_orientation.add_argument("--z-min-A", type=float, default=0.0)
+    water_orientation.add_argument("--z-max-A", type=float, default=6.0)
+    water_orientation.add_argument("--cosine-bins", type=int, default=40)
+    water_orientation.add_argument("--timestep-fs", type=float, default=0.5)
+    water_orientation.add_argument("--font-path", type=Path, required=True)
+    water_orientation.set_defaults(func=_cmd_postprocess_interfacial_water_orientation)
+
+    angle_line = postprocess_subparsers.add_parser(
+        "contact-angle-line-alignment",
+        help="Align contact angles and contact-line radii on identical step blocks",
+    )
+    angle_line.add_argument("--contact-angle-blocks", type=Path, required=True)
+    angle_line.add_argument("--contact-line", action="append", required=True, metavar="LABEL=PATH")
+    angle_line.add_argument("--output-dir", type=Path, required=True)
+    angle_line.add_argument("--angle-column", default="dense_phase_contact_angle_deg")
+    angle_line.add_argument("--radius-column", default="contact_line_equivalent_radius_A")
+    angle_line.add_argument("--radius-stability-A", type=float, default=1.0)
+    angle_line.add_argument("--angle-change-deg", type=float, default=3.0)
+    angle_line.add_argument("--font-path", type=Path, required=True)
+    angle_line.set_defaults(func=_cmd_postprocess_contact_angle_line_alignment)
+
+    precontact_n2 = postprocess_subparsers.add_parser(
+        "precontact-n2-enrichment",
+        help="Separate main-bubble and disconnected N2 z distributions before attachment",
+    )
+    precontact_n2.add_argument("--trajectory", type=Path, action="append", required=True)
+    precontact_n2.add_argument("--output-dir", type=Path, required=True)
+    precontact_n2.add_argument("--surface-range", required=True)
+    precontact_n2.add_argument("--nitrogen-range", required=True)
+    precontact_n2.add_argument("--surface-z-A", type=float, required=True)
+    precontact_n2.add_argument("--reference-structure", type=Path, required=True)
+    precontact_n2.add_argument("--end-ns", type=float, required=True)
+    precontact_n2.add_argument("--timestep-fs", type=float, default=0.5)
+    precontact_n2.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    precontact_n2.add_argument("--near-z-min-A", type=float, default=0.0)
+    precontact_n2.add_argument("--near-z-max-A", type=float, default=10.0)
+    precontact_n2.add_argument("--projection-margin-A", type=float, default=5.0)
+    precontact_n2.add_argument("--z-min-A", type=float, default=0.0)
+    precontact_n2.add_argument("--z-max-A", type=float, default=80.0)
+    precontact_n2.add_argument("--dz-A", type=float, default=1.0)
+    precontact_n2.add_argument("--block-frames", type=int, default=50)
+    precontact_n2.add_argument("--font-path", type=Path, required=True)
+    precontact_n2.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    precontact_n2.set_defaults(func=_cmd_postprocess_precontact_n2_enrichment)
+
+    water_hbond = postprocess_subparsers.add_parser(
+        "interfacial-water-hbond",
+        help="Count snapshot first-layer water-water and SiOH-water hydrogen bonds",
+    )
+    water_hbond.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_hbond.add_argument("--output-dir", type=Path, required=True)
+    water_hbond.add_argument("--surface-range", required=True)
+    water_hbond.add_argument("--water-range", required=True)
+    water_hbond.add_argument("--oxygen-type", type=int, default=2)
+    water_hbond.add_argument("--hydrogen-type", type=int, default=1)
+    water_hbond.add_argument("--contact-line", type=Path, required=True)
+    water_hbond.add_argument("--contact-line-points", type=Path, required=True)
+    water_hbond.add_argument("--surface-z-A", type=float, required=True)
+    water_hbond.add_argument("--reference-structure", type=Path, required=True)
+    water_hbond.add_argument("--surface-depth-A", type=float, default=3.0)
+    water_hbond.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_hbond.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    water_hbond.add_argument("--oo-cutoff-A", type=float, default=3.5)
+    water_hbond.add_argument("--angle-cutoff-deg", type=float, default=30.0)
+    water_hbond.add_argument("--z-min-A", type=float, default=0.0)
+    water_hbond.add_argument("--z-max-A", type=float, default=6.0)
+    water_hbond.add_argument("--timestep-fs", type=float, default=0.5)
+    water_hbond.add_argument("--font-path", type=Path, required=True)
+    water_hbond.set_defaults(func=_cmd_postprocess_interfacial_water_hbond)
+
+    proton_transfer = postprocess_subparsers.add_parser(
+        "surface-proton-transfer",
+        help="Track sampled surface-H exchange and solution ion candidates",
+    )
+    proton_transfer.add_argument("--trajectory", type=Path, action="append", required=True)
+    proton_transfer.add_argument("--output-dir", type=Path, required=True)
+    proton_transfer.add_argument("--initial-xyz", type=Path, required=True)
+    proton_transfer.add_argument("--surface-range", required=True)
+    proton_transfer.add_argument("--water-range", required=True)
+    proton_transfer.add_argument("--oxygen-type", type=int, default=2)
+    proton_transfer.add_argument("--hydrogen-type", type=int, default=1)
+    proton_transfer.add_argument("--contact-line", type=Path, required=True)
+    proton_transfer.add_argument("--contact-line-points", type=Path, required=True)
+    proton_transfer.add_argument("--surface-z-A", type=float, required=True)
+    proton_transfer.add_argument("--surface-depth-A", type=float, default=3.0)
+    proton_transfer.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    proton_transfer.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    proton_transfer.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    proton_transfer.add_argument("--min-persistence-frames", type=int, default=2)
+    proton_transfer.add_argument("--timestep-fs", type=float, default=0.5)
+    proton_transfer.add_argument("--font-path", type=Path, required=True)
+    proton_transfer.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    proton_transfer.set_defaults(func=_cmd_postprocess_surface_proton_transfer)
 
     coalescence_state = postprocess_subparsers.add_parser(
         "coalescence-state",
@@ -3387,7 +3791,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
     args = parser.parse_args(argv)

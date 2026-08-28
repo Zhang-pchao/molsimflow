@@ -26,5 +26,7 @@ def test_attachment_metrics_and_persistence():
     row = analyze_frame(frame, surface_z=2.0, cluster_cutoff=3.0, contact_cutoff=4.0)
     assert row["largest_cluster_n2_count"] == 2
     assert row["bubble_contact_n2_count"] == 2
+    assert row["dissolved_or_disconnected_n2_count"] == 0
+    assert row["bubble_lateral_radius_p90_A"] > 0
     rows = [{"bubble_contact_n2_count": value, "step": step} for step, value in enumerate([0, 2, 2, 1])]
     assert first_persistent_contact(rows, minimum=2, persistence=2)["step"] == 1

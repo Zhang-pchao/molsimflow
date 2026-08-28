@@ -110,6 +110,21 @@ molsimflow postprocess prepare-trajectory \
   --unwrap-z
 ```
 
+Track sampled surface-H exchange and solution ion candidates in reactive MD:
+
+```bash
+molsimflow postprocess surface-proton-transfer \
+  --trajectory segment_1.lammpstrj \
+  --initial-xyz model.initial.xyz \
+  --surface-range 1:8000 \
+  --water-range 9001:12000 \
+  --contact-line contact_line.csv \
+  --contact-line-points contact_line_points.csv \
+  --surface-z-A 20.0 \
+  --output-dir proton_transfer_results \
+  --font-path Arial.ttf
+```
+
 Every command accepts `--help` and writes only to paths supplied through its
 arguments or configuration.
 
@@ -119,7 +134,7 @@ arguments or configuration.
 | --- | --- | --- |
 | Structure and I/O | extended XYZ, LAMMPS data, double-bubble slabs | [Configuration](docs/configuration.md) |
 | PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
-| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events | [Post-processing](docs/postprocess_migration.md) |
+| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events | [Post-processing](docs/postprocess_migration.md), [surface proton transfer](docs/surface_proton_transfer.md) |
 | Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
 | Model validation and kinetics | CP2K parsing, force errors, coordinate-neighbor checks, Eyring sensitivity | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
 | Trajectory and media preparation | dump selection, Z unwrapping, reference-layer alignment, image-sequence video | [Validation and media utilities](docs/model_validation_trajectory_media.md) |

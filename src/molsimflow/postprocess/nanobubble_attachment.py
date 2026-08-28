@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from molsimflow.io.lammps_dump import box_lengths, minimum_image_vectors, periodic_center
+from molsimflow.postprocess.surface_reference import load_surface_reference
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,17 @@ def largest_cluster(coords: np.ndarray, bounds: np.ndarray, cutoff: float) -> np
     return np.flatnonzero(roots == labels[np.argmax(counts)])
 
 
+def footprint_area(points: np.ndarray) -> float:
+    if len(points) < 3:
+        return 0.0
+    from scipy.spatial import ConvexHull, QhullError
+
+    try:
+        return float(ConvexHull(points[:, :2]).volume)
+    except QhullError:
+        return 0.0
+
+
 def analyze_frame(frame: SelectedFrame, *, surface_z: float, cluster_cutoff: float, contact_cutoff: float) -> dict:
     from scipy.spatial import cKDTree
 
@@ -120,6 +132,18 @@ def analyze_frame(frame: SelectedFrame, *, surface_z: float, cluster_cutoff: flo
     shifted_n = (frame.nitrogen - frame.bounds[:, 0]) % lengths
     distances = cKDTree(shifted_surface, boxsize=lengths).query(shifted_n, k=1)[0].reshape(-1, 2)
     molecule_distance = distances.min(axis=1)
+    cluster_distance = molecule_distance[members]
+    contact_vectors = vectors[cluster_distance <= contact_cutoff]
+    lateral_radii = np.linalg.norm(vectors[:, :2], axis=1)
+    z_q05, z_q95 = np.quantile(vectors[:, 2], [0.05, 0.95])
+    gyration = vectors.T @ vectors / len(vectors)
+    eigenvalues = np.sort(np.linalg.eigvalsh(gyration))[::-1]
+    eigenvalue_sum = float(eigenvalues.sum())
+    relative_anisotropy = (
+        1.5 * float(np.sum(eigenvalues**2)) / eigenvalue_sum**2 - 0.5
+        if eigenvalue_sum > 0
+        else float("nan")
+    )
     dz = float(minimum_image_vectors(np.array([[0.0, 0.0, center[2] - surface_z]]), lengths)[0, 2])
     return {
         "source_file": str(frame.source),
@@ -132,6 +156,14 @@ def analyze_frame(frame: SelectedFrame, *, surface_z: float, cluster_cutoff: flo
         "bubble_radius_p90_A": float(np.quantile(radii, 0.9)),
         "bubble_lower_edge_gap_p90_A": dz - float(np.quantile(radii, 0.9)),
         "largest_cluster_n2_count": len(members),
+        "dissolved_or_disconnected_n2_count": len(centers) - len(members),
+        "bubble_height_q05_q95_A": float(z_q95 - z_q05),
+        "bubble_lateral_radius_p90_A": float(np.quantile(lateral_radii, 0.9)),
+        "footprint_convex_hull_area_A2": footprint_area(contact_vectors),
+        "gyration_eigenvalue_1_A2": float(eigenvalues[0]),
+        "gyration_eigenvalue_2_A2": float(eigenvalues[1]),
+        "gyration_eigenvalue_3_A2": float(eigenvalues[2]),
+        "relative_shape_anisotropy": relative_anisotropy,
         "bubble_contact_n2_count": int(np.count_nonzero(molecule_distance[members] <= contact_cutoff)),
         "all_n2_contact_count": int(np.count_nonzero(molecule_distance <= contact_cutoff)),
         "min_bubble_surface_distance_A": float(molecule_distance[members].min()),
@@ -144,6 +176,26 @@ def first_persistent_contact(rows: Sequence[dict], minimum: int, persistence: in
         if all(int(row["bubble_contact_n2_count"]) >= minimum for row in window):
             return rows[start]
     return None
+
+
+def add_unwrapped_center(rows: list[dict], bounds: np.ndarray) -> None:
+    lengths = box_lengths(bounds)
+    previous = None
+    unwrapped = None
+    origin = None
+    for row in rows:
+        current = np.array([row[f"bubble_center_{dim}_A"] for dim in "xyz"])
+        if previous is None:
+            unwrapped = current.copy()
+            origin = current.copy()
+        else:
+            unwrapped += minimum_image_vectors(current - previous, lengths)
+        for dim, value in zip("xyz", unwrapped):
+            row[f"bubble_center_{dim}_unwrapped_A"] = float(value)
+        displacement = unwrapped[:2] - origin[:2]
+        row["bubble_lateral_displacement_A"] = float(np.linalg.norm(displacement))
+        row["bubble_lateral_displacement_squared_A2"] = float(displacement @ displacement)
+        previous = current
 
 
 def write_plot(
@@ -165,12 +217,16 @@ def write_plot(
         font_manager.findfont(font_family, fallback_to_default=False)
     matplotlib.rcParams["font.family"] = resolved_family
     time_ns = np.array([row["step"] for row in rows], dtype=float) * timestep_fs / 1.0e6
-    figure, axes = plt.subplots(2, 1, figsize=(7.2, 6.0), sharex=True)
+    figure, axes = plt.subplots(3, 1, figsize=(7.2, 8.0), sharex=True)
     axes[0].plot(time_ns, [row["bubble_center_surface_dz_A"] for row in rows], lw=1.2)
     axes[0].set_ylabel(r"Bubble center $z$ (Å)")
-    axes[1].plot(time_ns, [row["bubble_contact_n2_count"] for row in rows], lw=1.2)
-    axes[1].set_xlabel("Time (ns)")
-    axes[1].set_ylabel(r"Contacting N$_2$")
+    axes[1].plot(time_ns, [row["bubble_height_q05_q95_A"] for row in rows], label="Height")
+    axes[1].plot(time_ns, [row["bubble_lateral_radius_p90_A"] for row in rows], label="Lateral radius")
+    axes[1].set_ylabel("Length (Å)")
+    axes[1].legend(frameon=False)
+    axes[2].plot(time_ns, [row["footprint_convex_hull_area_A2"] for row in rows], lw=1.2)
+    axes[2].set_xlabel("Time (ns)")
+    axes[2].set_ylabel(r"Footprint (Å$^2$)")
     for axis in axes:
         axis.spines[["top", "right"]].set_visible(False)
     figure.tight_layout()
@@ -182,15 +238,29 @@ def run_analysis(args: argparse.Namespace) -> dict:
     rows_by_step: dict[int, dict] = {}
     raw_frames = 0
     stop = False
+    last_bounds = None
+    surface_reference = (
+        load_surface_reference(args.reference_structure, args.surface_range, args.surface_z_A)
+        if args.reference_structure is not None
+        else None
+    )
     for trajectory in args.trajectory:
         for frame in iter_selected_frames(trajectory, args.surface_range, args.nitrogen_range):
             raw_frames += 1
-            rows_by_step[frame.step] = analyze_frame(
+            last_bounds = frame.bounds
+            surface_z = (
+                surface_reference.plane_z(frame.surface, frame.bounds)
+                if surface_reference is not None
+                else args.surface_z_A
+            )
+            row = analyze_frame(
                 frame,
-                surface_z=args.surface_z_A,
+                surface_z=surface_z,
                 cluster_cutoff=args.cluster_cutoff_A,
                 contact_cutoff=args.contact_cutoff_A,
             )
+            row["surface_reference_z_A"] = surface_z
+            rows_by_step[frame.step] = row
             if args.max_frames is not None and raw_frames >= args.max_frames:
                 stop = True
                 break
@@ -199,9 +269,12 @@ def run_analysis(args: argparse.Namespace) -> dict:
     rows = [rows_by_step[step] for step in sorted(rows_by_step)]
     if args.drop_first_frame and rows:
         rows = rows[1:]
+    if not rows or last_bounds is None:
+        raise ValueError("No analyzed frames remain")
+    add_unwrapped_center(rows, last_bounds)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=False)
-    csv_path = output / "attachment_kinetics.csv"
+    csv_path = output / f"{args.output_stem}.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -217,6 +290,9 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "time_step_fs": args.timestep_fs,
         "frame_interval_ps": (rows[1]["step"] - rows[0]["step"]) * args.timestep_fs / 1000.0,
         "surface_z_A": args.surface_z_A,
+        "surface_reference_mode": (
+            "dynamic_slab_translation" if surface_reference is not None else "fixed_nominal_plane"
+        ),
         "contact_definition": {
             "distance_cutoff_A": args.contact_cutoff_A,
             "minimum_n2_molecules": args.minimum_contact_n2,
@@ -234,11 +310,14 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "restart_policy": "later segment replaces earlier frame at duplicate timestep",
         "drop_first_frame": args.drop_first_frame,
         "cluster_cutoff_A": args.cluster_cutoff_A,
+        "reference_structure": (
+            None if args.reference_structure is None else str(args.reference_structure.resolve())
+        ),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     write_plot(
         rows,
-        output / "attachment_kinetics.png",
+        output / f"{args.output_stem}.png",
         args.font_family,
         args.timestep_fs,
         args.font_path,
@@ -250,9 +329,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trajectory", type=Path, action="append", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-stem", default="attachment_kinetics")
     parser.add_argument("--surface-range", type=parse_range, required=True)
     parser.add_argument("--nitrogen-range", type=parse_range, required=True)
     parser.add_argument("--surface-z-A", type=float, required=True)
+    parser.add_argument("--reference-structure", type=Path)
     parser.add_argument("--timestep-fs", type=float, default=0.5)
     parser.add_argument("--cluster-cutoff-A", type=float, default=5.5)
     parser.add_argument("--contact-cutoff-A", type=float, default=4.0)

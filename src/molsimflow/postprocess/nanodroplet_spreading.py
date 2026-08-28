@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from molsimflow.io.lammps_dump import box_lengths, minimum_image_vectors, periodic_center
+from molsimflow.postprocess.surface_reference import load_surface_reference
 
 
 @dataclass(frozen=True)
@@ -176,17 +177,18 @@ def analyze_frame(
 
 def add_unwrapped_centers(rows: list[dict], bounds: np.ndarray) -> None:
     lengths = box_lengths(bounds)
-    previous = None
-    unwrapped = None
-    for row in rows:
-        current = np.array([row[f"droplet_oxygen_center_{dim}_A"] for dim in "xyz"])
-        if previous is None:
-            unwrapped = current.copy()
-        else:
-            unwrapped += minimum_image_vectors(current - previous, lengths)
-        for dim, value in zip("xyz", unwrapped):
-            row[f"droplet_oxygen_center_{dim}_unwrapped_A"] = float(value)
-        previous = current
+    for prefix in ("droplet_oxygen_center", "inserted_water_mass_com"):
+        previous = None
+        unwrapped = None
+        for row in rows:
+            current = np.array([row[f"{prefix}_{dim}_A"] for dim in "xyz"])
+            if previous is None:
+                unwrapped = current.copy()
+            else:
+                unwrapped += minimum_image_vectors(current - previous, lengths)
+            for dim, value in zip("xyz", unwrapped):
+                row[f"{prefix}_{dim}_unwrapped_A"] = float(value)
+            previous = current
 
 
 def write_plot(rows: Sequence[dict], output: Path, timestep_fs: float, font_path: Path) -> None:
@@ -216,13 +218,23 @@ def write_plot(rows: Sequence[dict], output: Path, timestep_fs: float, font_path
 
 def run_analysis(args: argparse.Namespace) -> dict:
     rows_by_step: dict[int, dict] = {}; raw_frames = 0; last_bounds = None; stop = False
+    surface_reference = (
+        load_surface_reference(args.reference_structure, args.surface_range, args.surface_z_A)
+        if args.reference_structure is not None else None
+    )
     for trajectory in args.trajectory:
         for frame in iter_selected_frames(trajectory, args.surface_range, args.water_range):
             raw_frames += 1; last_bounds = frame.bounds
-            rows_by_step[frame.step] = analyze_frame(
-                frame, oxygen_type=args.oxygen_type, surface_z=args.surface_z_A,
+            surface_z = (
+                surface_reference.plane_z(frame.surface, frame.bounds)
+                if surface_reference is not None else args.surface_z_A
+            )
+            row = analyze_frame(
+                frame, oxygen_type=args.oxygen_type, surface_z=surface_z,
                 cluster_cutoff=args.cluster_cutoff_A, contact_cutoff=args.contact_cutoff_A,
             )
+            row["surface_reference_z_A"] = surface_z
+            rows_by_step[frame.step] = row
             if args.max_frames is not None and raw_frames >= args.max_frames:
                 stop = True; break
         if stop: break
@@ -240,6 +252,9 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "timestep_fs": args.timestep_fs,
         "frame_interval_ps": (rows[1]["step"] - rows[0]["step"]) * args.timestep_fs / 1000.0,
         "geometry_definition": "largest oxygen connectivity cluster; hydrogens are not assigned to fixed molecules",
+        "surface_reference_mode": (
+            "dynamic_slab_translation" if surface_reference is not None else "fixed_nominal_plane"
+        ),
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     manifest = {
@@ -248,6 +263,9 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "restart_policy": "later segment replaces earlier frame at duplicate timestep",
         "drop_first_frame": args.drop_first_frame, "oxygen_type": args.oxygen_type,
         "cluster_cutoff_A": args.cluster_cutoff_A, "contact_cutoff_A": args.contact_cutoff_A,
+        "reference_structure": (
+            None if args.reference_structure is None else str(args.reference_structure.resolve())
+        ),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     write_plot(rows, output / "droplet_spreading.png", args.timestep_fs, args.font_path)
@@ -261,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--surface-range", type=parse_range, required=True)
     parser.add_argument("--water-range", type=parse_range, required=True)
     parser.add_argument("--surface-z-A", type=float, required=True)
+    parser.add_argument("--reference-structure", type=Path)
     parser.add_argument("--oxygen-type", type=int, default=2)
     parser.add_argument("--timestep-fs", type=float, default=0.5)
     parser.add_argument("--cluster-cutoff-A", type=float, default=3.5)
