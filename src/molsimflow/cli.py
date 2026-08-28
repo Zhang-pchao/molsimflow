@@ -475,6 +475,35 @@ def _cmd_postprocess_bubble_surface_distance(args: argparse.Namespace) -> int:
     return surface_distance_main(workflow_args)
 
 
+def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanobubble_attachment import main as attachment_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    workflow_args.extend(
+        [
+            "--output-dir", str(args.output_dir),
+            "--surface-range", args.surface_range,
+            "--nitrogen-range", args.nitrogen_range,
+            "--surface-z-A", str(args.surface_z_A),
+            "--timestep-fs", str(args.timestep_fs),
+            "--cluster-cutoff-A", str(args.cluster_cutoff_A),
+            "--contact-cutoff-A", str(args.contact_cutoff_A),
+            "--minimum-contact-n2", str(args.minimum_contact_n2),
+            "--persistence-frames", str(args.persistence_frames),
+            "--font-family", args.font_family,
+        ]
+    )
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.font_path is not None:
+        workflow_args.extend(["--font-path", str(args.font_path)])
+    return attachment_main(workflow_args)
+
+
 def _cmd_postprocess_coalescence_state(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.coalescence_state import main as coalescence_main
 
@@ -3009,6 +3038,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_surface_distance_postprocess_args(surface_distance)
     surface_distance.set_defaults(func=_cmd_postprocess_bubble_surface_distance)
+
+    nanobubble_attachment = postprocess_subparsers.add_parser(
+        "nanobubble-attachment",
+        help="Analyze restart-aware PBC nanobubble attachment kinetics",
+    )
+    nanobubble_attachment.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanobubble_attachment.add_argument("--output-dir", type=Path, required=True)
+    nanobubble_attachment.add_argument("--surface-range", required=True)
+    nanobubble_attachment.add_argument("--nitrogen-range", required=True)
+    nanobubble_attachment.add_argument("--surface-z-A", type=float, required=True)
+    nanobubble_attachment.add_argument("--timestep-fs", type=float, default=0.5)
+    nanobubble_attachment.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    nanobubble_attachment.add_argument("--contact-cutoff-A", type=float, default=4.0)
+    nanobubble_attachment.add_argument("--minimum-contact-n2", type=int, default=3)
+    nanobubble_attachment.add_argument("--persistence-frames", type=int, default=3)
+    nanobubble_attachment.add_argument("--font-family", default="Arial")
+    nanobubble_attachment.add_argument("--font-path", type=Path)
+    nanobubble_attachment.add_argument("--max-frames", type=int)
+    nanobubble_attachment.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanobubble_attachment.set_defaults(func=_cmd_postprocess_nanobubble_attachment)
 
     coalescence_state = postprocess_subparsers.add_parser(
         "coalescence-state",
