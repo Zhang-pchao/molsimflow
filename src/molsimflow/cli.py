@@ -504,6 +504,22 @@ def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
     return attachment_main(workflow_args)
 
 
+def _cmd_postprocess_nanodroplet_spreading(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanodroplet_spreading import main as spreading_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in ("output_dir", "surface_range", "water_range", "surface_z_A", "oxygen_type",
+                 "timestep_fs", "cluster_cutoff_A", "contact_cutoff_A", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return spreading_main(workflow_args)
+
+
 def _cmd_postprocess_coalescence_state(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.coalescence_state import main as coalescence_main
 
@@ -3060,6 +3076,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
     )
     nanobubble_attachment.set_defaults(func=_cmd_postprocess_nanobubble_attachment)
+
+    nanodroplet_spreading = postprocess_subparsers.add_parser(
+        "nanodroplet-spreading", help="Analyze restart-aware PBC nanodroplet spreading"
+    )
+    nanodroplet_spreading.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanodroplet_spreading.add_argument("--output-dir", type=Path, required=True)
+    nanodroplet_spreading.add_argument("--surface-range", required=True)
+    nanodroplet_spreading.add_argument("--water-range", required=True)
+    nanodroplet_spreading.add_argument("--surface-z-A", type=float, required=True)
+    nanodroplet_spreading.add_argument("--oxygen-type", type=int, default=2)
+    nanodroplet_spreading.add_argument("--timestep-fs", type=float, default=0.5)
+    nanodroplet_spreading.add_argument("--cluster-cutoff-A", type=float, default=3.5)
+    nanodroplet_spreading.add_argument("--contact-cutoff-A", type=float, default=3.5)
+    nanodroplet_spreading.add_argument("--font-path", type=Path, required=True)
+    nanodroplet_spreading.add_argument("--max-frames", type=int)
+    nanodroplet_spreading.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanodroplet_spreading.set_defaults(func=_cmd_postprocess_nanodroplet_spreading)
 
     coalescence_state = postprocess_subparsers.add_parser(
         "coalescence-state",
