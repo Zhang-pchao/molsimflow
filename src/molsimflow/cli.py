@@ -2044,6 +2044,28 @@ def _cmd_postprocess_sphere_cv_compare(args: argparse.Namespace) -> int:
     return sphere_cv_compare_main(workflow_args)
 
 
+def _cmd_postprocess_sphere_interface_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.sphere_interface_compare import main as interface_compare_main
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--kind",
+        args.kind,
+        "--output-dir",
+        str(args.output_dir),
+        "--block-frames",
+        str(args.block_frames),
+        "--dpi",
+        str(args.dpi),
+    ]
+    if args.font_path is not None:
+        workflow_args.extend(["--font-path", str(args.font_path)])
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return interface_compare_main(workflow_args)
+
+
 def _cmd_postprocess_sphere_interface_structure(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.sphere_interface_structure import main as interface_main
 
@@ -2808,6 +2830,16 @@ def _add_sphere_cv_compare_postprocess_args(parser: argparse.ArgumentParser) -> 
     parser.add_argument("--cv", action="append", default=[], help="CV column to compare; may be repeated")
     parser.add_argument("--skip-last-data-line", action="store_true")
     parser.add_argument("--dpi", type=int, default=220)
+
+
+def _add_sphere_interface_compare_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--kind", choices=("nanodroplet", "nanobubble"), required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--font-path", type=Path)
+    parser.add_argument("--block-frames", type=int, default=10)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--no-plots", action="store_true")
 
 
 def _add_sphere_interface_structure_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -3828,6 +3860,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_sphere_cv_compare_postprocess_args(sphere_cv_compare)
     sphere_cv_compare.set_defaults(func=_cmd_postprocess_sphere_cv_compare)
+
+    sphere_interface_compare = postprocess_subparsers.add_parser(
+        "sphere-interface-compare",
+        help="Compare existing droplet or bubble interface analyses across surface terminations",
+    )
+    _add_sphere_interface_compare_postprocess_args(sphere_interface_compare)
+    sphere_interface_compare.set_defaults(func=_cmd_postprocess_sphere_interface_compare)
 
     sphere_interface_structure = postprocess_subparsers.add_parser(
         "sphere-interface-structure",
