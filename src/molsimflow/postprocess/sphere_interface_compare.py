@@ -214,8 +214,8 @@ def collect_comparison(
         if kind == "nanodroplet"
         else (
             "bubble_center_surface_dz_A",
-            "bubble_lateral_radius_p90_A",
-            "bubble_height_q05_q95_A",
+            "bubble_radius_p90_A",
+            "bubble_lower_edge_gap_p90_A",
             "bubble_contact_n2_count",
         )
     )
@@ -505,6 +505,10 @@ def _setup_matplotlib(font_path: Path) -> None:
             "figure.facecolor": "white",
             "axes.facecolor": "white",
             "savefig.facecolor": "white",
+            "mathtext.fontset": "custom",
+            "mathtext.rm": family,
+            "mathtext.it": f"{family}:italic",
+            "mathtext.bf": f"{family}:bold",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
         }
@@ -545,6 +549,10 @@ def _case_style(index: int) -> dict[str, object]:
     }
 
 
+def _plot_label(case: ComparisonCase) -> str:
+    return rf"$\mathrm{{CH_3:OH}}={case.ch3_sites}:{case.oh_sites}$"
+
+
 def _make_plots(
     cases: Sequence[ComparisonCase],
     kind: str,
@@ -573,16 +581,16 @@ def _make_plots(
     core_labels = (
         (
             "Droplet center–surface distance (Å)",
-            "Lateral radius, P₉₀ (Å)",
-            "Height, q₀.₀₅–q₀.₉₅ (Å)",
+            r"Lateral radius, $P_{90}$ (Å)",
+            r"Height, $q_{0.05}$–$q_{0.95}$ (Å)",
             "Footprint area (Å²)",
         )
         if kind == "nanodroplet"
         else (
             "Bubble center–surface distance (Å)",
-            "Lateral radius, P₉₀ (Å)",
-            "Height, q₀.₀₅–q₀.₉₅ (Å)",
-            "Contacting N₂ atoms",
+            r"Bubble radius, $P_{90}$ (Å)",
+            r"Lower-edge gap, $P_{90}$ (Å)",
+            r"Contacting $N_2$ atoms",
         )
     )
     fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.1), sharex=True)
@@ -593,7 +601,7 @@ def _make_plots(
             ax.plot(
                 [_float(row["time_ns"]) for row in values],
                 [_float(row[metric]) for row in values],
-                label=case.label,
+                label=_plot_label(case),
                 color=style["color"],
                 linestyle=style["linestyle"],
                 linewidth=1.35,
@@ -633,7 +641,7 @@ def _make_plots(
         axes[1].plot(
             [_float(row["time_since_attachment_ns"]) for row in values],
             [_float(row.get("mean_equivalent_radius_A")) for row in values],
-            label=case.label,
+            label=_plot_label(case),
             color=style["color"],
             linestyle=style["linestyle"],
             marker=style["marker"],
@@ -641,7 +649,7 @@ def _make_plots(
             markersize=3.5,
             linewidth=1.15,
         )
-    axes[0].set_xticks(x, [case.label for case in cases], rotation=18, ha="right")
+    axes[0].set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
     axes[0].set_ylabel("Contact angle (°)")
     axes[0].set_xlabel("Surface termination")
     axes[1].set_ylabel("Equivalent contact-line radius (Å)")
@@ -650,7 +658,7 @@ def _make_plots(
     for ax in axes:
         _style_axis(ax)
     fig.subplots_adjust(left=0.09, right=0.98, bottom=0.22, top=0.78, wspace=0.28)
-    phase = "liquid-water angle" if kind == "nanodroplet" else "N₂-gas-side angle"
+    phase = "liquid-water angle" if kind == "nanodroplet" else r"$N_2$-gas-side angle"
     _add_header(fig, f"{label} contact geometry across surface terminations", f"Left: final 2 ns block mean ± SD for the {phase}; right: contact-line block averages.")
     paths.extend(_save_figure(fig, figures / "02_contact_geometry_comparison", dpi))
     plt.close(fig)
@@ -667,7 +675,7 @@ def _make_plots(
         axes[0, 0].plot(
             [_float(row["z_A"]) for row in density],
             [_float(row["oxygen_number_density_A-3"]) for row in density],
-            label=case.label,
+            label=_plot_label(case),
             color=style["color"],
             linestyle=style["linestyle"],
             linewidth=1.35,
@@ -675,7 +683,7 @@ def _make_plots(
         axes[0, 1].plot(
             [_float(row["cos_theta"]) for row in orientation],
             [_float(row["probability_density"]) for row in orientation],
-            label=case.label,
+            label=_plot_label(case),
             color=style["color"],
             linestyle=style["linestyle"],
             linewidth=1.35,
@@ -701,7 +709,7 @@ def _make_plots(
         )
     metrics = (
         ("hbond_tpcl_water_water_hbond_degree", "Water–water degree"),
-        ("hbond_tpcl_surface_water_hbond_per_h2o", "Surface–water/H₂O"),
+        ("hbond_tpcl_surface_water_hbond_per_h2o", r"Surface–water/$H_2O$"),
     )
     for offset, (metric, metric_label) in enumerate(metrics):
         axes[1, 1].bar(
@@ -714,7 +722,7 @@ def _make_plots(
             linewidth=0.6,
         )
     for ax in (axes[1, 0], axes[1, 1]):
-        ax.set_xticks(x, [case.label for case in cases], rotation=18, ha="right")
+        ax.set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
     axes[1, 0].set_ylabel("Hydration O areal density (Å⁻²)")
     axes[1, 1].set_ylabel("TPCL H-bond metric")
     axes[1, 0].legend(frameon=False, fontsize=8)
@@ -742,7 +750,7 @@ def _make_plots(
             linewidth=0.6,
         )
     candidate_metrics = (
-        ("proton_h3o_candidate_frame_fraction", "H₃O candidate"),
+        ("proton_h3o_candidate_frame_fraction", r"$H_3O$ candidate"),
         ("proton_oh_candidate_frame_fraction", "OH candidate"),
         ("proton_surface_site_candidate_frame_fraction", "Surface-site candidate"),
     )
@@ -757,10 +765,10 @@ def _make_plots(
             linewidth=1.2,
         )
     for ax in axes:
-        ax.set_xticks(x, [case.label for case in cases], rotation=18, ha="right")
+        ax.set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
         _style_axis(ax)
     axes[0].axhline(0.0, color=INK, linewidth=0.8)
-    axes[0].set_ylabel("CH₃ enrichment vs surface fraction")
+    axes[0].set_ylabel(r"$CH_3$ enrichment vs surface fraction")
     axes[1].set_ylabel("Fraction of analyzed frames")
     axes[0].legend(frameon=False)
     axes[1].legend(frameon=False)
