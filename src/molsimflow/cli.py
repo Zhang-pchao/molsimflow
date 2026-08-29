@@ -543,7 +543,7 @@ def _cmd_postprocess_axisymmetric_contact_angle(args: argparse.Namespace) -> int
     for name in (
         "output_dir", "atom_range", "mode", "phase_label", "surface_z_A", "timestep_fs",
         "start_ns", "end_ns", "minimum_frames", "block_frames", "cluster_cutoff_A", "reference_density_A3",
-        "r_max_A", "z_min_A", "z_max_A", "dr_A", "dz_A", "smoothing_sigma_bins",
+        "r_max_A", "z_min_A", "z_max_A", "dr_A", "dz_A",
         "fit_z_min_A", "fit_z_max_A", "font_path",
     ):
         workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
@@ -1304,6 +1304,30 @@ def _cmd_postprocess_water_orientation_summary(args: argparse.Namespace) -> int:
     return water_orientation_main(workflow_args)
 
 
+def _cmd_postprocess_dual_interface_water(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_water import main as dual_interface_water_main
+
+    return dual_interface_water_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_ion(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_ion import main as dual_interface_ion_main
+
+    return dual_interface_ion_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_hbond(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_hbond import main as dual_interface_hbond_main
+
+    return dual_interface_hbond_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_ion3d(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_ion3d import main as dual_interface_ion3d_main
+
+    return dual_interface_ion3d_main(args.workflow_args)
+
+
 def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_film import main as bridge_film_main
 
@@ -1670,8 +1694,6 @@ def _cmd_postprocess_fes_convergence(args: argparse.Namespace) -> int:
         str(args.smooth_window),
         "--smooth-passes",
         str(args.smooth_passes),
-        "--jump-threshold",
-        str(args.jump_threshold),
         "--block-count",
         str(args.block_count),
         "--cumulative-glob",
@@ -2711,9 +2733,8 @@ def _add_fes_convergence_postprocess_args(parser: argparse.ArgumentParser) -> No
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--window-low", type=float, default=20.0)
     parser.add_argument("--window-high", type=float, default=52.0)
-    parser.add_argument("--smooth-window", type=int, default=21)
-    parser.add_argument("--smooth-passes", type=int, default=3)
-    parser.add_argument("--jump-threshold", type=float, default=120.0)
+    parser.add_argument("--smooth-window", type=int, default=1)
+    parser.add_argument("--smooth-passes", type=int, default=1)
     parser.add_argument("--infer-blocks", action="store_true", help="Infer existing PATH stem_1/stem_2/... block files")
     parser.add_argument("--block-count", type=int, default=3)
     parser.add_argument("--cumulative-glob", default="fes-cum_*.dat")
@@ -3313,7 +3334,6 @@ def build_parser() -> argparse.ArgumentParser:
     contact_angle.add_argument("--z-max-A", type=float, default=60.0)
     contact_angle.add_argument("--dr-A", type=float, default=1.0)
     contact_angle.add_argument("--dz-A", type=float, default=1.0)
-    contact_angle.add_argument("--smoothing-sigma-bins", type=float, default=1.0)
     contact_angle.add_argument("--fit-z-min-A", type=float, default=2.0)
     contact_angle.add_argument("--fit-z-max-A", type=float, default=55.0)
     contact_angle.add_argument("--font-path", type=Path, required=True)
@@ -3696,6 +3716,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_water_orientation_summary_postprocess_args(water_orientation)
     water_orientation.set_defaults(func=_cmd_postprocess_water_orientation_summary)
+
+    dual_interface_water = postprocess_subparsers.add_parser(
+        "dual-interface-water",
+        help="Build matched-gap dual-interface water-density and dipole maps",
+    )
+    dual_interface_water.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_water.set_defaults(func=_cmd_postprocess_dual_interface_water)
+
+    dual_interface_ion = postprocess_subparsers.add_parser(
+        "dual-interface-ion",
+        help="Analyze matched-gap formal-charge and ionic-field proxies",
+    )
+    dual_interface_ion.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_ion.set_defaults(func=_cmd_postprocess_dual_interface_ion)
+
+    dual_interface_hbond = postprocess_subparsers.add_parser(
+        "dual-interface-hbond",
+        help="Analyze matched-gap water H-bond spanning connectivity",
+    )
+    dual_interface_hbond.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_hbond.set_defaults(func=_cmd_postprocess_dual_interface_hbond)
+
+    dual_interface_ion3d = postprocess_subparsers.add_parser(
+        "dual-interface-ion3d",
+        help="Analyze three-dimensional ion organization in a dual-bubble frame",
+    )
+    dual_interface_ion3d.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_ion3d.set_defaults(func=_cmd_postprocess_dual_interface_ion3d)
 
     bridge_film = postprocess_subparsers.add_parser(
         "bridge-film",

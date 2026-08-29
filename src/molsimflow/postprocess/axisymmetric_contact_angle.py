@@ -123,11 +123,8 @@ def build_density(
     cluster_cutoff: float,
     r_edges: np.ndarray,
     z_edges: np.ndarray,
-    smoothing_sigma: float,
     surface_reference: SurfaceReference | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    from scipy.ndimage import gaussian_filter
-
     counts = np.zeros((len(z_edges) - 1, len(r_edges) - 1), dtype=float)
     cluster_sizes = []
     for frame in frames:
@@ -152,7 +149,7 @@ def build_density(
     annulus_area = math.pi * (r_edges[1:] ** 2 - r_edges[:-1] ** 2)
     volumes = (z_edges[1:] - z_edges[:-1])[:, None] * annulus_area[None, :]
     density = counts / (len(frames) * volumes)
-    return gaussian_filter(density, smoothing_sigma), np.asarray(cluster_sizes)
+    return density, np.asarray(cluster_sizes)
 
 
 def contour_points(
@@ -277,7 +274,6 @@ def block_contact_angles(
     cluster_cutoff: float,
     r_edges: np.ndarray,
     z_edges: np.ndarray,
-    smoothing_sigma: float,
     reference_density: float,
     fit_z_min: float,
     fit_z_max: float,
@@ -296,7 +292,6 @@ def block_contact_angles(
             cluster_cutoff=cluster_cutoff,
             r_edges=r_edges,
             z_edges=z_edges,
-            smoothing_sigma=smoothing_sigma,
             surface_reference=surface_reference,
         )
         points = contour_points(
@@ -368,7 +363,6 @@ def run_analysis(args: argparse.Namespace) -> dict:
         cluster_cutoff=args.cluster_cutoff_A,
         r_edges=r_edges,
         z_edges=z_edges,
-        smoothing_sigma=args.smoothing_sigma_bins,
         surface_reference=surface_reference,
     )
     r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
@@ -380,7 +374,6 @@ def run_analysis(args: argparse.Namespace) -> dict:
         cluster_cutoff=args.cluster_cutoff_A,
         r_edges=r_edges,
         z_edges=z_edges,
-        smoothing_sigma=args.smoothing_sigma_bins,
         reference_density=args.reference_density_A3,
         fit_z_min=args.fit_z_min_A,
         fit_z_max=args.fit_z_max_A,
@@ -486,7 +479,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--z-max-A", type=float, default=60.0)
     parser.add_argument("--dr-A", type=float, default=1.0)
     parser.add_argument("--dz-A", type=float, default=1.0)
-    parser.add_argument("--smoothing-sigma-bins", type=float, default=1.0)
     parser.add_argument("--fit-z-min-A", type=float, default=2.0)
     parser.add_argument("--fit-z-max-A", type=float, default=55.0)
     parser.add_argument("--font-path", type=Path, required=True)

@@ -866,15 +866,10 @@ def load_fes2d_grid(path: Path) -> Fes2DGrid:
 
 
 def clean_series(values: Sequence[float]) -> Tuple[np.ndarray, np.ndarray]:
-    """Replace non-finite values by linear interpolation."""
+    """Return the input series and its finite-value mask without imputation."""
 
     arr = np.asarray(values, dtype=float).copy()
     finite = np.isfinite(arr)
-    if not np.any(finite):
-        return np.zeros_like(arr), finite
-    if not np.all(finite):
-        indices = np.arange(arr.size)
-        arr[~finite] = np.interp(indices[~finite], indices[finite], arr[finite])
     return arr, finite
 
 
@@ -924,23 +919,34 @@ def effective_window_length(n_points: int, requested_window: int) -> Optional[in
 
 
 def moving_average_smooth(values: Sequence[float], window_length: int = 1, passes: int = 1) -> np.ndarray:
-    """Smooth with an edge-padded moving average.
+    """Smooth finite contiguous segments with an edge-padded moving average.
 
     This is intentionally dependency-light.  It is not a direct Savitzky-Golay
-    replacement, but gives a stable table-oriented default before plotting
-    workflows are migrated.
+    replacement.  Non-finite values remain non-finite, and smoothing never
+    crosses a missing-data boundary.
     """
 
-    clean, _ = clean_series(values)
-    window = effective_window_length(clean.size, window_length)
-    if window is None:
-        return clean
-    kernel = np.ones(window, dtype=float) / float(window)
+    clean, finite = clean_series(values)
     out = clean.copy()
-    pad = window // 2
-    for _ in range(max(1, int(passes))):
-        padded = np.pad(out, pad_width=pad, mode="edge")
-        out = np.convolve(padded, kernel, mode="valid")
+    start = 0
+    while start < clean.size:
+        if not finite[start]:
+            start += 1
+            continue
+        stop = start + 1
+        while stop < clean.size and finite[stop]:
+            stop += 1
+        segment = clean[start:stop]
+        window = effective_window_length(segment.size, window_length)
+        if window is not None:
+            kernel = np.ones(window, dtype=float) / float(window)
+            pad = window // 2
+            smoothed = segment.copy()
+            for _ in range(max(1, int(passes))):
+                padded = np.pad(smoothed, pad_width=pad, mode="edge")
+                smoothed = np.convolve(padded, kernel, mode="valid")
+            out[start:stop] = smoothed
+        start = stop
     return out
 
 
@@ -2244,36 +2250,14 @@ def numeric_fes_metadata(path: Path) -> Dict[str, float]:
     return numeric
 
 
-def preclean_jumps(values: Sequence[float], jump_threshold: float = 120.0) -> Tuple[np.ndarray, np.ndarray]:
-    """Interpolate large one-step jumps before smoothing."""
-
-    clean, _finite = clean_series(values)
-    jump_mask = np.zeros_like(clean, dtype=bool)
-    if clean.size <= 1 or float(jump_threshold) <= 0:
-        return clean, jump_mask
-    jump_indices = np.where(np.abs(np.diff(clean)) > float(jump_threshold))[0] + 1
-    jump_mask[jump_indices] = True
-    if np.any(jump_mask):
-        indices = np.arange(clean.size)
-        keep = ~jump_mask
-        if np.count_nonzero(keep) >= 2:
-            clean[jump_mask] = np.interp(indices[jump_mask], indices[keep], clean[keep])
-        else:
-            jump_mask[:] = False
-    return clean, jump_mask
-
-
 def smooth_fes_curve(
     values: Sequence[float],
-    jump_threshold: float = 120.0,
-    smooth_window: int = 21,
-    smooth_passes: int = 3,
-) -> Tuple[np.ndarray, int]:
-    """Preclean large jumps and smooth a FES curve with a moving average."""
+    smooth_window: int = 1,
+    smooth_passes: int = 1,
+) -> np.ndarray:
+    """Optionally smooth a FES curve without imputing or bridging observations."""
 
-    clean, jump_mask = preclean_jumps(values, jump_threshold=jump_threshold)
-    smoothed = moving_average_smooth(clean, window_length=smooth_window, passes=smooth_passes)
-    return smoothed, int(np.count_nonzero(jump_mask))
+    return moving_average_smooth(values, window_length=smooth_window, passes=smooth_passes)
 
 
 def zero_values(values: Sequence[float]) -> Tuple[np.ndarray, float]:
@@ -2339,7 +2323,6 @@ def _processed_convergence_curve(
     window_high: float,
     smooth_window: int,
     smooth_passes: int,
-    jump_threshold: float,
     block_index: Optional[int] = None,
     cumulative_index: Optional[int] = None,
     trajectory_fraction: Optional[float] = None,
@@ -2354,9 +2337,8 @@ def _processed_convergence_curve(
     )
     metadata = numeric_fes_metadata(path)
     raw_zeroed, _raw_zero = zero_values(curve.free_energy)
-    smooth_values, jump_count = smooth_fes_curve(
+    smooth_values = smooth_fes_curve(
         curve.free_energy,
-        jump_threshold=jump_threshold,
         smooth_window=smooth_window,
         smooth_passes=smooth_passes,
     )
@@ -2376,7 +2358,6 @@ def _processed_convergence_curve(
         "trajectory_fraction": trajectory_fraction if trajectory_fraction is not None else math.nan,
         "delta_f_win_smooth_kj_mol": smooth_delta,
         "delta_f_win_raw_kj_mol": raw_delta,
-        "jump_precleaned_points": jump_count,
         "sample_size": _value_or_nan(metadata, "sample_size"),
         "effective_sample_size": _value_or_nan(metadata, "effective_sample_size"),
         "blocks_effective_num": _value_or_nan(metadata, "blocks_effective_num"),
@@ -2459,7 +2440,6 @@ CONVERGENCE_SUMMARY_FIELDS: Tuple[str, ...] = (
     "sample_size",
     "effective_sample_size",
     "blocks_effective_num",
-    "jump_precleaned_points_final",
     "source_path",
 )
 
@@ -2477,7 +2457,6 @@ CONVERGENCE_VALUE_FIELDS: Tuple[str, ...] = (
     "rank_cumulative_smooth_within_series",
     "delta_f_win_smooth_kj_mol",
     "delta_f_win_raw_kj_mol",
-    "jump_precleaned_points",
     "sample_size",
     "effective_sample_size",
     "blocks_effective_num",
@@ -2509,9 +2488,8 @@ def analyze_fes_convergence(
     output_dir: Path,
     window_low: float = 20.0,
     window_high: float = 52.0,
-    smooth_window: int = 21,
-    smooth_passes: int = 3,
-    jump_threshold: float = 120.0,
+    smooth_window: int = 1,
+    smooth_passes: int = 1,
 ) -> Dict[str, Path]:
     """Analyze final/block/cumulative FES Delta-F convergence."""
 
@@ -2535,7 +2513,6 @@ def analyze_fes_convergence(
             window_high=window_high,
             smooth_window=smooth_window,
             smooth_passes=smooth_passes,
-            jump_threshold=jump_threshold,
         )
         curve_rows.extend(final_curve_rows)
 
@@ -2551,7 +2528,6 @@ def analyze_fes_convergence(
                 window_high=window_high,
                 smooth_window=smooth_window,
                 smooth_passes=smooth_passes,
-                jump_threshold=jump_threshold,
                 block_index=block_index,
             )
             block_rows.append(block_metrics)
@@ -2571,7 +2547,6 @@ def analyze_fes_convergence(
                 window_high=window_high,
                 smooth_window=smooth_window,
                 smooth_passes=smooth_passes,
-                jump_threshold=jump_threshold,
                 cumulative_index=cumulative_index,
             )
             cumulative_records.append((cumulative_path, metrics, rows, metadata))
@@ -2635,7 +2610,6 @@ def analyze_fes_convergence(
                 "sample_size": final_metrics["sample_size"],
                 "effective_sample_size": final_metrics["effective_sample_size"],
                 "blocks_effective_num": final_metrics["blocks_effective_num"],
-                "jump_precleaned_points_final": final_metrics["jump_precleaned_points"],
                 "source_path": str(spec.path),
             }
         )
@@ -3062,9 +3036,8 @@ def get_fes_convergence_args(argv: Optional[Sequence[str]] = None) -> argparse.N
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--window-low", type=float, default=20.0)
     parser.add_argument("--window-high", type=float, default=52.0)
-    parser.add_argument("--smooth-window", type=int, default=21)
-    parser.add_argument("--smooth-passes", type=int, default=3)
-    parser.add_argument("--jump-threshold", type=float, default=120.0)
+    parser.add_argument("--smooth-window", type=int, default=1)
+    parser.add_argument("--smooth-passes", type=int, default=1)
     parser.add_argument("--infer-blocks", action="store_true", help="Infer existing PATH stem_1/stem_2/... block files")
     parser.add_argument("--block-count", type=int, default=3)
     parser.add_argument("--cumulative-glob", default="fes-cum_*.dat")
@@ -3089,7 +3062,6 @@ def run_fes_convergence(argv: Optional[Sequence[str]] = None) -> int:
             window_high=float(args.window_high),
             smooth_window=int(args.smooth_window),
             smooth_passes=int(args.smooth_passes),
-            jump_threshold=float(args.jump_threshold),
         )
     except Exception as exc:
         print(f"FES convergence analysis failed: {exc}")

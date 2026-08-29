@@ -25,9 +25,23 @@ def test_translated_slab_preserves_surface_relative_density():
         "cluster_cutoff": 1.0,
         "r_edges": np.array([0.0, 1.0]),
         "z_edges": np.arange(0.0, 6.0),
-        "smoothing_sigma": 0.0,
         "surface_reference": reference,
     }
     density_initial, _ = build_density([initial], **kwargs)
     density_translated, _ = build_density([translated], **kwargs)
     np.testing.assert_array_equal(density_initial, density_translated)
+
+
+def test_density_does_not_spread_counts_into_empty_bins():
+    bounds = np.array([[0.0, 10.0], [0.0, 10.0], [0.0, 20.0]])
+    frame = CoordinateFrame(
+        0, bounds, np.array([[5.0, 5.0, 8.0]]), np.array([[1.0, 1.0, 1.0]])
+    )
+
+    density, _ = build_density(
+        [frame],
+        surface_z=5.0,
+        cluster_cutoff=1.0,
+        r_edges=np.array([0.0, 1.0, 2.0]),
+        z_edges=np.arange(0.0, 6.0),
+    )

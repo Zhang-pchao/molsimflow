@@ -7,7 +7,7 @@ legacy 1D FES comparison workflow:
 
 - read one or more whitespace FES files;
 - shift each curve by the minimum in a configurable reference window;
-- optionally smooth curves with a dependency-light moving average;
+- optionally smooth finite contiguous segments with a dependency-light moving average;
 - zero each smoothed curve by a configurable CV window;
 - compute max-min barrier summaries for configurable CV windows;
 - write processed curve and barrier summary CSV files.
@@ -60,4 +60,6 @@ The command writes:
 
 FES files are expected to contain at least two whitespace columns: CV and free
 energy.  Lines beginning with `#` are ignored, so PLUMED-style `#! FIELDS`
-headers are accepted.
+headers are accepted. Non-finite values are preserved; no missing points or
+large jumps are linearly interpolated into the curve. Barrier summaries use
+the raw curve by default (`--smooth-window 1`).
