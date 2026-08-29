@@ -85,13 +85,20 @@ def test_manifest_labels_and_collection(tmp_path):
         f"ch3_0_oh_36\t{roots[1]}\t0\t36\n"
     )
     cases = load_cases(manifest)
-    assert [case.label for case in cases] == ["CH₃:OH = 36:0", "CH₃:OH = 0:36"]
+    assert [case.label for case in cases] == ["1.00", "0.00"]
+    assert [case.composition_label for case in cases] == [
+        "CH₃:OH = 36:0",
+        "CH₃:OH = 0:36",
+    ]
 
     output = tmp_path / "output"
     summary = collect_comparison(cases, "nanodroplet", output, make_plots=False)
     assert summary["status"] == "PASS"
     assert summary["case_count"] == 2
     assert (output / "case_summary.csv").is_file()
+    rows = list(csv.DictReader((output / "case_summary.csv").open()))
+    assert [row["legend_label"] for row in rows] == ["1.00", "0.00"]
+    assert [float(row["contact_line_coverage_ns"]) for row in rows] == [1.0, 1.0]
     assert "CH₃:OH = 36:0" in (output / "case_summary.csv").read_text()
     assert json.loads((output / "summary.json").read_text())["kind"] == "nanodroplet"
 

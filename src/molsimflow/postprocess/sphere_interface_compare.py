@@ -34,6 +34,10 @@ class ComparisonCase:
 
     @property
     def label(self) -> str:
+        return f"{self.ch3_fraction:.2f}"
+
+    @property
+    def composition_label(self) -> str:
         return f"CH₃:OH = {self.ch3_sites}:{self.oh_sites}"
 
 
@@ -140,6 +144,7 @@ def _case_fields(case: ComparisonCase) -> dict[str, object]:
     return {
         "case_id": case.case_id,
         "legend_label": case.label,
+        "composition_label": case.composition_label,
         "ch3_sites": case.ch3_sites,
         "oh_sites": case.oh_sites,
         "ch3_fraction": case.ch3_fraction,
@@ -337,6 +342,8 @@ def collect_comparison(
         analyzed = int(line_summary.get("analyzed_frames", 0))
         late_blocks = blocks[-min(10, len(blocks)) :]
         line_mean, line_std = _mean_std(block.get("mean_equivalent_radius_A") for block in late_blocks)
+        line_start_ns = min((_float(block.get("start_time_ns")) for block in blocks), default=math.nan)
+        line_end_ns = max((_float(block.get("end_time_ns")) for block in blocks), default=math.nan)
         row.update(
             {
                 "contact_line_quality_status": line_quality,
@@ -344,6 +351,9 @@ def collect_comparison(
                 "contact_line_analyzed_frames": analyzed,
                 "contact_line_valid_fraction": valid / analyzed if analyzed else math.nan,
                 "contact_line_jump_candidate_count": line_summary.get("jump_candidate_count", 0),
+                "contact_line_start_ns": line_start_ns,
+                "contact_line_end_ns": line_end_ns,
+                "contact_line_coverage_ns": line_end_ns - line_start_ns,
                 "late_contact_line_radius_A_mean": line_mean,
                 "late_contact_line_radius_A_std": line_std,
             }
@@ -429,7 +439,15 @@ def collect_comparison(
                     row[f"precontact_{key}"] = pre.get(key, math.nan)
         case_rows.append(row)
 
-    preferred = ("case_id", "legend_label", "ch3_sites", "oh_sites", "ch3_fraction", "kind")
+    preferred = (
+        "case_id",
+        "legend_label",
+        "composition_label",
+        "ch3_sites",
+        "oh_sites",
+        "ch3_fraction",
+        "kind",
+    )
     _write_csv(output_dir / "case_summary.csv", case_rows, preferred)
     _write_csv(output_dir / "availability.csv", availability, preferred)
     _write_csv(output_dir / "source_manifest.csv", source_rows, preferred)
@@ -553,7 +571,35 @@ def _case_style(index: int) -> dict[str, object]:
 
 
 def _plot_label(case: ComparisonCase) -> str:
-    return rf"$\mathrm{{CH_3:OH}}={case.ch3_sites}:{case.oh_sites}$"
+    return case.label
+
+
+def _fraction_axis_label() -> str:
+    return r"$\mathrm{CH_3}$ site fraction"
+
+
+def _annotate_small_values(ax, centers, values, *, threshold: float) -> None:
+    upper = ax.get_ylim()[1]
+    baseline = 0.018 * upper if upper > 0 else 0.01
+    for center, value in zip(centers, values):
+        number = _float(value)
+        if not math.isfinite(number):
+            label = "NA"
+        elif abs(number) < threshold:
+            label = "0" if number == 0 else f"{number:.1e}"
+        else:
+            continue
+        position = baseline if not math.isfinite(number) or number <= baseline else number
+        ax.text(
+            center,
+            position,
+            label,
+            ha="center",
+            va="bottom",
+            rotation=90,
+            fontsize=6.5,
+            color=MUTED,
+        )
 
 
 def _make_plots(
@@ -613,7 +659,13 @@ def _make_plots(
         ax.set_ylabel(ylabel)
         ax.set_xlabel("Time (ns)")
         _style_axis(ax)
-    axes[0, 0].legend(frameon=False, ncol=2, loc="lower left", bbox_to_anchor=(0, 1.02))
+    axes[0, 0].legend(
+        frameon=False,
+        ncol=2,
+        loc="lower left",
+        bbox_to_anchor=(0, 1.02),
+        title=_fraction_axis_label(),
+    )
     fig.subplots_adjust(left=0.10, right=0.98, bottom=0.08, top=0.84, wspace=0.25, hspace=0.28)
     label = "Nanodroplet" if kind == "nanodroplet" else "Nanobubble"
     _add_header(fig, f"{label} core dynamics across surface terminations", "100 ps block means; all distances use the dynamic surface reference and periodic-boundary-aware centers.")
@@ -622,6 +674,7 @@ def _make_plots(
 
     fig, axes = plt.subplots(1, 2, figsize=(10.2, 4.5))
     x = np.arange(len(cases))
+    line_endpoints: list[tuple[int, float, float, dict[str, object]]] = []
     for index, case in enumerate(cases):
         row = row_by_id[case.case_id]
         style = _case_style(index)
@@ -652,17 +705,52 @@ def _make_plots(
             markersize=3.5,
             linewidth=1.15,
         )
-    axes[0].set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
+        if values:
+            end_x = _float(values[-1]["time_since_attachment_ns"])
+            end_y = _float(values[-1].get("mean_equivalent_radius_A"))
+            axes[1].scatter(
+                [end_x],
+                [end_y],
+                marker=style["marker"],
+                s=22,
+                color=style["color"],
+                zorder=4,
+            )
+            line_endpoints.append((index, end_x, end_y, style))
+    axes[0].set_xticks(x, [_plot_label(case) for case in cases])
     axes[0].set_ylabel("Contact angle (°)")
-    axes[0].set_xlabel("Surface termination")
+    axes[0].set_xlabel(_fraction_axis_label())
     axes[1].set_ylabel("Equivalent contact-line radius (Å)")
     axes[1].set_xlabel("Time since attachment (ns)" if kind == "nanobubble" else "Time (ns)")
-    axes[1].legend(frameon=False, ncol=2, loc="lower left", bbox_to_anchor=(0, 1.02))
+    axes[1].legend(
+        frameon=False,
+        ncol=2,
+        loc="lower left",
+        bbox_to_anchor=(0, 1.02),
+        title=_fraction_axis_label(),
+    )
+    if kind == "nanobubble" and line_endpoints:
+        longest = max(endpoint[1] for endpoint in line_endpoints)
+        for _, end_x, end_y, _ in line_endpoints:
+            if end_x < 0.8 * longest:
+                axes[1].annotate(
+                    f"{end_x:.1f} ns coverage",
+                    (end_x, end_y),
+                    xytext=(8, 8),
+                    textcoords="offset points",
+                    fontsize=7,
+                    color=MUTED,
+                )
     for ax in axes:
         _style_axis(ax)
     fig.subplots_adjust(left=0.09, right=0.98, bottom=0.22, top=0.78, wspace=0.28)
     phase = "liquid-water angle" if kind == "nanodroplet" else r"$N_2$-gas-side angle"
-    _add_header(fig, f"{label} contact geometry across surface terminations", f"Left: final 2 ns block mean ± SD for the {phase}; right: contact-line block averages.")
+    coverage_note = (
+        " Curves end at the 15 ns trajectory limit, so late attachment gives shorter post-attachment coverage."
+        if kind == "nanobubble"
+        else ""
+    )
+    _add_header(fig, f"{label} contact geometry across surface terminations", f"Left: final 2 ns block mean ± SD for the {phase}; right: contact-line block averages.{coverage_note}")
     paths.extend(_save_figure(fig, figures / "02_contact_geometry_comparison", dpi))
     plt.close(fig)
 
@@ -695,41 +783,60 @@ def _make_plots(
     axes[0, 0].set_ylabel(r"TPCL O number density (Å$^{-3}$)")
     axes[0, 1].set_xlabel("cos θ (water dipole vs +z)")
     axes[0, 1].set_ylabel("TPCL probability density")
-    axes[0, 0].legend(frameon=False, ncol=2, loc="lower left", bbox_to_anchor=(0, 1.02))
+    axes[0, 0].legend(
+        frameon=False,
+        ncol=2,
+        loc="lower left",
+        bbox_to_anchor=(0, 1.02),
+        title=_fraction_axis_label(),
+    )
 
     regions = ("footprint", "tpcl", "far_field")
     region_labels = ("Footprint", "TPCL", "Far field")
     widths = 0.22
+    hydration_centers: list[float] = []
+    hydration_values: list[float] = []
     for offset, (region, region_label) in enumerate(zip(regions, region_labels)):
+        values = [_float(row_by_id[case.case_id].get(f"hydration_{region}_A-2")) for case in cases]
         axes[1, 0].bar(
             x + (offset - 1) * widths,
-            [_float(row_by_id[case.case_id].get(f"hydration_{region}_A-2")) for case in cases],
+            values,
             width=widths,
             label=region_label,
             color=("#315B7D", "#B38728", "#D6D9DF")[offset],
             edgecolor=INK,
             linewidth=0.6,
         )
+        hydration_centers.extend(x + (offset - 1) * widths)
+        hydration_values.extend(values)
     metrics = (
         ("hbond_tpcl_water_water_hbond_degree", "Water–water degree"),
         ("hbond_tpcl_surface_water_hbond_per_h2o", r"Surface–water/$H_2O$"),
     )
+    hbond_centers: list[float] = []
+    hbond_values: list[float] = []
     for offset, (metric, metric_label) in enumerate(metrics):
+        values = [_float(row_by_id[case.case_id].get(metric)) for case in cases]
         axes[1, 1].bar(
             x + (offset - 0.5) * 0.32,
-            [_float(row_by_id[case.case_id].get(metric)) for case in cases],
+            values,
             width=0.32,
             label=metric_label,
             color=("#315B7D", "#D06B3C")[offset],
             edgecolor=INK,
             linewidth=0.6,
         )
+        hbond_centers.extend(x + (offset - 0.5) * 0.32)
+        hbond_values.extend(values)
     for ax in (axes[1, 0], axes[1, 1]):
-        ax.set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
+        ax.set_xticks(x, [_plot_label(case) for case in cases])
+        ax.set_xlabel(_fraction_axis_label())
     axes[1, 0].set_ylabel(r"Hydration O areal density (Å$^{-2}$)")
     axes[1, 1].set_ylabel("TPCL H-bond metric")
     axes[1, 0].legend(frameon=False, fontsize=8)
     axes[1, 1].legend(frameon=False, fontsize=8)
+    _annotate_small_values(axes[1, 0], hydration_centers, hydration_values, threshold=0.005)
+    _annotate_small_values(axes[1, 1], hbond_centers, hbond_values, threshold=0.02)
     for ax in axes.flat:
         _style_axis(ax)
     fig.subplots_adjust(left=0.10, right=0.98, bottom=0.17, top=0.82, wspace=0.28, hspace=0.45)
@@ -742,16 +849,21 @@ def _make_plots(
         ("mean_footprint_ch3_enrichment", "Footprint"),
         ("mean_tpcl_ch3_enrichment", "TPCL"),
     )
+    enrichment_centers: list[float] = []
+    enrichment_values: list[float] = []
     for offset, (metric, metric_label) in enumerate(enrich):
+        values = [_float(row_by_id[case.case_id].get(metric)) for case in cases]
         axes[0].bar(
             x + (offset - 0.5) * 0.32,
-            [_float(row_by_id[case.case_id].get(metric)) for case in cases],
+            values,
             width=0.32,
             label=metric_label,
             color=("#315B7D", "#B38728")[offset],
             edgecolor=INK,
             linewidth=0.6,
         )
+        enrichment_centers.extend(x + (offset - 0.5) * 0.32)
+        enrichment_values.extend(values)
     candidate_metrics = (
         ("proton_h3o_candidate_frame_fraction", r"$H_3O$ candidate"),
         ("proton_oh_candidate_frame_fraction", "OH candidate"),
@@ -766,15 +878,20 @@ def _make_plots(
             color=("#315B7D", "#D06B3C", "#687A3C")[offset],
             label=metric_label,
             linewidth=1.2,
+            markerfacecolor="none" if offset != 1 else ("#D06B3C"),
+            markeredgewidth=1.2,
+            markersize=(7, 5, 8)[offset],
         )
     for ax in axes:
-        ax.set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
+        ax.set_xticks(x, [_plot_label(case) for case in cases])
+        ax.set_xlabel(_fraction_axis_label())
         _style_axis(ax)
     axes[0].axhline(0.0, color=INK, linewidth=0.8)
     axes[0].set_ylabel(r"$CH_3$ enrichment vs surface fraction")
     axes[1].set_ylabel("Fraction of analyzed frames")
     axes[0].legend(frameon=False)
     axes[1].legend(frameon=False)
+    _annotate_small_values(axes[0], enrichment_centers, enrichment_values, threshold=1.0e-12)
     fig.subplots_adjust(left=0.09, right=0.98, bottom=0.22, top=0.78, wspace=0.28)
     _add_header(fig, f"{label} surface-chemistry screens across surface terminations", "Enrichment is a nearest-site boundary proxy; protonation states are sampled geometric candidates, not formal reaction assignments.")
     paths.extend(_save_figure(fig, figures / "04_surface_chemistry_comparison", dpi))
@@ -790,31 +907,33 @@ def _write_report(
         "",
         "## Stable legend labels",
         "",
-        "Labels report the exact CH₃:OH termination counts in the shared 36-site source surface unit.",
+        "Figures use the CH₃ site fraction as the legend title and show only two-decimal fractions.",
+        "Exact termination counts remain in this table and in `case_summary.csv`.",
         "",
-        "| Case ID | Legend label | CH₃ fraction |",
-        "|---|---|---:|",
+        "| Case ID | Figure label | Exact composition | CH₃ fraction |",
+        "|---|---:|---|---:|",
     ]
     for row in case_rows:
         lines.append(
-            f"| {row['case_id']} | {row['legend_label']} | {_float(row['ch3_fraction']):.3f} |"
+            f"| {row['case_id']} | {row['legend_label']} | {row['composition_label']} | {_float(row['ch3_fraction']):.4f} |"
         )
     lines.extend(
         [
             "",
             "## Contact and interface summary",
             "",
-            "| Legend label | Angle / ° | Angle SD / ° | Angle gate | Valid contact line | TPCL hydration / Å⁻² | TPCL dipole cos θ | TPCL water–water degree |",
-            "|---|---:|---:|---|---:|---:|---:|---:|",
+            "| CH₃ fraction | Angle / ° | Angle SD / ° | Angle gate | Contact-line coverage / ns | Valid contact line | TPCL hydration / Å⁻² | TPCL dipole cos θ | TPCL water–water degree |",
+            "|---:|---:|---:|---|---:|---:|---:|---:|---:|",
         ]
     )
     for row in case_rows:
         lines.append(
-            "| {label} | {angle:.2f} | {angle_sd:.2f} | {gate} | {valid:.1%} | {hydration:.4f} | {orientation:.4f} | {hbond:.4f} |".format(
+            "| {label} | {angle:.2f} | {angle_sd:.2f} | {gate} | {coverage:.2f} | {valid:.1%} | {hydration:.4g} | {orientation:.4f} | {hbond:.4f} |".format(
                 label=row["legend_label"],
                 angle=_float(row.get("contact_angle_deg")),
                 angle_sd=_float(row.get("contact_angle_std_deg")),
                 gate=row.get("contact_angle_quality_status", ""),
+                coverage=_float(row.get("contact_line_coverage_ns")),
                 valid=_float(row.get("contact_line_valid_fraction")),
                 hydration=_float(row.get("hydration_tpcl_A-2")),
                 orientation=_float(row.get("orientation_tpcl_dipole")),
@@ -827,6 +946,8 @@ def _write_report(
             "## Guardrails",
             "",
             "- Comparisons are descriptive single-trajectory comparisons, not equilibrium or causal proofs.",
+            "- Zero and near-zero bars are annotated explicitly; `NA` means unavailable, not zero.",
+            "- Nanobubble contact-line curves end at the common absolute trajectory limit, so late attachment yields shorter post-attachment coverage.",
             "- Contact-angle points marked as failed remain visible only as candidates; their frozen quality gates are not relaxed.",
             "- Contact-line jumps are operational candidates, not pinning proofs.",
             "- H-bond metrics are geometric snapshots at the trajectory dump interval, not lifetimes.",
