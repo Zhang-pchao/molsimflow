@@ -509,6 +509,9 @@ def _setup_matplotlib(font_path: Path) -> None:
             "mathtext.rm": family,
             "mathtext.it": f"{family}:italic",
             "mathtext.bf": f"{family}:bold",
+            "mathtext.cal": family,
+            "mathtext.sf": family,
+            "mathtext.tt": family,
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
         }
@@ -583,7 +586,7 @@ def _make_plots(
             "Droplet center–surface distance (Å)",
             r"Lateral radius, $P_{90}$ (Å)",
             r"Height, $q_{0.05}$–$q_{0.95}$ (Å)",
-            "Footprint area (Å²)",
+            r"Footprint area (Å$^2$)",
         )
         if kind == "nanodroplet"
         else (
@@ -689,7 +692,7 @@ def _make_plots(
             linewidth=1.35,
         )
     axes[0, 0].set_xlabel("Surface-relative z (Å)")
-    axes[0, 0].set_ylabel("TPCL O number density (Å⁻³)")
+    axes[0, 0].set_ylabel(r"TPCL O number density (Å$^{-3}$)")
     axes[0, 1].set_xlabel("cos θ (water dipole vs +z)")
     axes[0, 1].set_ylabel("TPCL probability density")
     axes[0, 0].legend(frameon=False, ncol=2, loc="lower left", bbox_to_anchor=(0, 1.02))
@@ -723,7 +726,7 @@ def _make_plots(
         )
     for ax in (axes[1, 0], axes[1, 1]):
         ax.set_xticks(x, [_plot_label(case) for case in cases], rotation=18, ha="right")
-    axes[1, 0].set_ylabel("Hydration O areal density (Å⁻²)")
+    axes[1, 0].set_ylabel(r"Hydration O areal density (Å$^{-2}$)")
     axes[1, 1].set_ylabel("TPCL H-bond metric")
     axes[1, 0].legend(frameon=False, fontsize=8)
     axes[1, 1].legend(frameon=False, fontsize=8)
