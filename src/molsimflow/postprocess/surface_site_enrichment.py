@@ -148,7 +148,8 @@ def read_contact_lines(table: Path, points_table: Path) -> tuple[list[dict], dic
     with Path(points_table).open(encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             points.setdefault(int(row["step"]), []).append((float(row["x_A"]), float(row["y_A"])))
-    return rows, {step: np.asarray(values) for step, values in points.items()}
+    boundaries = {step: np.asarray(values) for step, values in points.items()}
+    return [row for row in rows if int(row["step"]) in boundaries], boundaries
 
 
 def write_plot(rows: Sequence[dict], output: Path, timestep_fs: float, font_path: Path) -> None:

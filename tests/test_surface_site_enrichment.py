@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from molsimflow.postprocess.surface_site_enrichment import region_metrics
+from molsimflow.postprocess.surface_site_enrichment import read_contact_lines, region_metrics
 
 
 def test_surface_site_enrichment_regions_and_boundary_proxy():
@@ -23,3 +23,15 @@ def test_surface_site_enrichment_regions_and_boundary_proxy():
     assert math.isclose(row["footprint_ch3_fraction"], 2.0 / 3.0)
     assert row["tpcl_site_count"] == 3
     assert math.isfinite(row["mean_contact_line_boundary_proxy_A"])
+
+
+def test_read_contact_lines_omits_frames_without_boundary_points(tmp_path):
+    lines = tmp_path / "contact_line.csv"
+    points = tmp_path / "contact_line_points.csv"
+    lines.write_text("step,contact_line_center_x_A\n10,1.0\n20,nan\n")
+    points.write_text("step,x_A,y_A\n10,0.0,0.0\n10,1.0,0.0\n")
+
+    rows, boundaries = read_contact_lines(lines, points)
+
+    assert [int(row["step"]) for row in rows] == [10]
+    assert set(boundaries) == {10}
