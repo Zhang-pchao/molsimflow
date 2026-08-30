@@ -579,6 +579,43 @@ def _cmd_postprocess_contact_line(args: argparse.Namespace) -> int:
     return contact_line_main(workflow_args)
 
 
+def _cmd_postprocess_tpcl_pinning_slip(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_pinning_slip import main as tpcl_main
+
+    workflow_args = ["--config", str(args.config), "--output-dir", str(args.output_dir)]
+    for name in ("font_path", "start_ns", "end_ns", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return tpcl_main(workflow_args)
+
+
+def _cmd_postprocess_tpcl_pinning_slip_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_pinning_slip_compare import main as compare_main
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--output-dir",
+        str(args.output_dir),
+        "--font-path",
+        str(args.font_path),
+        "--block-ps",
+        str(args.block_ps),
+        "--event-half-window-ps",
+        str(args.event_half_window_ps),
+        "--bootstrap-replicates",
+        str(args.bootstrap_replicates),
+        "--seed",
+        str(args.seed),
+    ]
+    return compare_main(workflow_args)
+
+
 def _cmd_postprocess_surface_site_enrichment(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.surface_site_enrichment import main as enrichment_main
 
@@ -3396,6 +3433,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
     )
     contact_line.set_defaults(func=_cmd_postprocess_contact_line)
+
+    tpcl_pinning_slip = postprocess_subparsers.add_parser(
+        "tpcl-pinning-slip",
+        help="Resolve local TPCL dwell--jump candidates and chemistry coupling",
+    )
+    tpcl_pinning_slip.add_argument("--config", type=Path, required=True)
+    tpcl_pinning_slip.add_argument("--output-dir", type=Path, required=True)
+    tpcl_pinning_slip.add_argument("--font-path", type=Path)
+    tpcl_pinning_slip.add_argument("--start-ns", type=float)
+    tpcl_pinning_slip.add_argument("--end-ns", type=float)
+    tpcl_pinning_slip.add_argument("--max-frames", type=int)
+    tpcl_pinning_slip.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    tpcl_pinning_slip.add_argument("--no-plots", action="store_true")
+    tpcl_pinning_slip.set_defaults(func=_cmd_postprocess_tpcl_pinning_slip)
+
+    tpcl_compare = postprocess_subparsers.add_parser(
+        "tpcl-pinning-slip-compare",
+        help="Compare TPCL candidates, local chemistry, and circular-shift nulls",
+    )
+    tpcl_compare.add_argument("--manifest", type=Path, required=True)
+    tpcl_compare.add_argument("--output-dir", type=Path, required=True)
+    tpcl_compare.add_argument("--font-path", type=Path, required=True)
+    tpcl_compare.add_argument("--block-ps", type=float, default=200.0)
+    tpcl_compare.add_argument("--event-half-window-ps", type=float, default=100.0)
+    tpcl_compare.add_argument("--bootstrap-replicates", type=int, default=2000)
+    tpcl_compare.add_argument("--seed", type=int, default=20260830)
+    tpcl_compare.set_defaults(func=_cmd_postprocess_tpcl_pinning_slip_compare)
 
     site_enrichment = postprocess_subparsers.add_parser(
         "surface-site-enrichment",
