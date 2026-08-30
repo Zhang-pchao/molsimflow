@@ -579,8 +579,6 @@ def _fraction_axis_label() -> str:
 
 
 def _annotate_small_values(ax, centers, values, *, threshold: float) -> None:
-    upper = ax.get_ylim()[1]
-    baseline = 0.018 * upper if upper > 0 else 0.01
     for center, value in zip(centers, values):
         number = _float(value)
         if not math.isfinite(number):
@@ -589,13 +587,15 @@ def _annotate_small_values(ax, centers, values, *, threshold: float) -> None:
             label = "0" if number == 0 else f"{number:.1e}"
         else:
             continue
-        position = baseline if not math.isfinite(number) or number <= baseline else number
-        ax.text(
-            center,
-            position,
+        anchor = number if math.isfinite(number) else 0.0
+        offset = 4 if anchor >= 0 else -4
+        ax.annotate(
             label,
+            xy=(center, anchor),
+            xytext=(0, offset),
+            textcoords="offset points",
             ha="center",
-            va="bottom",
+            va="bottom" if offset > 0 else "top",
             rotation=90,
             fontsize=6.5,
             color=MUTED,

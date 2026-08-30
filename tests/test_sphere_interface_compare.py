@@ -4,6 +4,7 @@ from pathlib import Path
 
 from molsimflow.cli import build_parser
 from molsimflow.postprocess.sphere_interface_compare import (
+    _annotate_small_values,
     collect_comparison,
     load_cases,
     resolve_results,
@@ -112,6 +113,19 @@ def test_failed_result_is_read_without_publishing_latest(tmp_path):
     assert resolved == results.resolve()
     assert status == "FAILED"
     assert mode == "recorded_failed_or_unpublished"
+
+
+def test_small_value_annotation_uses_fixed_point_offset():
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots()
+    axis.bar([0, 1], [-0.01, 0.0])
+    _annotate_small_values(axis, [0, 1], [-0.01, 0.0], threshold=1.0e-12)
+
+    annotation = axis.texts[0]
+    assert annotation.xy == (1, 0.0)
+    assert annotation.get_position() == (0, 4)
+    plt.close(figure)
 
 
 def test_cli_exposes_sphere_interface_compare(tmp_path):
