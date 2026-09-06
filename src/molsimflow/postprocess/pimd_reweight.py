@@ -1,4 +1,4 @@
-"""Centroid-biased PIMD reweighting and engineering diagnostics."""
+"""PIMD path-bias reweighting and engineering diagnostics."""
 
 from __future__ import annotations
 
@@ -17,17 +17,53 @@ import numpy as np
 from molsimflow.postprocess.pimd_fes import (
     frame_log_weights,
     restart_unique_indices,
+    total_bias_energy,
     validate_bias_mode,
 )
 
 
 KB_EV_PER_K = 8.617333262145e-5
 EV_TO_KCAL_MOL = 23.06054783061903
+ANALYSIS_PROFILES = {"core", "water_ionization_opes"}
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def analysis_profile(contract: Mapping[str, object]) -> str:
+    """Return the generic or case-specific diagnostics profile."""
+    profile = str(contract.get("analysis_profile", "water_ionization_opes"))
+    require(profile in ANALYSIS_PROFILES, f"unsupported analysis profile: {profile}")
+    return profile
+
+
+def estimator_plot_labels(bias_mode: str) -> Dict[str, str]:
+    """Return method-aware plot labels without leaking internal estimator keys."""
+    mode = validate_bias_mode(bias_mode)
+    suffixes = (
+        (" (Lamaire Eq. 8)", " (Lamaire Eq. 10)")
+        if mode == "centroid_coord"
+        else ("", "")
+    )
+    return {
+        "probability_mean": f"Quantum FES{suffixes[0]}",
+        "logmean": f"Bead-logmean diagnostic{suffixes[1]}",
+    }
+
+
+def sampling_protocol_label(reweight: Mapping[str, object]) -> str:
+    """Return an explicit plot label for the declared weighting protocol."""
+    if "protocol_label" in reweight:
+        label = str(reweight["protocol_label"])
+        require(bool(label), "protocol_label must not be empty")
+        return label
+    return {
+        "fixed_bias": "fixed bias",
+        "quasi_static_opes": "quasi-static OPES",
+        "precomputed": "precomputed weights",
+    }[str(reweight.get("weight_kind", "quasi_static_opes"))]
 
 
 def sha256(path: Path) -> str:
@@ -845,12 +881,20 @@ def plot_fes2d(
     zoom: Sequence[Sequence[float]] | None = None,
     suffix: str = "",
     sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
+    protocol_label: str = "bias",
+    bead_count: int | None = None,
 ) -> None:
     plt, _ = _matplotlib()
     fig, axes = plt.subplots(
         1, 3, figsize=(14.5, 4.2), sharex=True, sharey=True, constrained_layout=True
     )
-    labels = (("centroid", sampling_label), ("eq8", "Quantum Eq. 8"), ("eq10", "Quantum Eq. 10"))
+    estimator_labels = estimator_plot_labels(bias_mode)
+    labels = (
+        ("centroid", sampling_label),
+        ("eq8", estimator_labels["probability_mean"]),
+        ("eq10", estimator_labels["logmean"]),
+    )
     image = None
     for axis, (name, title) in zip(axes, labels):
         values = np.where(supports[name], surfaces_kcal[name], np.nan)
@@ -863,7 +907,11 @@ def plot_fes2d(
             axis.set_xlim(*zoom[0])
             axis.set_ylim(*zoom[1])
     fig.colorbar(image, ax=axes, label="Free energy (kcal/mol)", pad=0.02, shrink=0.9)
-    fig.suptitle(f"P=4 {sampling_label.lower()}-biased OPES: reweighted 2D free-energy surfaces")
+    bead_prefix = f"P={bead_count} " if bead_count is not None else ""
+    fig.suptitle(
+        f"{bead_prefix}{sampling_label.lower()} sampling with {protocol_label}: "
+        "reweighted 2D free-energy surfaces"
+    )
     save_figure(fig, output / "figures" / f"fes2d-comparison{suffix}")
     plt.close(fig)
 
@@ -880,15 +928,19 @@ def plot_fes_differences(
     zoom: Sequence[Sequence[float]] | None = None,
     suffix: str = "",
     sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
 ) -> None:
     plt, TwoSlopeNorm = _matplotlib()
     fig, axes = plt.subplots(
         1, 3, figsize=(14.5, 4.2), sharex=True, sharey=True, constrained_layout=True
     )
+    estimator_labels = estimator_plot_labels(bias_mode)
+    probability_label = estimator_labels["probability_mean"]
+    logmean_label = estimator_labels["logmean"]
     panels = (
-        (surfaces_kcal["eq8"] - surfaces_kcal["centroid"], f"Eq. 8 - {sampling_label}"),
-        (surfaces_kcal["eq10"] - surfaces_kcal["centroid"], f"Eq. 10 - {sampling_label}"),
-        (surfaces_kcal["eq10"] - surfaces_kcal["eq8"], "Eq. 10 - Eq. 8"),
+        (surfaces_kcal["eq8"] - surfaces_kcal["centroid"], f"{probability_label} - {sampling_label}"),
+        (surfaces_kcal["eq10"] - surfaces_kcal["centroid"], f"{logmean_label} - {sampling_label}"),
+        (surfaces_kcal["eq10"] - surfaces_kcal["eq8"], f"{logmean_label} - {probability_label}"),
     )
     image = None
     norm = TwoSlopeNorm(vmin=-max_abs_kcal, vcenter=0.0, vmax=max_abs_kcal)
@@ -921,13 +973,15 @@ def plot_fes1d(
     cv_label: str,
     *,
     sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
 ) -> None:
     plt, _ = _matplotlib()
     fig, axis = plt.subplots(figsize=(7.2, 4.8))
+    estimator_labels = estimator_plot_labels(bias_mode)
     styles = {
         "centroid": (sampling_label, "#d97706", "-"),
-        "eq8": ("Quantum Eq. 8", "#2563eb", "--"),
-        "eq10": ("Quantum Eq. 10", "#b91c1c", "-"),
+        "eq8": (estimator_labels["probability_mean"], "#2563eb", "--"),
+        "eq10": (estimator_labels["logmean"], "#b91c1c", "-"),
     }
     for key in ("centroid", "eq8", "eq10"):
         label, color, linestyle = styles[key]
@@ -969,12 +1023,14 @@ def plot_bead_cv_bias(
     *,
     sampling_label: str = "Centroid",
     sampling_slug: str = "centroid",
+    protocol_label: str = "bias",
 ) -> None:
     plt, _ = _matplotlib()
     stride = max(1, int(plot_stride))
     norm = scatter_norm(bias_kcal)
     fig, axes = plt.subplots(
-        beads.shape[1], 2, figsize=(12.5, 10.5), sharex=True, sharey="col",
+        beads.shape[1], 2, figsize=(12.5, 2.6 * beads.shape[1]), sharex=True, sharey="col",
+        squeeze=False,
         constrained_layout=True,
     )
     image = None
@@ -990,9 +1046,12 @@ def plot_bead_cv_bias(
     for axis in axes[-1]:
         axis.set_xlabel("Time (ps)")
     fig.colorbar(
-        image, ax=axes, label=f"{sampling_label} OPES bias (kcal/mol)", pad=0.01, shrink=0.9
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01, shrink=0.9
     )
-    fig.suptitle(f"Four-bead CV trajectories colored by the shared {sampling_label.lower()} bias")
+    fig.suptitle(
+        f"{beads.shape[1]}-bead CV trajectories colored by the "
+        f"{sampling_label.lower()} {protocol_label}"
+    )
     save_figure(fig, output / "figures" / "bead-cv-time-bias")
     plt.close(fig)
 
@@ -1014,17 +1073,27 @@ def plot_bead_cv_bias(
         axis.grid(color="#e5e7eb", linewidth=0.4)
     axes[-1].set_xlabel("Time (ps)")
     fig.colorbar(
-        image, ax=axes, label=f"{sampling_label} OPES bias (kcal/mol)", pad=0.01,
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01,
         shrink=0.9,
     )
-    fig.suptitle(f"{sampling_label} CV trajectories colored by the applied OPES bias")
+    fig.suptitle(
+        f"{sampling_label} CV trajectories colored by the applied {protocol_label}"
+    )
     save_figure(fig, output / "figures" / f"{sampling_slug}-cv-time-bias")
     plt.close(fig)
 
+    columns = min(2, beads.shape[1])
+    rows = math.ceil(beads.shape[1] / columns)
     fig, axes = plt.subplots(
-        2, 2, figsize=(10.5, 8.5), sharex=True, sharey=True, constrained_layout=True
+        rows,
+        columns,
+        figsize=(5.25 * columns, 4.25 * rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
     )
-    for bead, axis in enumerate(axes.ravel()):
+    for bead, axis in enumerate(axes.ravel()[: beads.shape[1]]):
         image = axis.scatter(
             beads[::stride, bead, 0], beads[::stride, bead, 1], c=bias_kcal[::stride],
             s=6, cmap="coolwarm", norm=norm, rasterized=True
@@ -1032,10 +1101,15 @@ def plot_bead_cv_bias(
         axis.set_title(f"Bead {bead + 1}")
         axis.set_xlabel(cv_labels[0])
         axis.set_ylabel(cv_labels[1])
+    for axis in axes.ravel()[beads.shape[1] :]:
+        axis.remove()
     fig.colorbar(
-        image, ax=axes, label=f"{sampling_label} OPES bias (kcal/mol)", pad=0.01, shrink=0.9
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01, shrink=0.9
     )
-    fig.suptitle(f"Four-bead CV sampling colored by the shared {sampling_label.lower()} bias")
+    fig.suptitle(
+        f"{beads.shape[1]}-bead CV sampling colored by the shared "
+        f"{sampling_label.lower()} {protocol_label}"
+    )
     save_figure(fig, output / "figures" / "bead-cv2d-bias")
     plt.close(fig)
 
@@ -1046,23 +1120,75 @@ def plot_bead_cv_bias(
     )
     axis.set_xlabel(cv_labels[0])
     axis.set_ylabel(cv_labels[1])
-    axis.set_title(f"{sampling_label} CV sampling colored by the applied OPES bias")
+    axis.set_title(
+        f"{sampling_label} CV sampling colored by the applied {protocol_label}"
+    )
     axis.grid(color="#e5e7eb", linewidth=0.4)
-    fig.colorbar(image, ax=axis, label=f"{sampling_label} OPES bias (kcal/mol)", pad=0.02)
+    fig.colorbar(
+        image,
+        ax=axis,
+        label=f"{sampling_label} {protocol_label} (kcal/mol)",
+        pad=0.02,
+    )
     save_figure(fig, output / "figures" / f"{sampling_slug}-cv2d-bias")
     plt.close(fig)
 
 
 def plot_cv_spread(output: Path, time_ps: np.ndarray, beads: np.ndarray, names: Sequence[str]) -> None:
     plt, _ = _matplotlib()
-    fig, axes = plt.subplots(2, 1, figsize=(9.5, 6.8), sharex=True)
-    for component, (axis, name) in enumerate(zip(axes, names)):
+    fig, axes = plt.subplots(
+        len(names), 1, figsize=(9.5, 3.4 * len(names)), sharex=True, squeeze=False
+    )
+    for component, (axis, name) in enumerate(zip(axes[:, 0], names)):
         axis.plot(time_ps, np.std(beads[:, :, component], axis=1), color="#2563eb", linewidth=0.8)
         axis.set_ylabel(f"Std. across beads\n{name}")
         axis.grid(color="#e5e7eb", linewidth=0.5)
-    axes[-1].set_xlabel("Time (ps)")
-    fig.suptitle("Instantaneous spread of the four bead CVs")
+    axes[-1, 0].set_xlabel("Time (ps)")
+    fig.suptitle(f"Instantaneous spread of the {beads.shape[1]} bead CVs")
     save_figure(fig, output / "figures" / "bead-cv-spread")
+    plt.close(fig)
+
+
+def plot_cv_time_series(
+    output: Path,
+    time_ps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    cv_labels: Sequence[str],
+    sampling_label: str,
+) -> None:
+    """Plot arbitrary one- or two-dimensional CV trajectories without case assumptions."""
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(
+        len(cv_labels),
+        1,
+        figsize=(10.0, 3.6 * len(cv_labels)),
+        sharex=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for component, (axis, label) in enumerate(zip(axes[:, 0], cv_labels)):
+        for bead in range(beads.shape[1]):
+            axis.plot(
+                time_ps,
+                beads[:, bead, component],
+                linewidth=0.55,
+                alpha=0.6,
+                label=f"Bead {bead + 1}",
+            )
+        axis.plot(
+            time_ps,
+            sampling[:, component],
+            color="#111827",
+            linewidth=1.2,
+            label=sampling_label,
+        )
+        axis.set_ylabel(label)
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    axes[0, 0].legend(frameon=False, ncol=min(beads.shape[1] + 1, 5), fontsize=8)
+    axes[-1, 0].set_xlabel("Time (ps)")
+    fig.suptitle("Sampling and bead-local CV trajectories")
+    save_figure(fig, output / "figures" / "cv-time-series")
     plt.close(fig)
 
 
@@ -1075,6 +1201,7 @@ def plot_diagnostic_cv_bias(
     label: str,
     sampling_label: str,
     plot_stride: int,
+    protocol_label: str = "bias",
 ) -> None:
     plt, _ = _matplotlib()
     stride = max(1, int(plot_stride))
@@ -1093,11 +1220,11 @@ def plot_diagnostic_cv_bias(
         )
     axes[1].set_ylabel(f"Bead-local {label}")
     axes[1].set_xlabel("Time (ps)")
-    axes[1].set_title("Four bead-local diagnostic CVs")
+    axes[1].set_title(f"{beads.shape[1]} bead-local diagnostic CVs")
     for axis in axes:
         axis.grid(color="#e5e7eb", linewidth=0.4)
     fig.colorbar(
-        image, ax=axes, label=f"{sampling_label} OPES bias (kcal/mol)",
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)",
         pad=0.01, shrink=0.9,
     )
     fig.suptitle("Directly printed diagnostic CV; no independent FES bandwidth assigned")
@@ -1280,6 +1407,7 @@ def plot_ionization_events(
     ideal_pair_score: float,
     *,
     sampling_label: str = "Centroid",
+    protocol_label: str = "bias",
 ) -> None:
     plt, _ = _matplotlib()
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), constrained_layout=True)
@@ -1317,7 +1445,12 @@ def plot_ionization_events(
     axes[1].set_ylabel("Maximum bead ionization score")
     axes[1].set_title(f"Bead-local excursions versus {sampling_label.lower()} response")
     axes[1].grid(color="#e5e7eb", linewidth=0.5)
-    fig.colorbar(image, ax=axes[1], label=f"{sampling_label} OPES bias (kcal/mol)", pad=0.02)
+    fig.colorbar(
+        image,
+        ax=axes[1],
+        label=f"{sampling_label} {protocol_label} (kcal/mol)",
+        pad=0.02,
+    )
     fig.suptitle("Water ionization diagnostic; an ideal localized H3O+/OH- pair scores about 2")
     save_figure(fig, output / "figures" / "ionization-event-diagnostics")
     plt.close(fig)
@@ -1334,6 +1467,7 @@ def run_reference(
     kbt_ev: float,
     bandwidth: Sequence[float],
     cv_columns: Sequence[str] = ("logdistance", "ionization"),
+    bias_column: str = "opes.bias",
 ) -> Dict[str, object]:
     driver = Path(str(config["driver"]))
     require(driver.is_file(), f"reference driver missing: {driver}")
@@ -1356,7 +1490,7 @@ def run_reference(
             "--cv",
             ",".join(str(value) for value in cv_columns),
             "--bias",
-            "opes.bias",
+            str(bias_column),
             f"--min={float(x_grid[0])},{float(y_grid[0])}",
             f"--max={float(x_grid[-1])},{float(y_grid[-1])}",
             f"--bin={len(x_grid) - 1},{len(y_grid) - 1}",
@@ -1418,9 +1552,515 @@ def write_manifest(output: Path) -> None:
     (output / "provenance" / "OUTPUT-SHA256SUMS").write_text("\n".join(records) + "\n", encoding="utf-8")
 
 
+def finalize_core_1d(
+    *,
+    contract: Mapping[str, object],
+    output: Path,
+    source: Mapping[str, object],
+    reweight: Mapping[str, object],
+    cv_name: str,
+    cv_label: str,
+    sampling_label: str,
+    sampling_slug: str,
+    bias_mode: str,
+    weight_kind: str,
+    selected_time_ps: np.ndarray,
+    selected_steps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    bias_ev: np.ndarray | None,
+    kbt_ev: float,
+    sampling_restart_duplicates: int,
+    bead_restart_duplicates: Sequence[int],
+) -> Dict[str, object]:
+    """Write the generic one-CV report without OPES or material diagnostics."""
+    require("reference" not in contract, "legacy reference cross-check requires two CVs")
+    grid = np.linspace(*reweight["grid"][cv_name])
+    variants = {
+        str(name): tuple(float(value) for value in values)
+        for name, values in reweight["bandwidth_variants"].items()
+    }
+    require(all(len(value) == 1 for value in variants.values()), "1D bandwidths need one value")
+    primary_name = str(reweight["primary_bandwidth"])
+    require(primary_name in variants, "primary bandwidth absent")
+    threshold = math.log(float(reweight["relative_density_support"]))
+    curves_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    supports_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    sensitivity_rows: List[Dict[str, object]] = []
+    for variant, bandwidth in variants.items():
+        curves = compute_marginals(
+            beads, sampling, raw_log_weights, grid, bandwidth[0], 0, kbt_ev
+        )
+        relative_beads = curves["log_beads"] - np.max(
+            curves["log_beads"], axis=1, keepdims=True
+        )
+        supports = {
+            "centroid": curves["log_centroid"] - np.max(curves["log_centroid"])
+            >= threshold,
+            "eq8": curves["log_eq8"] - np.max(curves["log_eq8"]) >= threshold,
+            "eq10": np.all(relative_beads >= threshold, axis=0),
+        }
+        supports["common"] = supports["centroid"] & supports["eq10"]
+        curves_by_variant[variant] = curves
+        supports_by_variant[variant] = supports
+        sensitivity_rows.append(
+            {
+                "variant": variant,
+                "sigma": bandwidth[0],
+                "eq10_support_points": int(np.count_nonzero(supports["eq10"])),
+                "common_support_points": int(np.count_nonzero(supports["common"])),
+            }
+        )
+
+    primary = curves_by_variant[primary_name]
+    primary_supports = supports_by_variant[primary_name]
+    primary_support = primary_supports["common"]
+    require(np.count_nonzero(primary_support) >= 2, "empty common support")
+    primary_kcal = {
+        key: primary[key] * EV_TO_KCAL_MOL for key in ("centroid", "eq8", "eq10")
+    }
+    for row in sensitivity_rows:
+        variant = str(row["variant"])
+        comparison_support = (
+            primary_supports["eq10"] & supports_by_variant[variant]["eq10"]
+        )
+        count, rmse, maximum = surface_difference_metrics(
+            primary_kcal["eq10"],
+            curves_by_variant[variant]["eq10"] * EV_TO_KCAL_MOL,
+            comparison_support,
+        )
+        row["comparison_support_points"] = count
+        row["eq10_rmse_vs_primary_kcal_mol"] = rmse
+        row["eq10_max_abs_vs_primary_kcal_mol"] = maximum
+    write_csv(
+        output / "qc" / "bandwidth-sensitivity.csv",
+        sensitivity_rows,
+        [
+            "variant",
+            "sigma",
+            "eq10_support_points",
+            "common_support_points",
+            "comparison_support_points",
+            "eq10_rmse_vs_primary_kcal_mol",
+            "eq10_max_abs_vs_primary_kcal_mol",
+        ],
+    )
+    write_csv(
+        output / "fes1d" / f"{cv_name}.csv",
+        (
+            {
+                cv_name: value,
+                "sampling_support": int(primary_supports["centroid"][index]),
+                "probability_mean_support": int(primary_supports["eq8"][index]),
+                "logmean_support": int(primary_supports["eq10"][index]),
+                "common_support": int(primary_support[index]),
+                "F_sampling_kcal_mol": primary_kcal["centroid"][index],
+                "F_quantum_probability_mean_kcal_mol": primary_kcal["eq8"][index],
+                "F_bead_logmean_diagnostic_kcal_mol": primary_kcal["eq10"][index],
+            }
+            for index, value in enumerate(grid)
+        ),
+        [
+            cv_name,
+            "sampling_support",
+            "probability_mean_support",
+            "logmean_support",
+            "common_support",
+            "F_sampling_kcal_mol",
+            "F_quantum_probability_mean_kcal_mol",
+            "F_bead_logmean_diagnostic_kcal_mol",
+        ],
+    )
+
+    weights = np.exp(normalized_log_weights(raw_log_weights))
+    frame_rows = []
+    for frame, time_ps in enumerate(selected_time_ps):
+        row: Dict[str, object] = {
+            "time_ps": time_ps,
+            "step": int(selected_steps[frame]),
+            f"{sampling_slug}_{cv_name}": sampling[frame, 0],
+            f"bead_mean_{cv_name}": float(np.mean(beads[frame, :, 0])),
+            f"bead_std_{cv_name}": float(np.std(beads[frame, :, 0])),
+            "log_frame_weight": raw_log_weights[frame],
+            "normalized_weight": weights[frame],
+        }
+        if bias_ev is not None:
+            row["bias_eV"] = bias_ev[frame]
+            row["bias_kcal_mol"] = bias_ev[frame] * EV_TO_KCAL_MOL
+        frame_rows.append(row)
+    write_csv(output / "tables" / "frame-series.csv", frame_rows, list(frame_rows[0]))
+    bead_fields = ["time_ps", "bead", cv_name]
+    write_csv(
+        output / "tables" / "bead-cv-long.csv",
+        (
+            {
+                "time_ps": selected_time_ps[frame],
+                "bead": bead + 1,
+                cv_name: beads[frame, bead, 0],
+            }
+            for frame in range(beads.shape[0])
+            for bead in range(beads.shape[1])
+        ),
+        bead_fields,
+    )
+
+    block_count = int(reweight["blocks"])
+    require(1 <= block_count <= len(selected_time_ps), "invalid block count")
+    block_rows = []
+    for block, indices in enumerate(np.array_split(np.arange(len(selected_time_ps)), block_count)):
+        current = compute_marginals(
+            beads[indices],
+            sampling[indices],
+            raw_log_weights[indices],
+            grid,
+            variants[primary_name][0],
+            0,
+            kbt_ev,
+        )
+        current_relative = current["log_beads"] - np.max(
+            current["log_beads"], axis=1, keepdims=True
+        )
+        comparison_support = primary_supports["eq10"] & np.all(
+            current_relative >= threshold, axis=0
+        )
+        count, rmse, maximum = surface_difference_metrics(
+            primary_kcal["eq10"],
+            current["eq10"] * EV_TO_KCAL_MOL,
+            comparison_support,
+        )
+        block_weights = np.exp(normalized_log_weights(raw_log_weights[indices]))
+        block_rows.append(
+            {
+                "block": block + 1,
+                "first_time_ps": selected_time_ps[indices[0]],
+                "last_time_ps": selected_time_ps[indices[-1]],
+                "frames": len(indices),
+                "ess": 1.0 / float(np.sum(block_weights**2)),
+                "max_weight": float(np.max(block_weights)),
+                "comparison_support_points": count,
+                "logmean_rmse_vs_full_kcal_mol": rmse,
+                "logmean_max_abs_vs_full_kcal_mol": maximum,
+            }
+        )
+    write_csv(
+        output / "blocks" / "block-diagnostics.csv",
+        block_rows,
+        list(block_rows[0]),
+    )
+
+    plot_fes1d(
+        output,
+        cv_name,
+        grid,
+        primary_kcal,
+        primary_supports,
+        float(reweight["plot_max_kcal_mol"]),
+        cv_label,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
+    plot_cv_time_series(
+        output, selected_time_ps, sampling, beads, [cv_label], sampling_label
+    )
+    plot_cv_spread(output, selected_time_ps, beads, [cv_label])
+
+    labels = estimator_plot_labels(bias_mode)
+    raw_gap = (
+        np.mean(-kbt_ev * primary["log_beads"], axis=0)
+        + kbt_ev * primary["log_eq8"]
+    ) * EV_TO_KCAL_MOL
+    eq_gap = primary_kcal["eq10"] - primary_kcal["eq8"]
+    summary: Dict[str, object] = {
+        "schema_version": 1,
+        "status": "PASS",
+        "analysis_profile": "core",
+        "source_job": source.get("job_id"),
+        "sampling_representation": {
+            "label": sampling_label,
+            "slug": sampling_slug,
+            "bias_mode": bias_mode,
+            "logical_cv_names": [cv_name],
+        },
+        "selection": {
+            "first_time_ps": float(selected_time_ps[0]),
+            "last_time_ps": float(selected_time_ps[-1]),
+            "frames": int(len(selected_time_ps)),
+            "beads": int(beads.shape[1]),
+        },
+        "reweighting": {
+            "weight_kind": weight_kind,
+            "formula": (
+                "precomputed log frame weight"
+                if weight_kind == "precomputed"
+                else "normalized exp(total_bias_energy/kBT)"
+            ),
+            "protocol_label": sampling_protocol_label(reweight),
+            "rct_used": False,
+            "temperature_K": float(reweight["temperature_K"]),
+            "kbt_eV": kbt_ev,
+            "ess": 1.0 / float(np.sum(weights**2)),
+            "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
+            "maximum_normalized_weight": float(np.max(weights)),
+            "bias_range_kcal_mol": (
+                None
+                if bias_ev is None
+                else [
+                    float(np.min(bias_ev) * EV_TO_KCAL_MOL),
+                    float(np.max(bias_ev) * EV_TO_KCAL_MOL),
+                ]
+            ),
+        },
+        "restart_alignment": {
+            "duplicate_policy": str(source.get("restart_duplicate_policy", "keep_first")),
+            "sampling_rows_removed": sampling_restart_duplicates,
+            "bead_rows_removed": list(bead_restart_duplicates),
+        },
+        "fes": {
+            "dimensions": 1,
+            "unit": "kcal/mol",
+            "primary_bandwidth": list(variants[primary_name]),
+            "probability_mean_label": labels["probability_mean"],
+            "logmean_label": labels["logmean"],
+            "common_support_points": int(np.count_nonzero(primary_support)),
+            "probability_logmean_rmse_common_support_kcal_mol": float(
+                np.sqrt(np.mean(eq_gap[primary_support] ** 2))
+            ),
+            "probability_logmean_max_abs_common_support_kcal_mol": float(
+                np.max(np.abs(eq_gap[primary_support]))
+            ),
+            "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
+        },
+        "reference_crosscheck": None,
+        "gates": {
+            "artifact_output": "PASS",
+            "deterministic_numerical": "PASS",
+            "postprocessing_plumbing": "PASS",
+            "physical": "NOT_ASSESSED",
+            "scientific_fes_convergence": "NOT_ASSESSED",
+        },
+    }
+    require(float(np.min(raw_gap)) >= -1e-10, "probability/logmean Jensen relation failed")
+    (output / "qc" / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "provenance" / "analysis-contract.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    report = [
+        "# PIMD path-bias post-processing",
+        "",
+        "Status: `PASS`",
+        "Analysis profile: `core`",
+        f"CV: `{cv_name}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
+        f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
+        f"Primary estimator: `{labels['probability_mean']}`",
+        f"Finite-sampling diagnostic: `{labels['logmean']}`",
+        "",
+        "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, water-ionization diagnostics, or an external reference driver.",
+        "",
+        "This is an engineering and post-processing assessment. Physical interpretation and scientific/FES convergence remain NOT_ASSESSED.",
+    ]
+    (output / "analysis-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_manifest(output)
+    return summary
+
+
+def finalize_core_2d(
+    *,
+    contract: Mapping[str, object],
+    output: Path,
+    source: Mapping[str, object],
+    reweight: Mapping[str, object],
+    cv_names: Sequence[str],
+    cv_labels: Sequence[str],
+    sampling_label: str,
+    sampling_slug: str,
+    bias_mode: str,
+    weight_kind: str,
+    selected_time_ps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    bias_ev: np.ndarray | None,
+    kbt_ev: float,
+    primary_name: str,
+    primary: Mapping[str, np.ndarray],
+    primary_kcal: Mapping[str, np.ndarray],
+    primary_support: np.ndarray,
+    primary_supports: Mapping[str, np.ndarray],
+    variants: Mapping[str, Sequence[float]],
+    filtered_colvar: Path,
+    sampling_restart_duplicates: int,
+    bead_restart_duplicates: Sequence[int],
+) -> Dict[str, object]:
+    """Write a generic two-CV report without material-specific diagnostics."""
+    protocol_label = sampling_protocol_label(reweight)
+    plot_fes2d(
+        output,
+        np.linspace(*reweight["grid"][cv_names[0]]),
+        np.linspace(*reweight["grid"][cv_names[1]]),
+        primary_kcal,
+        primary_supports,
+        float(reweight["plot_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+        protocol_label=protocol_label,
+        bead_count=beads.shape[1],
+    )
+    plot_fes_differences(
+        output,
+        np.linspace(*reweight["grid"][cv_names[0]]),
+        np.linspace(*reweight["grid"][cv_names[1]]),
+        primary_kcal,
+        primary_support,
+        float(reweight["difference_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
+    plot_cv_time_series(
+        output, selected_time_ps, sampling, beads, cv_labels, sampling_label
+    )
+    plot_cv_spread(output, selected_time_ps, beads, cv_labels)
+
+    reference_metrics = None
+    reference_config = contract.get("reference")
+    if reference_config is not None:
+        require(isinstance(reference_config, Mapping), "reference must be an object")
+        require(
+            bias_ev is not None and weight_kind != "precomputed",
+            "legacy reference cross-check requires bias-energy weights",
+        )
+        reference_metrics = run_reference(
+            reference_config,
+            filtered_colvar,
+            output,
+            np.linspace(*reweight["grid"][cv_names[0]]),
+            np.linspace(*reweight["grid"][cv_names[1]]),
+            primary_kcal["centroid"],
+            primary_support,
+            kbt_ev,
+            variants[primary_name],
+            cv_names,
+            bias_column=str(reweight["bias_column"]),
+        )
+        require(
+            float(reference_metrics["max_abs_difference_kcal_mol"])
+            <= float(reference_config["max_abs_difference_kcal_mol"]),
+            "reference FES mismatch",
+        )
+
+    weights = np.exp(normalized_log_weights(raw_log_weights))
+    labels = estimator_plot_labels(bias_mode)
+    raw_gap = (primary["raw_eq10"] - primary["raw_eq8"]) * EV_TO_KCAL_MOL
+    eq_gap = primary_kcal["eq10"] - primary_kcal["eq8"]
+    require(float(np.min(raw_gap)) >= -1e-10, "probability/logmean Jensen relation failed")
+    summary: Dict[str, object] = {
+        "schema_version": 1,
+        "status": "PASS",
+        "analysis_profile": "core",
+        "source_job": source.get("job_id"),
+        "sampling_representation": {
+            "label": sampling_label,
+            "slug": sampling_slug,
+            "bias_mode": bias_mode,
+            "logical_cv_names": list(cv_names),
+        },
+        "selection": {
+            "first_time_ps": float(selected_time_ps[0]),
+            "last_time_ps": float(selected_time_ps[-1]),
+            "frames": int(len(selected_time_ps)),
+            "beads": int(beads.shape[1]),
+        },
+        "reweighting": {
+            "weight_kind": weight_kind,
+            "formula": (
+                "precomputed log frame weight"
+                if weight_kind == "precomputed"
+                else "normalized exp(total_bias_energy/kBT)"
+            ),
+            "protocol_label": protocol_label,
+            "rct_used": False,
+            "temperature_K": float(reweight["temperature_K"]),
+            "kbt_eV": kbt_ev,
+            "ess": 1.0 / float(np.sum(weights**2)),
+            "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
+            "maximum_normalized_weight": float(np.max(weights)),
+            "bias_range_kcal_mol": (
+                None
+                if bias_ev is None
+                else [
+                    float(np.min(bias_ev) * EV_TO_KCAL_MOL),
+                    float(np.max(bias_ev) * EV_TO_KCAL_MOL),
+                ]
+            ),
+        },
+        "restart_alignment": {
+            "duplicate_policy": str(source.get("restart_duplicate_policy", "keep_first")),
+            "sampling_rows_removed": sampling_restart_duplicates,
+            "bead_rows_removed": list(bead_restart_duplicates),
+        },
+        "fes": {
+            "dimensions": 2,
+            "unit": "kcal/mol",
+            "primary_bandwidth": list(variants[primary_name]),
+            "probability_mean_label": labels["probability_mean"],
+            "logmean_label": labels["logmean"],
+            "common_support_points": int(np.count_nonzero(primary_support)),
+            "probability_logmean_rmse_common_support_kcal_mol": float(
+                np.sqrt(np.mean(eq_gap[primary_support] ** 2))
+            ),
+            "probability_logmean_max_abs_common_support_kcal_mol": float(
+                np.max(np.abs(eq_gap[primary_support]))
+            ),
+            "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
+        },
+        "reference_crosscheck": reference_metrics,
+        "gates": {
+            "artifact_output": "PASS",
+            "deterministic_numerical": "PASS",
+            "postprocessing_plumbing": "PASS",
+            "physical": "NOT_ASSESSED",
+            "scientific_fes_convergence": "NOT_ASSESSED",
+        },
+    }
+    (output / "qc" / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "provenance" / "analysis-contract.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    reference_line = (
+        "External FES_from_Reweighting.py cross-check: `PASS`."
+        if reference_metrics is not None
+        else "External reference cross-check: `NOT_REQUESTED`; the in-package log-space estimator is authoritative."
+    )
+    report = [
+        "# PIMD path-bias post-processing",
+        "",
+        "Status: `PASS`",
+        "Analysis profile: `core`",
+        f"CVs: `{', '.join(cv_names)}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
+        f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
+        f"Primary estimator: `{labels['probability_mean']}`",
+        f"Finite-sampling diagnostic: `{labels['logmean']}`",
+        reference_line,
+        "",
+        "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, or water-ionization diagnostics.",
+        "",
+        "This is an engineering and post-processing assessment. Physical interpretation and scientific/FES convergence remain NOT_ASSESSED.",
+    ]
+    (output / "analysis-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_manifest(output)
+    return summary
+
+
 def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     contract_path = Path(contract_path)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    profile = analysis_profile(contract)
     output = Path(output)
     require(not output.exists(), f"output exists: {output}")
     for name in ("inputs", "tables", "fes1d", "fes2d", "blocks", "figures", "qc", "provenance"):
@@ -1434,7 +2074,10 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     raw_manifest = run_root / source["raw_manifest"]
     require(sha256(raw_manifest) == source["raw_manifest_sha256"], "raw manifest hash mismatch")
 
-    centroid_path = run_root / source["centroid_colvar"]
+    sampling_colvar = source.get("sampling_colvar")
+    if sampling_colvar is None:
+        sampling_colvar = source["centroid_colvar"]
+    centroid_path = run_root / str(sampling_colvar)
     bead_paths = [run_root / value for value in source["bead_colvars"]]
     fields, centroid_data = read_plumed(centroid_path)
     bead_tables = [read_plumed(path) for path in bead_paths]
@@ -1472,7 +2115,10 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         time_fs[selected] / float(selection["timestep_fs"])
     ).astype(int)
     cv_names = tuple(reweight["cv_names"])
-    require(len(cv_names) == 2, "exactly two CVs are required")
+    require(
+        len(cv_names) in ({1, 2} if profile == "core" else {2}),
+        "core analysis supports one or two CVs; water-ionization diagnostics require two",
+    )
     sampling_cv_names = cv_column_names(reweight, "sampling_cv_names", cv_names)
     bead_cv_names = cv_column_names(reweight, "bead_cv_names", cv_names)
     sampling_label = str(source.get("sampling_label", "Centroid"))
@@ -1481,10 +2127,20 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     inferred_bias_mode = {
         "centroid": "centroid_coord",
         "bead_mean": "bead_mean",
+        "bead_density": "bead_density_shared",
     }.get(sampling_slug, sampling_slug)
     bias_mode = validate_bias_mode(str(reweight.get("bias_mode", inferred_bias_mode)))
     derived_spec = piecewise_derived_coordinate_spec(
         contract.get("derived_coordinate"), cv_names
+    )
+    require(
+        derived_spec is None
+        or (
+            profile == "water_ionization_opes"
+            and len(cv_names) == 2
+            and bias_mode != "bead_density_shared"
+        ),
+        "derived_coordinate is available only in the two-CV water-ionization profile",
     )
     configured_labels = contract["plots"].get("cv_labels", {})
     cv_labels = tuple(str(configured_labels.get(name, name)) for name in cv_names)
@@ -1507,33 +2163,40 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             )
         )
     beads = np.stack(bead_arrays, axis=1)
+    if bias_mode == "bead_density_shared":
+        centroid = np.mean(beads, axis=1)
 
-    diagnostic_spec = diagnostic_cv_spec(contract.get("diagnostic_cv"))
-    diagnostic_sampling = None
-    diagnostic_beads = None
-    diagnostic_mean_error = None
-    if diagnostic_spec is not None:
-        diagnostic_sampling = field(
-            centroid_data, fields, str(diagnostic_spec["sampling_column"])
-        )[selected]
-        diagnostic_beads = np.stack(
+    def selected_bead_field(column: str) -> np.ndarray:
+        return np.stack(
             [
-                field(bead_data, bead_fields, str(diagnostic_spec["bead_column"]))[
-                    bead_selected
-                ]
+                field(bead_data, bead_fields, column)[bead_selected]
                 for (bead_fields, bead_data), bead_selected in zip(
                     bead_tables, bead_selections
                 )
             ],
             axis=1,
         )
-        diagnostic_mean_error = float(
-            np.max(np.abs(diagnostic_sampling - np.mean(diagnostic_beads, axis=1)))
-        )
-        require(
-            diagnostic_mean_error <= float(diagnostic_spec["mean_tolerance"]),
-            "printed diagnostic bead mean mismatch",
-        )
+
+    diagnostic_spec = diagnostic_cv_spec(contract.get("diagnostic_cv"))
+    diagnostic_sampling = None
+    diagnostic_beads = None
+    diagnostic_mean_error = None
+    if diagnostic_spec is not None:
+        diagnostic_beads = selected_bead_field(str(diagnostic_spec["bead_column"]))
+        if bias_mode == "bead_density_shared":
+            diagnostic_sampling = np.mean(diagnostic_beads, axis=1)
+            diagnostic_mean_error = 0.0
+        else:
+            diagnostic_sampling = field(
+                centroid_data, fields, str(diagnostic_spec["sampling_column"])
+            )[selected]
+            diagnostic_mean_error = float(
+                np.max(np.abs(diagnostic_sampling - np.mean(diagnostic_beads, axis=1)))
+            )
+            require(
+                diagnostic_mean_error <= float(diagnostic_spec["mean_tolerance"]),
+                "printed diagnostic bead mean mismatch",
+            )
 
     derived_centroid = None
     derived_beads = None
@@ -1587,25 +2250,100 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             ),
         }
 
-    bias_ev = field(centroid_data, fields, str(reweight["bias_column"]))[selected]
-    rct_ev = field(centroid_data, fields, str(reweight["rct_column"]))[selected]
-    zed = field(centroid_data, fields, str(reweight.get("zed_column", "opes.zed")))[selected]
-    neff = field(centroid_data, fields, str(reweight.get("neff_column", "opes.neff")))[selected]
-    nker = field(centroid_data, fields, str(reweight.get("nker_column", "opes.nker")))[selected]
+    weight_kind = str(reweight.get("weight_kind", "quasi_static_opes"))
+    bias_column_value = reweight.get("bias_column")
+    bias_column = None if bias_column_value is None else str(bias_column_value)
+    bias_ev = None
+    shared_diagnostic_max_deltas: Dict[str, float] = {}
+    if bias_column is not None:
+        if bias_mode == "bead_density_shared":
+            bias_ev = total_bias_energy(
+                bias_mode,
+                bead_bias_energies=selected_bead_field(bias_column),
+            )
+        else:
+            bias_ev = total_bias_energy(
+                bias_mode,
+                sampling_bias_energy=field(centroid_data, fields, bias_column)[selected],
+            )
+    require(
+        profile == "core" or bias_ev is not None,
+        "water-ionization diagnostics require bias_column",
+    )
+
+    rct_ev = zed = neff = nker = None
+    if profile == "water_ionization_opes":
+        diagnostic_columns = {
+            "rct": str(reweight["rct_column"]),
+            "zed": str(reweight.get("zed_column", "opes.zed")),
+            "neff": str(reweight.get("neff_column", "opes.neff")),
+            "nker": str(reweight.get("nker_column", "opes.nker")),
+        }
+        if bias_mode == "bead_density_shared":
+            diagnostics = {}
+            tolerance = float(reweight.get("shared_diagnostic_tolerance", 1e-9))
+            require(tolerance >= 0.0, "shared diagnostic tolerance must be nonnegative")
+            for name, column in diagnostic_columns.items():
+                values = selected_bead_field(column)
+                delta = float(np.max(np.max(values, axis=1) - np.min(values, axis=1)))
+                require(delta <= tolerance, f"shared OPES diagnostic mismatch: {column}")
+                shared_diagnostic_max_deltas[column] = delta
+                diagnostics[name] = np.mean(values, axis=1)
+            rct_ev, zed, neff, nker = (
+                diagnostics["rct"],
+                diagnostics["zed"],
+                diagnostics["neff"],
+                diagnostics["nker"],
+            )
+        else:
+            rct_ev = field(centroid_data, fields, diagnostic_columns["rct"])[selected]
+            zed = field(centroid_data, fields, diagnostic_columns["zed"])[selected]
+            neff = field(centroid_data, fields, diagnostic_columns["neff"])[selected]
+            nker = field(centroid_data, fields, diagnostic_columns["nker"])[selected]
     kbt_ev = float(reweight["kbt_eV"])
     expected_kbt = KB_EV_PER_K * float(reweight["temperature_K"])
     require(abs(kbt_ev - expected_kbt) <= 1e-12, "kBT/temperature mismatch")
-    weight_kind = str(reweight.get("weight_kind", "quasi_static_opes"))
     quasi_static_declared = bool(reweight.get("quasi_static", True))
-    raw_log_weights = frame_log_weights(
-        weight_kind,
-        bias_energy=bias_ev,
-        kbt=kbt_ev,
-        quasi_static=quasi_static_declared,
-    )
+    if weight_kind == "precomputed":
+        log_weight_column = str(reweight["log_weight_column"])
+        raw_log_weights = frame_log_weights(
+            weight_kind,
+            precomputed=field(centroid_data, fields, log_weight_column)[selected],
+        )
+    else:
+        require(bias_ev is not None, f"{weight_kind} requires bias_column")
+        raw_log_weights = frame_log_weights(
+            weight_kind,
+            bias_energy=bias_ev,
+            kbt=kbt_ev,
+            quasi_static=quasi_static_declared,
+        )
     log_weights = normalized_log_weights(raw_log_weights)
     weights = np.exp(log_weights)
     require(abs(float(np.sum(weights)) - 1.0) <= 1e-12, "weight normalization failed")
+
+    if len(cv_names) == 1:
+        return finalize_core_1d(
+            contract=contract,
+            output=output,
+            source=source,
+            reweight=reweight,
+            cv_name=str(cv_names[0]),
+            cv_label=str(cv_labels[0]),
+            sampling_label=sampling_label,
+            sampling_slug=sampling_slug,
+            bias_mode=bias_mode,
+            weight_kind=weight_kind,
+            selected_time_ps=selected_time_ps,
+            selected_steps=selected_steps,
+            sampling=centroid,
+            beads=beads,
+            raw_log_weights=raw_log_weights,
+            bias_ev=bias_ev,
+            kbt_ev=kbt_ev,
+            sampling_restart_duplicates=centroid_restart_duplicates,
+            bead_restart_duplicates=bead_restart_duplicates,
+        )
 
     x_grid = np.linspace(*reweight["grid"][cv_names[0]])
     y_grid = np.linspace(*reweight["grid"][cv_names[1]])
@@ -1729,6 +2467,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             output, name, grid, curves_kcal, supports,
             float(reweight["plot_max_kcal_mol"]), cv_labels[component],
             sampling_label=sampling_label,
+            bias_mode=bias_mode,
         )
 
     primary_supports = supports_by_variant[primary_name]
@@ -1822,6 +2561,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             float(reweight["plot_max_kcal_mol"]),
             str(derived_spec["label"]),
             sampling_label=sampling_label,
+            bias_mode=bias_mode,
         )
 
         surface_axis = 1 if source_component == 0 else 0
@@ -1906,6 +2646,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             derived_labels,
             suffix=f"-{derived_surface_name}",
             sampling_label=sampling_label,
+            bias_mode=bias_mode,
+            protocol_label=sampling_protocol_label(reweight),
+            bead_count=beads.shape[1],
         )
         source_zoom = contract["plots"].get("fes_zoom")
         derived_zoom = None
@@ -1927,6 +2670,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 zoom=derived_zoom,
                 suffix=f"-{derived_surface_name}-sampled-region",
                 sampling_label=sampling_label,
+                bias_mode=bias_mode,
+                protocol_label=sampling_protocol_label(reweight),
+                bead_count=beads.shape[1],
             )
         derived_coordinate_summary = {
             "kind": str(derived_spec["kind"]),
@@ -1997,16 +2743,22 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         row = {
             "time_ps": selected_time_ps[local],
             "step": int(round(time_fs[source_index] / float(selection["timestep_fs"]))),
-            "bias_eV": bias_ev[local],
-            "bias_kcal_mol": bias_ev[local] * EV_TO_KCAL_MOL,
-            "rct_eV": rct_ev[local],
-            "rct_kcal_mol": rct_ev[local] * EV_TO_KCAL_MOL,
-            "opes_zed": zed[local],
-            "opes_neff": neff[local],
-            "opes_nker": nker[local],
-            "log_weight_beta_bias": raw_log_weights[local],
+            "log_frame_weight": raw_log_weights[local],
             "normalized_weight": weights[local],
         }
+        if bias_ev is not None:
+            row["bias_eV"] = bias_ev[local]
+            row["bias_kcal_mol"] = bias_ev[local] * EV_TO_KCAL_MOL
+        if rct_ev is not None and zed is not None and neff is not None and nker is not None:
+            row.update(
+                {
+                    "rct_eV": rct_ev[local],
+                    "rct_kcal_mol": rct_ev[local] * EV_TO_KCAL_MOL,
+                    "opes_zed": zed[local],
+                    "opes_neff": neff[local],
+                    "opes_nker": nker[local],
+                }
+            )
         for component, name in enumerate(cv_names):
             row[f"{sampling_slug}_{name}"] = centroid[local, component]
             row[f"bead_mean_{name}"] = float(np.mean(beads[local, :, component]))
@@ -2040,7 +2792,10 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         frame_rows.append(row)
     frame_fields = list(frame_rows[0])
     write_csv(output / "tables" / "frame-series.csv", frame_rows, frame_fields)
-    bead_cv_fields = ["time_ps", "bead", "bias_kcal_mol", cv_names[0], cv_names[1]]
+    bead_cv_fields = ["time_ps", "bead"]
+    if bias_ev is not None:
+        bead_cv_fields.append("bias_kcal_mol")
+    bead_cv_fields.extend([cv_names[0], cv_names[1]])
     if derived_spec is not None:
         bead_cv_fields.append(str(derived_spec["target"]))
     if diagnostic_spec is not None:
@@ -2051,7 +2806,11 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             {
                 "time_ps": selected_time_ps[frame],
                 "bead": bead + 1,
-                "bias_kcal_mol": bias_ev[frame] * EV_TO_KCAL_MOL,
+                **(
+                    {"bias_kcal_mol": bias_ev[frame] * EV_TO_KCAL_MOL}
+                    if bias_ev is not None
+                    else {}
+                ),
                 cv_names[0]: beads[frame, bead, 0],
                 cv_names[1]: beads[frame, bead, 1],
                 **(
@@ -2077,7 +2836,43 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     filtered_colvar = output / "inputs" / artifact_basename(
         selection, "filtered_colvar_name", "COLVAR.after-50ps"
     )
-    write_filtered_colvar(filtered_colvar, fields, centroid_data, selected)
+    filtered_data = centroid_data
+    if bias_mode == "bead_density_shared":
+        filtered_data = centroid_data.copy()
+        for component, column in enumerate(sampling_cv_names):
+            filtered_data[selected, tuple(fields).index(column)] = centroid[:, component]
+        if bias_column is not None and bias_ev is not None:
+            filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
+    write_filtered_colvar(filtered_colvar, fields, filtered_data, selected)
+
+    if profile == "core":
+        return finalize_core_2d(
+            contract=contract,
+            output=output,
+            source=source,
+            reweight=reweight,
+            cv_names=cv_names,
+            cv_labels=cv_labels,
+            sampling_label=sampling_label,
+            sampling_slug=sampling_slug,
+            bias_mode=bias_mode,
+            weight_kind=weight_kind,
+            selected_time_ps=selected_time_ps,
+            sampling=centroid,
+            beads=beads,
+            raw_log_weights=raw_log_weights,
+            bias_ev=bias_ev,
+            kbt_ev=kbt_ev,
+            primary_name=primary_name,
+            primary=primary,
+            primary_kcal=primary_kcal,
+            primary_support=primary_support,
+            primary_supports=primary_supports,
+            variants=variants,
+            filtered_colvar=filtered_colvar,
+            sampling_restart_duplicates=centroid_restart_duplicates,
+            bead_restart_duplicates=bead_restart_duplicates,
+        )
 
     kernels_fields, kernels = read_plumed(run_root / source["kernels"])
     kernel_time_fs = field(kernels, kernels_fields, "time")
@@ -2193,25 +2988,43 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         output, x_grid, y_grid, primary_kcal, primary_supports,
         float(reweight["plot_max_kcal_mol"]), cv_labels,
         sampling_label=sampling_label,
+        bias_mode=bias_mode,
+        protocol_label=sampling_protocol_label(reweight),
+        bead_count=beads.shape[1],
     )
-    plot_fes_differences(output, x_grid, y_grid, primary_kcal, primary_support, float(reweight["difference_max_kcal_mol"]), cv_labels, sampling_label=sampling_label)
+    plot_fes_differences(
+        output,
+        x_grid,
+        y_grid,
+        primary_kcal,
+        primary_support,
+        float(reweight["difference_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
     zoom = contract["plots"].get("fes_zoom")
     if zoom is not None:
         plot_fes2d(
             output, x_grid, y_grid, primary_kcal, primary_supports,
             float(reweight["plot_max_kcal_mol"]), cv_labels, zoom=zoom, suffix="-sampled-region",
             sampling_label=sampling_label,
+            bias_mode=bias_mode,
+            protocol_label=sampling_protocol_label(reweight),
+            bead_count=beads.shape[1],
         )
         plot_fes_differences(
             output, x_grid, y_grid, primary_kcal, primary_support,
             float(reweight["difference_max_kcal_mol"]), cv_labels, zoom=zoom, suffix="-sampled-region",
             sampling_label=sampling_label,
+            bias_mode=bias_mode,
         )
     plot_bead_cv_bias(
         output, selected_time_ps, centroid, beads, bias_ev * EV_TO_KCAL_MOL, cv_labels,
         int(contract["plots"].get("scatter_stride", 5)),
         sampling_label=sampling_label,
         sampling_slug=sampling_slug,
+        protocol_label=sampling_protocol_label(reweight),
     )
     plot_cv_spread(output, selected_time_ps, beads, cv_labels)
     if diagnostic_spec is not None:
@@ -2228,6 +3041,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             str(diagnostic_spec["label"]),
             sampling_label,
             int(contract["plots"].get("scatter_stride", 5)),
+            protocol_label=sampling_protocol_label(reweight),
         )
     plot_opes(
         output, selected_time_ps, bias_ev * EV_TO_KCAL_MOL, rct_ev * EV_TO_KCAL_MOL,
@@ -2248,13 +3062,26 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         ionization_thresholds,
         ideal_pair_score,
         sampling_label=sampling_label,
+        protocol_label=sampling_protocol_label(reweight),
     )
 
-    reference_metrics = run_reference(
-        contract["reference"], filtered_colvar, output, x_grid, y_grid,
-        primary_kcal["centroid"], primary_support, kbt_ev, variants[primary_name],
-        sampling_cv_names,
-    )
+    reference_metrics = None
+    reference_config = contract.get("reference")
+    if reference_config is not None:
+        require(isinstance(reference_config, Mapping), "reference must be an object")
+        reference_metrics = run_reference(
+            reference_config,
+            filtered_colvar,
+            output,
+            x_grid,
+            y_grid,
+            primary_kcal["centroid"],
+            primary_support,
+            kbt_ev,
+            variants[primary_name],
+            sampling_cv_names,
+            bias_column=str(bias_column),
+        )
     raw_gap = (primary["raw_eq10"] - primary["raw_eq8"]) * EV_TO_KCAL_MOL
     eq_gap = (primary_kcal["eq10"] - primary_kcal["eq8"])
     centroid_threshold_rows = {
@@ -2286,6 +3113,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         "schema_version": 1,
         "status": "PASS",
         "source_job": source["job_id"],
+        "analysis_profile": profile,
         "sampling_representation": {
             "label": sampling_label,
             "slug": sampling_slug,
@@ -2293,6 +3121,11 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "logical_cv_names": list(cv_names),
             "sampling_cv_columns": list(sampling_cv_names),
             "bead_cv_columns": list(bead_cv_names),
+            "sampling_cv_source": (
+                "mean_of_aligned_bead_cv"
+                if bias_mode == "bead_density_shared"
+                else "sampling_colvar"
+            ),
             "legacy_internal_fes_key": "centroid",
         },
         "selection": {
@@ -2304,6 +3137,11 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         "reweighting": {
             "weight_kind": weight_kind,
             "formula": "normalized exp(total_bias_energy/kBT)",
+            "total_bias_energy": (
+                "mean_b bead_local_bias_energy"
+                if bias_mode == "bead_density_shared"
+                else "sampling_bias_energy"
+            ),
             "quasi_static_declared": (
                 quasi_static_declared if weight_kind == "quasi_static_opes" else None
             ),
@@ -2314,6 +3152,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
             "maximum_normalized_weight": float(np.max(weights)),
             "bias_range_kcal_mol": [float(np.min(bias_ev) * EV_TO_KCAL_MOL), float(np.max(bias_ev) * EV_TO_KCAL_MOL)],
+            "shared_diagnostic_max_deltas": shared_diagnostic_max_deltas,
         },
         "restart_alignment": {
             "duplicate_policy": restart_policy,
@@ -2322,6 +3161,10 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         },
         "fes": {
             "unit": "kcal/mol",
+            "probability_mean_label": estimator_plot_labels(bias_mode)[
+                "probability_mean"
+            ],
+            "logmean_label": estimator_plot_labels(bias_mode)["logmean"],
             "primary_bandwidth": list(variants[primary_name]),
             "common_support_points": int(np.count_nonzero(primary_support)),
             "centroid_support_points": int(np.count_nonzero(primary_supports["centroid"])),
@@ -2424,7 +3267,12 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "fes_assigned": False,
             "figure": "figures/iondistance-time-bias.png",
         }
-    require(float(reference_metrics["max_abs_difference_kcal_mol"]) <= float(contract["reference"]["max_abs_difference_kcal_mol"]), "reference FES mismatch")
+    if reference_metrics is not None:
+        require(
+            float(reference_metrics["max_abs_difference_kcal_mol"])
+            <= float(reference_config["max_abs_difference_kcal_mol"]),
+            "reference FES mismatch",
+        )
     require(float(np.min(raw_gap)) >= -1e-10, "Eq.8/Eq.10 Jensen relation failed")
     (output / "qc" / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output / "provenance" / "analysis-contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2435,7 +3283,8 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         f"Source job: `{source['job_id']}`",
         f"Window: `{selected_time_ps[0]:.1f}--{selected_time_ps[-1]:.1f} ps` (`{len(selected)}` frames)",
         f"Reweighting ESS: `{summary['reweighting']['ess']:.2f}` (`{100.0 * summary['reweighting']['ess_fraction']:.1f}%`)",
-        f"Eq.8--Eq.10 common-support RMS gap: `{summary['fes']['eq8_eq10_rmse_common_support_kcal_mol']:.4f} kcal/mol`",
+        "Probability-mean/logmean common-support RMS gap: "
+        f"`{summary['fes']['eq8_eq10_rmse_common_support_kcal_mol']:.4f} kcal/mol`",
         f"Mean scaled bead temperature: `{summary['pimd']['mean_scaled_temperature_K']:.2f} K`",
         f"Mean H/O ring-polymer spread: `{summary['pimd']['mean_ring_spread_H_A']:.4f}` / `{summary['pimd']['mean_ring_spread_O_A']:.4f} A`",
         f"Ionization diagnostic: `{summary['ionization_diagnostic']['classification']}`",
@@ -2470,7 +3319,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
 
 def get_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Reweight centroid- or bead-mean-biased PIMD and generate diagnostics"
+        description="Reweight centroid-, bead-mean-, or bead-density-biased PIMD"
     )
     parser.add_argument("--contract", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)

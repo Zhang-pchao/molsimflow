@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,16 +10,21 @@ from molsimflow.postprocess.pimd_fes import (
     quantum_fes_1d,
     quantum_histogram_masses,
     restart_unique_indices,
+    total_bias_energy,
     validate_bias_mode,
 )
 from molsimflow.postprocess.pimd_reweight import (
+    KB_EV_PER_K,
+    analysis_profile,
     aligned_time_indices,
+    analyze,
     adapt_reference_source,
     artifact_basename,
     compute_surfaces,
     cumulative_weight_diagnostics,
     cv_column_names,
     diagnostic_cv_spec,
+    estimator_plot_labels,
     inverse_piecewise_logdistance,
     normalized_log_weights,
     piecewise_derived_coordinate_spec,
@@ -27,6 +33,8 @@ from molsimflow.postprocess.pimd_reweight import (
     portable_artifact_path,
     reconstruction_within_tolerance,
     ring_polymer_spread,
+    sampling_protocol_label,
+    sha256,
     soft_voronoi_occupancies,
     surface_difference_metrics,
     threshold_run_rows,
@@ -75,18 +83,53 @@ def test_fixed_and_quasi_static_opes_frame_weights_use_total_bias_only():
         raise AssertionError("adaptive OPES was accepted without a quasi-static declaration")
 
 
-def test_centroid_and_bead_mean_bias_modes_are_explicit():
+def test_all_three_bias_modes_and_total_path_energies_are_explicit():
     assert validate_bias_mode("centroid_coord") == "centroid_coord"
     assert validate_bias_mode("bead_mean") == "bead_mean"
+    assert validate_bias_mode("bead_density_shared") == "bead_density_shared"
+    sampling = np.array([-0.3, 0.2])
+    assert np.array_equal(
+        total_bias_energy("centroid_coord", sampling_bias_energy=sampling), sampling
+    )
+    local = np.array([[-0.8, -0.4, 0.0, 0.4], [0.1, 0.2, 0.3, 0.4]])
+    assert np.allclose(
+        total_bias_energy("bead_density_shared", bead_bias_energies=local),
+        [-0.2, 0.25],
+    )
+
+
+def test_estimator_plot_labels_use_equation_numbers_only_for_centroid():
+    centroid = estimator_plot_labels("centroid_coord")
+    assert centroid["probability_mean"] == "Quantum FES (Lamaire Eq. 8)"
+    assert centroid["logmean"] == "Bead-logmean diagnostic (Lamaire Eq. 10)"
+    for mode in ("bead_mean", "bead_density_shared"):
+        labels = estimator_plot_labels(mode)
+        assert labels["probability_mean"] == "Quantum FES"
+        assert labels["logmean"] == "Bead-logmean diagnostic"
+        assert "Eq." not in " ".join(labels.values())
+
+
+def test_analysis_profile_and_protocol_labels_are_explicit():
+    assert analysis_profile({}) == "water_ionization_opes"
+    assert analysis_profile({"analysis_profile": "core"}) == "core"
+    assert sampling_protocol_label({"weight_kind": "fixed_bias"}) == "fixed bias"
+    assert sampling_protocol_label(
+        {"weight_kind": "precomputed", "protocol_label": "WTMetaD reweighting"}
+    ) == "WTMetaD reweighting"
+
+
+def test_bead_density_rejects_a_single_sampling_bias_energy():
     try:
-        validate_bias_mode("bead_density_shared")
+        total_bias_energy(
+            "bead_density_shared", sampling_bias_energy=np.array([-0.3, 0.2])
+        )
     except ValueError as exc:
-        assert "unsupported" in str(exc)
+        assert "bead-local" in str(exc)
     else:
-        raise AssertionError("an unimplemented bias mode was accepted")
+        raise AssertionError("bead-density accepted a single-bead bias energy")
 
 
-def test_direct_and_conditional_histograms_match_for_both_bias_modes():
+def test_direct_and_conditional_histograms_match_for_all_bias_modes():
     bead_cv = np.array(
         [
             [-0.8, -0.6, -0.4],
@@ -99,6 +142,7 @@ def test_direct_and_conditional_histograms_match_for_both_bias_modes():
     conditions = {
         "centroid_coord": np.array([-0.7, -0.2, 0.1, 0.6, 0.9]),
         "bead_mean": np.mean(bead_cv, axis=1),
+        "bead_density_shared": np.mean(bead_cv, axis=1),
     }
     for mode, condition in conditions.items():
         validate_bias_mode(mode)
@@ -124,6 +168,8 @@ def test_p1_eq8_and_eq10_are_identical():
         kbt=0.6,
     )
     assert np.allclose(result["eq8"][result["support"]], result["eq10"][result["support"]])
+    assert np.array_equal(result["probability_mean"], result["eq8"])
+    assert np.array_equal(result["logmean_diagnostic"], result["eq10"])
 
 
 def test_long_bead_table_rejects_a_missing_bead():
@@ -458,3 +504,78 @@ def test_ring_polymer_spread_uses_only_requested_trajectory_steps():
         paths[1].write_text(dump_text(0.2), encoding="utf-8")
         rows = ring_polymer_spread(paths, [0, 2], {1: "H", 2: "O"})
         assert [int(row["step"]) for row in rows] == [0, 2]
+
+
+def test_core_profile_runs_one_generic_cv_with_precomputed_weights():
+    def write_plumed(path, fields, rows):
+        body = ["#! FIELDS " + " ".join(fields)]
+        body.extend(" ".join(f"{value:.12g}" for value in row) for row in rows)
+        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        times = np.arange(12, dtype=float)
+        sampling_values = np.linspace(-0.9, 0.9, len(times))
+        bead_values = (sampling_values - 0.12, sampling_values + 0.12)
+        log_weights = np.linspace(-0.2, 0.2, len(times))
+        write_plumed(
+            root / "sampling.colvar",
+            ("time", "mean.coordination", "logw"),
+            zip(times, sampling_values, log_weights),
+        )
+        for bead, values in enumerate(bead_values):
+            write_plumed(
+                root / f"bead-{bead}.colvar",
+                ("time", "coordination"),
+                zip(times, values),
+            )
+        manifest = root / "RAW-SHA256SUMS"
+        manifest.write_text("synthetic core-profile fixture\n", encoding="utf-8")
+        temperature = 300.0
+        contract = {
+            "analysis_profile": "core",
+            "source": {
+                "run_root": str(root),
+                "raw_manifest": manifest.name,
+                "raw_manifest_sha256": sha256(manifest),
+                "sampling_colvar": "sampling.colvar",
+                "bead_colvars": ["bead-0.colvar", "bead-1.colvar"],
+                "sampling_label": "Coordination mean",
+                "sampling_slug": "coordination_mean",
+            },
+            "selection": {
+                "first_time_ps": 0.0,
+                "last_time_ps": 0.011,
+                "timestep_fs": 1.0,
+                "expected_frames": len(times),
+            },
+            "reweight": {
+                "cv_names": ["coordination"],
+                "sampling_cv_names": ["mean.coordination"],
+                "bead_cv_names": ["coordination"],
+                "bias_mode": "bead_mean",
+                "weight_kind": "precomputed",
+                "log_weight_column": "logw",
+                "protocol_label": "generic enhanced-sampling weights",
+                "temperature_K": temperature,
+                "kbt_eV": KB_EV_PER_K * temperature,
+                "grid": {"coordination": [-1.5, 1.5, 61]},
+                "bandwidth_variants": {"primary": [0.25], "wide": [0.35]},
+                "primary_bandwidth": "primary",
+                "relative_density_support": 1e-8,
+                "blocks": 2,
+                "plot_max_kcal_mol": 12.0,
+            },
+            "plots": {"cv_labels": {"coordination": "Coordination number"}},
+        }
+        contract_path = root / "contract.json"
+        contract_path.write_text(json.dumps(contract), encoding="utf-8")
+        output = root / "analysis"
+        summary = analyze(contract_path, output)
+        assert summary["status"] == "PASS"
+        assert summary["analysis_profile"] == "core"
+        assert summary["fes"]["dimensions"] == 1
+        assert summary["fes"]["probability_mean_label"] == "Quantum FES"
+        assert summary["reference_crosscheck"] is None
+        assert (output / "figures" / "fes1d-coordination.png").is_file()
+        assert (output / "figures" / "cv-time-series.png").is_file()

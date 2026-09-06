@@ -8,7 +8,7 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 
 
-BIAS_MODES = {"centroid_coord", "bead_mean"}
+BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared"}
 WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
 
 
@@ -28,11 +28,36 @@ def normalized_log_weights(values: Sequence[float] | np.ndarray) -> np.ndarray:
 
 
 def validate_bias_mode(value: str) -> str:
-    """Validate the two path-CV bias modes currently supported by this workflow."""
+    """Validate the path-CV bias modes supported by this workflow."""
 
     mode = str(value)
     _require(mode in BIAS_MODES, f"unsupported PIMD bias mode: {mode}")
     return mode
+
+
+def total_bias_energy(
+    bias_mode: str,
+    *,
+    sampling_bias_energy: Sequence[float] | np.ndarray | None = None,
+    bead_bias_energies: Sequence[Sequence[float]] | np.ndarray | None = None,
+) -> np.ndarray:
+    """Return one complete-path bias energy per ring-polymer frame."""
+
+    mode = validate_bias_mode(bias_mode)
+    if mode == "bead_density_shared":
+        _require(sampling_bias_energy is None, "bead-density bias uses bead-local energies")
+        _require(bead_bias_energies is not None, "bead-density bias energies are required")
+        values = np.asarray(bead_bias_energies, dtype=float)
+        _require(values.ndim == 2 and min(values.shape) > 0, "invalid bead-density bias table")
+        _require(np.isfinite(values).all(), "bead-density bias energies must be finite")
+        return np.mean(values, axis=1)
+
+    _require(bead_bias_energies is None, "centroid/bead-mean bias uses one sampling energy")
+    _require(sampling_bias_energy is not None, "sampling bias energy is required")
+    values = np.asarray(sampling_bias_energy, dtype=float)
+    _require(values.ndim == 1 and values.size > 0, "sampling bias energy must be a vector")
+    _require(np.isfinite(values).all(), "sampling bias energy must be finite")
+    return values
 
 
 def frame_log_weights(
@@ -220,7 +245,7 @@ def quantum_fes_1d(
     *,
     kbt: float,
 ) -> Dict[str, np.ndarray]:
-    """Return Eq. 8 and same-zero Eq. 10 free energies from histogram masses."""
+    """Return probability-mean and same-zero bead-logmean free energies."""
 
     _require(np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
     edges = np.asarray(bin_edges, dtype=float)
@@ -234,9 +259,14 @@ def quantum_fes_1d(
     common = np.isfinite(raw_eq8) & np.isfinite(raw_eq10)
     _require(np.any(common), "no common finite Eq. 8/Eq. 10 support")
     zero = float(np.min(raw_eq8[common]))
+    probability_mean = raw_eq8 - zero
+    logmean_diagnostic = raw_eq10 - zero
     return {
-        "eq8": raw_eq8 - zero,
-        "eq10": raw_eq10 - zero,
+        "probability_mean": probability_mean,
+        "logmean_diagnostic": logmean_diagnostic,
+        # Backward-compatible literature keys for existing centroid workflows.
+        "eq8": probability_mean,
+        "eq10": logmean_diagnostic,
         "support": common,
         "centers": 0.5 * (edges[:-1] + edges[1:]),
     }
