@@ -506,6 +506,38 @@ def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
     return attachment_main(workflow_args)
 
 
+def _cmd_postprocess_nanobubble_ion_distribution(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanobubble_ion_distribution import main as ion_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for stage in args.stage:
+        workflow_args.extend(["--stage", stage])
+    for name in (
+        "output_dir",
+        "reference_structure",
+        "surface_range",
+        "nitrogen_range",
+        "solution_range",
+        "timestep_fs",
+        "hydrogen_type",
+        "oxygen_type",
+        "sodium_type",
+        "chloride_type",
+        "cluster_cutoff_A",
+        "oh_cutoff_A",
+        "ch_cutoff_A",
+        "top_si_window_A",
+        "terminal_surface_z_A",
+        "surface_depth_A",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return ion_main(workflow_args)
+
+
 def _cmd_postprocess_nanodroplet_spreading(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.nanodroplet_spreading import main as spreading_main
 
@@ -3342,6 +3374,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
     )
     nanobubble_attachment.set_defaults(func=_cmd_postprocess_nanobubble_attachment)
+
+    nanobubble_ions = postprocess_subparsers.add_parser(
+        "nanobubble-ion-distribution",
+        help="Sample ions relative to a silica surface and an N2 nanobubble",
+    )
+    nanobubble_ions.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanobubble_ions.add_argument("--output-dir", type=Path, required=True)
+    nanobubble_ions.add_argument("--reference-structure", type=Path, required=True)
+    nanobubble_ions.add_argument("--surface-range", required=True)
+    nanobubble_ions.add_argument("--nitrogen-range", required=True)
+    nanobubble_ions.add_argument("--solution-range", required=True)
+    nanobubble_ions.add_argument("--stage", action="append", required=True)
+    nanobubble_ions.add_argument("--timestep-fs", type=float, default=0.5)
+    nanobubble_ions.add_argument("--hydrogen-type", type=int, default=1)
+    nanobubble_ions.add_argument("--oxygen-type", type=int, default=2)
+    nanobubble_ions.add_argument("--sodium-type", type=int, default=4)
+    nanobubble_ions.add_argument("--chloride-type", type=int, default=5)
+    nanobubble_ions.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    nanobubble_ions.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    nanobubble_ions.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    nanobubble_ions.add_argument("--top-si-window-A", type=float, default=1.0)
+    nanobubble_ions.add_argument("--terminal-surface-z-A", type=float, required=True)
+    nanobubble_ions.add_argument("--surface-depth-A", type=float, default=3.0)
+    nanobubble_ions.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanobubble_ions.set_defaults(func=_cmd_postprocess_nanobubble_ion_distribution)
 
     nanodroplet_spreading = postprocess_subparsers.add_parser(
         "nanodroplet-spreading", help="Analyze restart-aware PBC nanodroplet spreading"
