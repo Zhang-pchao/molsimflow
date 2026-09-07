@@ -133,7 +133,6 @@ def plot_joint_maps(rows: Sequence[dict], path: Path, surface_max_A: float, gas_
         squeeze=False,
         sharex=True,
         sharey=True,
-        layout="constrained",
     )
     image = None
     for axis, group in zip(axes.flat, ordered):
@@ -152,7 +151,8 @@ def plot_joint_maps(rows: Sequence[dict], path: Path, surface_max_A: float, gas_
     if image is not None:
         colorbar = figure.colorbar(image, ax=axes.ravel().tolist(), shrink=0.86)
         colorbar.set_label("Probability density (A-2)")
-    figure.suptitle("Joint fixed-ion geometric coordinates", y=0.995)
+    figure.suptitle("Joint fixed-ion geometric coordinates", y=0.98)
+    figure.subplots_adjust(left=0.055, right=0.89, bottom=0.085, top=0.86, wspace=0.14, hspace=0.32)
     figure.savefig(path, dpi=220)
     plt.close(figure)
 
