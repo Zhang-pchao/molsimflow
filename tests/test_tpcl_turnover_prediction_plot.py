@@ -25,7 +25,7 @@ def test_review_plot_validates_frozen_wp16_dimensions(tmp_path: Path) -> None:
     for evaluation in ("within_case", "leave_one_case_out"):
         for case in cases:
             for comparison in ("M0_static_to_M1_occupancy_history", plot.PRIMARY_COMPARISON):
-                evidence.append({"evaluation": evaluation, "held_case": case, "comparison": comparison, "delta_weighted_log_loss": 0.01, "bootstrap_ci025": -0.01, "bootstrap_ci975": 0.02, "bh_q": 0.5, "qualified_incremental_turnover_information": "False"})
+                evidence.append({"evaluation": evaluation, "held_case": case, "comparison": comparison, "delta_weighted_log_loss": 0.01, "bootstrap_ci025": -0.01, "bootstrap_ci975": 0.02, "bh_q": 0.5, "qualified_incremental_turnover_information": "0"})
     coverage = [{"case_id": case, "risk_anchor_count": 100, "complete_history_anchor_count": 90, "incomplete_history_anchor_count": 10} for case in cases]
     scores_path, evidence_path, coverage_path = tmp_path / "scores.csv", tmp_path / "evidence.csv", tmp_path / "coverage.csv"
     _write(scores_path, scores); _write(evidence_path, evidence); _write(coverage_path, coverage)
@@ -67,3 +67,8 @@ def test_review_plot_rejects_mismatched_qualification_count(tmp_path: Path) -> N
         assert "qualification count" in str(error)
     else:
         raise AssertionError("mismatched qualification count was accepted")
+
+
+def test_numeric_qualification_flag_is_accepted() -> None:
+    assert plot._flag("1") is True
+    assert plot._flag("0") is False

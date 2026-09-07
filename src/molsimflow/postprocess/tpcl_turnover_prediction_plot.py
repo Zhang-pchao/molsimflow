@@ -41,6 +41,14 @@ def _number(row: dict[str, str], key: str, path: Path) -> float:
     return value
 
 
+def _flag(value: str) -> bool:
+    if value in {"True", "1"}:
+        return True
+    if value in {"False", "0"}:
+        return False
+    raise ValueError(f"invalid boolean flag: {value}")
+
+
 def _configure_matplotlib(font_path: Path | None) -> None:
     import matplotlib
 
@@ -71,7 +79,7 @@ def _plot_incremental_evidence(rows: list[dict[str, str]], output: Path) -> None
     axis.errorbar(x, values, yerr=[[value - lower for value, lower in zip(values, low)], [upper - value for value, upper in zip(values, high)]], fmt="none", color="#555555", capsize=3, zorder=1)
     axis.scatter(x, values, s=48, c=color, zorder=2)
     for index, row in enumerate(selected):
-        if row["qualified_incremental_turnover_information"] == "True":
+        if _flag(row["qualified_incremental_turnover_information"]):
             axis.annotate("qualified", (index, values[index]), xytext=(0, 7), textcoords="offset points", ha="center", fontsize=7)
     axis.axhline(0.0, color="black", lw=0.8)
     axis.set(xticks=x, xticklabels=labels, ylabel="M2 minus M1 improvement in weighted log loss", title="Incremental retrospective information from turnover history")
@@ -147,7 +155,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     if len(scores) != 24 or len(evidence) != 16 or len(coverage) != 4:
         raise ValueError("unexpected frozen WP16 result dimensions")
     primary = [row for row in evidence if row["comparison"] == PRIMARY_COMPARISON]
-    qualification_count = sum(row["qualified_incremental_turnover_information"] == "True" for row in primary)
+    qualification_count = sum(_flag(row["qualified_incremental_turnover_information"]) for row in primary)
     if qualification_count != int(summary["qualified_primary_count"]):
         raise ValueError("qualification count differs from WP16 summary")
     if not args.no_plots:
