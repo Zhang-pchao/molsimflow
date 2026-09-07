@@ -68,24 +68,29 @@ def _plot_incremental_evidence(rows: list[dict[str, str]], output: Path) -> None
     selected = [row for row in rows if row["comparison"] == PRIMARY_COMPARISON]
     if len(selected) != 8:
         raise ValueError("expected exactly eight primary incremental-turnover comparisons")
-    selected.sort(key=lambda row: (row["evaluation"], row["held_case"]))
-    labels = [f"{row['evaluation']}\n{row['held_case']}" for row in selected]
-    values = [_number(row, "delta_weighted_log_loss", output) for row in selected]
-    low = [_number(row, "bootstrap_ci025", output) for row in selected]
-    high = [_number(row, "bootstrap_ci975", output) for row in selected]
-    color = ["#4C78A8" if row["evaluation"] == "within_case" else "#F58518" for row in selected]
-    x = list(range(len(selected)))
-    figure, axis = plt.subplots(figsize=(10.0, 4.4))
-    axis.errorbar(x, values, yerr=[[value - lower for value, lower in zip(values, low)], [upper - value for value, upper in zip(values, high)]], fmt="none", color="#555555", capsize=3, zorder=1)
-    axis.scatter(x, values, s=48, c=color, zorder=2)
-    for index, row in enumerate(selected):
-        if _flag(row["qualified_incremental_turnover_information"]):
-            axis.annotate("qualified", (index, values[index]), xytext=(0, 7), textcoords="offset points", ha="center", fontsize=7)
-    axis.axhline(0.0, color="black", lw=0.8)
-    axis.set(xticks=x, xticklabels=labels, ylabel="M2 minus M1 improvement in weighted log loss", title="Incremental retrospective information from turnover history")
-    axis.tick_params(axis="x", labelrotation=28)
-    axis.text(0.01, -0.28, "Intervals are specified blocked-bootstrap intervals; they are not replicate confidence intervals.", transform=axis.transAxes, fontsize=8)
-    figure.tight_layout()
+    evaluations = [("within_case", "Within case", "#4C78A8"), ("leave_one_case_out", "Leave one surface out", "#F58518")]
+    figure, axes = plt.subplots(1, 2, figsize=(10.2, 4.1), sharey=True)
+    for axis, (evaluation, title, color) in zip(axes, evaluations):
+        grouped = sorted((row for row in selected if row["evaluation"] == evaluation), key=lambda row: row["held_case"])
+        if len(grouped) != 4:
+            raise ValueError(f"expected four primary comparisons for {evaluation}")
+        values = [_number(row, "delta_weighted_log_loss", output) for row in grouped]
+        low = [_number(row, "bootstrap_ci025", output) for row in grouped]
+        high = [_number(row, "bootstrap_ci975", output) for row in grouped]
+        x = list(range(len(grouped)))
+        axis.errorbar(x, values, yerr=[[value - lower for value, lower in zip(values, low)], [upper - value for value, upper in zip(values, high)]], fmt="none", color="#555555", capsize=3, zorder=1)
+        axis.scatter(x, values, s=50, c=color, zorder=2)
+        for index, row in enumerate(grouped):
+            if _flag(row["qualified_incremental_turnover_information"]):
+                axis.annotate("qualified", (index, values[index]), xytext=(0, 7), textcoords="offset points", ha="center", fontsize=7)
+        axis.axhline(0.0, color="black", lw=0.8)
+        axis.set(xticks=x, xticklabels=[row["held_case"] for row in grouped], title=title)
+        axis.tick_params(axis="x", labelrotation=25)
+        axis.grid(axis="y", alpha=0.2)
+    axes[0].set_ylabel("M2 minus M1 improvement in weighted log loss")
+    figure.suptitle("Incremental retrospective information from turnover history", y=0.98, fontsize=11)
+    figure.text(0.5, 0.01, "Intervals are specified blocked-bootstrap intervals; they are not replicate confidence intervals.", ha="center", fontsize=8)
+    figure.tight_layout(rect=(0, 0.08, 1, 0.94))
     figure.savefig(output / "01_incremental_turnover_evidence.png", dpi=300, bbox_inches="tight")
     plt.close(figure)
 
