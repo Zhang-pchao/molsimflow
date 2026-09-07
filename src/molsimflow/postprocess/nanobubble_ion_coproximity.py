@@ -148,11 +148,11 @@ def plot_joint_maps(rows: Sequence[dict], path: Path, surface_max_A: float, gas_
         axis.set_ylabel("Nearest main-N2 center distance (A)")
     for axis in axes.flat[len(ordered) :]:
         axis.set_visible(False)
-    if image is not None:
-        colorbar = figure.colorbar(image, ax=axes.ravel().tolist(), shrink=0.86)
-        colorbar.set_label("Probability density (A-2)")
     figure.suptitle("Joint fixed-ion geometric coordinates", y=0.98)
-    figure.subplots_adjust(left=0.055, right=0.89, bottom=0.085, top=0.86, wspace=0.14, hspace=0.32)
+    figure.subplots_adjust(left=0.055, right=0.84, bottom=0.085, top=0.86, wspace=0.14, hspace=0.32)
+    if image is not None:
+        colorbar = figure.colorbar(image, cax=figure.add_axes((0.875, 0.17, 0.018, 0.67)))
+        colorbar.set_label("Probability density (A-2)")
     figure.savefig(path, dpi=220)
     plt.close(figure)
 
