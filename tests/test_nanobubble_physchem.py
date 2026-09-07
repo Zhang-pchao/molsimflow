@@ -49,3 +49,17 @@ def test_restart_merge_and_fragment_mask(tmp_path: Path) -> None:
     assert geometry[-1]["fragmented"] == "True"
     assert geometry[-1]["geometry_valid"] == "False"
     assert json.loads((output / "VALIDATION.json").read_text())["status"] == "PASS"
+
+
+def test_geometry_time_window_is_explicit(tmp_path: Path) -> None:
+    core = tmp_path / "core.csv"; _write_core(core)
+    thermo = tmp_path / "thermo.log"; _write_log(thermo, [(0, 300), (2_000_000, 301), (4_000_000, 302)])
+    manifest = tmp_path / "thermo.tsv"
+    manifest.write_text("path\tmin_step\tmax_step\tpriority\n" f"{thermo}\t0\t4000000\t1\n", encoding="utf-8")
+    output = tmp_path / "out"
+    assert main([
+        "--case-id", "case", "--core-metrics", str(core), "--thermo-manifest", str(manifest),
+        "--output-dir", str(output), "--geometry-end-ns", "1.0", "--no-plots",
+    ]) == 0
+    geometry = list(csv.DictReader((output / "geometry_timeseries.csv").open()))
+    assert [int(row["step"]) for row in geometry] == [0, 2_000_000]

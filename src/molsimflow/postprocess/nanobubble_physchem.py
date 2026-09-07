@@ -315,6 +315,18 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=False)
     geometry = _read_core(Path(args.core_metrics), args.timestep_fs, args.min_geometry_cluster_n2, args.temperature_K)
+    if args.geometry_start_ns < 0.0:
+        raise ValueError("geometry_start_ns must be non-negative")
+    if args.geometry_end_ns is not None and args.geometry_end_ns < args.geometry_start_ns:
+        raise ValueError("geometry_end_ns must be at least geometry_start_ns")
+    geometry = [
+        row
+        for row in geometry
+        if args.geometry_start_ns <= float(row["time_ns"])
+        and (args.geometry_end_ns is None or float(row["time_ns"]) <= args.geometry_end_ns)
+    ]
+    if len(geometry) < 2:
+        raise ValueError("fewer than two geometry rows remain in the requested time window")
     thermo, inventory = _read_thermo(Path(args.thermo_manifest), args.timestep_fs)
     geometry_metrics = (
         "largest_cluster_n2_count", "dissolved_or_disconnected_n2_count", "bubble_height_q05_q95_A",
@@ -343,6 +355,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "thermo_first_step": int(thermo[0]["step"]),
             "thermo_last_step": int(thermo[-1]["step"]),
             "geometry_rows": len(geometry),
+            "geometry_start_ns": args.geometry_start_ns,
+            "geometry_end_ns": args.geometry_end_ns,
             "thermo_rows": len(thermo),
             "fragmented_geometry_rows": sum(bool(row["fragmented"]) for row in geometry),
             "geometry_valid_rows": sum(bool(row["geometry_valid"]) for row in geometry),
@@ -372,6 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-ns", type=float, default=0.5)
     parser.add_argument("--late-start-ns", type=float, default=8.0)
     parser.add_argument("--late-end-ns", type=float, default=10.0)
+    parser.add_argument("--geometry-start-ns", type=float, default=0.0)
+    parser.add_argument("--geometry-end-ns", type=float)
     parser.add_argument("--font-path", type=Path)
     parser.add_argument("--no-plots", action="store_true")
     return parser
