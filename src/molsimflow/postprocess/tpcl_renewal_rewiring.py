@@ -198,7 +198,7 @@ def plot_central_components(rows: Sequence[dict[str, object]], path: Path) -> No
     axis.axhline(0.0, color="black", linewidth=0.8)
     axis.set_xticks(positions, labels, rotation=20, ha="right")
     axis.set_ylabel("Event-minus-pre loss excess")
-    axis.set_title("Water renewal dominates over retained-network rewiring")
+    axis.set_title("Event-aligned water renewal exceeds retained-network rewiring")
     axis.legend(fontsize=8)
     figure.tight_layout()
     figure.savefig(path, dpi=220)
