@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from molsimflow.cli import build_parser
 from molsimflow.postprocess.nanobubble_ion_distribution import (
@@ -11,6 +12,7 @@ from molsimflow.postprocess.nanobubble_ion_distribution import (
     _selected_steps,
     build_ion_samples,
     iter_ion_frames,
+    main,
     parse_stage,
     stage_names,
     top_surface_si_ids,
@@ -151,6 +153,34 @@ def test_zst_dump_is_streamed_without_materializing_a_copy(tmp_path: Path):
     assert compressed.exists()
 
 
+def test_manifest_stop_step_avoids_a_preallocated_nul_tail(tmp_path: Path):
+    dump = tmp_path / "restart_tail.dump"
+    dump.write_bytes(
+        (
+            b"ITEM: TIMESTEP\n20\n"
+            b"ITEM: NUMBER OF ATOMS\n4\n"
+            b"ITEM: BOX BOUNDS pp pp pp\n0 20\n0 20\n0 20\n"
+            b"ITEM: ATOMS id type x y z\n"
+            b"1 8 1 1 2\n2 2 2 2 2\n3 3 10 10 10\n4 3 10 10 10.2\n"
+        )
+        + b"\0" * 128
+    )
+    frames = list(
+        iter_ion_frames(
+            dump,
+            (1, 2),
+            (3, 4),
+            (1, 4),
+            hydrogen_type=1,
+            oxygen_type=2,
+            sodium_type=4,
+            chloride_type=5,
+            stop_after_step=20,
+        )
+    )
+    assert [frame.step for frame in frames] == [20]
+
+
 def test_cli_exposes_nanobubble_ion_distribution(tmp_path: Path):
     args = build_parser().parse_args(
         [
@@ -176,3 +206,32 @@ def test_cli_exposes_nanobubble_ion_distribution(tmp_path: Path):
     )
     assert args.postprocess_command == "nanobubble-ion-distribution"
     assert args.terminal_surface_z_A == 5.0
+    assert args.trajectory_max_step is None
+
+
+def test_trajectory_max_steps_must_pair_with_trajectories(tmp_path: Path):
+    with pytest.raises(ValueError, match="once per --trajectory"):
+        main(
+            [
+                "--trajectory",
+                str(tmp_path / "bubble.dump"),
+                "--trajectory-max-step",
+                "10",
+                "--trajectory-max-step",
+                "20",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--reference-structure",
+                str(tmp_path / "model.xyz"),
+                "--surface-range",
+                "1:10",
+                "--nitrogen-range",
+                "11:20",
+                "--solution-range",
+                "21:30",
+                "--stage",
+                "late:0:1",
+                "--terminal-surface-z-A",
+                "5",
+            ]
+        )

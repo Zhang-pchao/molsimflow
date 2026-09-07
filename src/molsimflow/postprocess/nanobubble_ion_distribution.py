@@ -185,8 +185,14 @@ def iter_ion_frames(
     oxygen_type: int,
     sodium_type: int,
     chloride_type: int,
+    stop_after_step: int | None = None,
 ) -> Iterator[IonFrame]:
-    """Stream only coordinates needed for nanobubble ion analysis."""
+    """Stream only coordinates needed for nanobubble ion analysis.
+
+    ``stop_after_step`` is an explicit trajectory-manifest boundary.  It keeps
+    readers from interpreting a preallocated NUL tail after a valid restart
+    segment as a malformed LAMMPS frame.
+    """
 
     with open_dump_text(path) as handle:
         frame_index = 0
@@ -267,6 +273,8 @@ def iter_ion_frames(
                 chloride_xyz,
             )
             frame_index += 1
+            if stop_after_step is not None and step >= stop_after_step:
+                return
 
 
 def classify_mobile_species(
@@ -527,8 +535,6 @@ def run_analysis(args: argparse.Namespace) -> dict:
         [int(site["atom_id"]) for site in sites if site["site_type"] == "SiOH"],
         dtype=int,
     )
-    if not len(initial_sioh_ids):
-        raise ValueError("Reference structure contains no top SiOH sites")
     surface_reference = load_surface_reference(
         args.reference_structure,
         args.surface_range,
@@ -537,7 +543,12 @@ def run_analysis(args: argparse.Namespace) -> dict:
     records: dict[int, tuple[dict, list[dict]]] = {}
     raw_frames = 0
     raw_steps: set[int] = set()
-    for trajectory in args.trajectory:
+    trajectory_max_steps = (
+        args.trajectory_max_step
+        if args.trajectory_max_step
+        else [None] * len(args.trajectory)
+    )
+    for trajectory, max_step in zip(args.trajectory, trajectory_max_steps, strict=True):
         for frame in iter_ion_frames(
             trajectory,
             args.surface_range,
@@ -547,6 +558,7 @@ def run_analysis(args: argparse.Namespace) -> dict:
             oxygen_type=args.oxygen_type,
             sodium_type=args.sodium_type,
             chloride_type=args.chloride_type,
+            stop_after_step=max_step,
         ):
             raw_frames += 1
             raw_steps.add(frame.step)
@@ -608,6 +620,7 @@ def run_analysis(args: argparse.Namespace) -> dict:
     )
     manifest = {
         "trajectories": [str(Path(path).resolve()) for path in args.trajectory],
+        "trajectory_max_steps": trajectory_max_steps,
         "reference_structure": str(args.reference_structure.resolve()),
         "surface_atom_range": list(args.surface_range),
         "nitrogen_atom_range": list(args.nitrogen_range),
@@ -651,6 +664,7 @@ def run_analysis(args: argparse.Namespace) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trajectory", type=Path, action="append", required=True)
+    parser.add_argument("--trajectory-max-step", type=int, action="append")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--reference-structure", type=Path, required=True)
     parser.add_argument("--surface-range", type=parse_range, required=True)
@@ -685,6 +699,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.surface_depth_A,
     ) <= 0:
         raise ValueError("Time step, cutoffs, surface window, and depth must be positive")
+    if args.trajectory_max_step and len(args.trajectory_max_step) != len(args.trajectory):
+        raise ValueError("--trajectory-max-step must be supplied once per --trajectory")
+    if args.trajectory_max_step and min(args.trajectory_max_step) < 0:
+        raise ValueError("Trajectory maximum steps must be non-negative")
     names = [stage.name for stage in args.stage]
     if len(names) != len(set(names)):
         raise ValueError("Stage names must be unique")

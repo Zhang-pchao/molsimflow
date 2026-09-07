@@ -512,6 +512,8 @@ def _cmd_postprocess_nanobubble_ion_distribution(args: argparse.Namespace) -> in
     workflow_args = []
     for trajectory in args.trajectory:
         workflow_args.extend(["--trajectory", str(trajectory)])
+    for max_step in args.trajectory_max_step or []:
+        workflow_args.extend(["--trajectory-max-step", str(max_step)])
     for stage in args.stage:
         workflow_args.extend(["--stage", stage])
     for name in (
@@ -3380,6 +3382,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sample ions relative to a silica surface and an N2 nanobubble",
     )
     nanobubble_ions.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanobubble_ions.add_argument("--trajectory-max-step", type=int, action="append")
     nanobubble_ions.add_argument("--output-dir", type=Path, required=True)
     nanobubble_ions.add_argument("--reference-structure", type=Path, required=True)
     nanobubble_ions.add_argument("--surface-range", required=True)
