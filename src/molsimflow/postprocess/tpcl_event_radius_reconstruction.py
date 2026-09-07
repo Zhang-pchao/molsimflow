@@ -700,7 +700,7 @@ def _plot_rows(path: Path) -> list[dict[str, str]]:
     return _read_csv(path)
 
 
-def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | None = None) -> None:
+def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | None = None, case_labels: dict[str, str] | None = None) -> None:
     """Render generic review figures from a completed reconstruction result directory."""
     import matplotlib.pyplot as plt
 
@@ -717,7 +717,10 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
     kernels = _plot_rows(results_dir / "kernel_coefficients.csv")
     coverage = _plot_rows(results_dir / "case_coverage.csv")
     cases = list(dict.fromkeys(row["case_id"] for row in summary))
+    labels = {case: case for case in cases}
+    labels.update(case_labels or {})
     colors = {TIMING_MODEL: "#2b6cb0", MARK_MODEL: "#c05621"}
+    model_labels = {TIMING_MODEL: "timing only", MARK_MODEL: "timing + local mark"}
 
     figure, axis = plt.subplots(figsize=(8.0, 4.2))
     positions = np.arange(len(cases), dtype=float)
@@ -727,7 +730,7 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
         scores = np.asarray([float(row["radius_sse_improvement_vs_baseline"]) for row in selected])
         lows = np.asarray([float(row["block_bootstrap_ci025"]) for row in selected])
         highs = np.asarray([float(row["block_bootstrap_ci975"]) for row in selected])
-        axis.bar(positions + (index - 0.5) * width, scores, width=width, color=colors[model], label=model)
+        axis.bar(positions + (index - 0.5) * width, scores, width=width, color=colors[model], label=model_labels[model])
         axis.errorbar(
             positions + (index - 0.5) * width,
             scores,
@@ -741,7 +744,7 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
             if int(float(row["qualified_reconstruction_information"])):
                 axis.text(position, score, "*", ha="center", va="bottom", fontsize=12)
     axis.axhline(0.0, color="black", lw=0.8)
-    axis.set_xticks(positions, cases, rotation=20, ha="right")
+    axis.set_xticks(positions, [labels[case] for case in cases])
     axis.set_ylabel("Held-out $m=0$ SSE improvement")
     axis.set_title("Blocked event-train reconstruction (diagnostic intervals)")
     axis.legend(frameon=False, fontsize=8)
@@ -759,7 +762,7 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
         axis.plot(time_ps, [float(row["baseline_relative_mean_radius_A"]) for row in selected], color="#666666", lw=1.0, label="baseline")
         axis.plot(time_ps, [float(row["timing_relative_mean_radius_A"]) for row in selected], color=colors[TIMING_MODEL], lw=1.0, label="timing")
         axis.plot(time_ps, [float(row["marked_relative_mean_radius_A"]) for row in selected], color=colors[MARK_MODEL], lw=1.0, label="marked")
-        axis.set_title(f"{case}, held block {block}", fontsize=9)
+        axis.set_title(f"{labels[case]}, held block {block}", fontsize=9)
         axis.set_xlabel("Time within block (ps)")
         axis.set_ylabel("Relative mean radius (Å)")
     axes[0, 0].legend(frameon=False, fontsize=7, ncol=2)
@@ -783,7 +786,7 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
                 label=feature,
             )
         axis.axhline(0.0, color="black", lw=0.6)
-        axis.set_title(case, fontsize=9)
+        axis.set_title(labels[case], fontsize=9)
         axis.set_xlabel("Lag (ps)")
         axis.set_ylabel("Full-fit increment coefficient (Å)")
     axes[0, 0].legend(frameon=False, fontsize=7)
@@ -795,10 +798,10 @@ def plot_reconstruction(results_dir: Path, output_dir: Path, font_path: Path | N
     figure, axes = plt.subplots(1, 2, figsize=(8.5, 3.7))
     mapped = [int(float(next(row for row in coverage if row["case_id"] == case)["event_count_mapped"])) for case in cases]
     block_counts = [int(float(next(row for row in coverage if row["case_id"] == case)["time_block_count"])) for case in cases]
-    axes[0].bar(cases, mapped, color="#4a5568")
+    axes[0].bar([labels[case] for case in cases], mapped, color="#4a5568")
     axes[0].set_ylabel("Mapped accepted events")
     axes[0].tick_params(axis="x", rotation=20)
-    axes[1].bar(cases, block_counts, color="#718096")
+    axes[1].bar([labels[case] for case in cases], block_counts, color="#718096")
     axes[1].set_ylabel("200 ps time blocks")
     axes[1].tick_params(axis="x", rotation=20)
     figure.suptitle("Fixed accepted-table coverage", fontsize=11)
@@ -816,6 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--plot-output-dir", type=Path)
     parser.add_argument("--font-path", type=Path)
+    parser.add_argument("--case-label", action="append", default=[])
     parser.add_argument("--case-column", default="case_id")
     parser.add_argument("--source-path-column", default="arc_kinematics")
     parser.add_argument("--time-column", default="time_ns")
@@ -842,7 +846,13 @@ def main() -> int:
     if args.plot_results_dir is not None:
         if args.plot_output_dir is None:
             raise ValueError("--plot-output-dir is required with --plot-results-dir")
-        plot_reconstruction(args.plot_results_dir, args.plot_output_dir, args.font_path)
+        labels = {}
+        for item in args.case_label:
+            if "=" not in item:
+                raise ValueError("--case-label must use case_id=display_label")
+            case_id, label = item.split("=", 1)
+            labels[case_id] = label
+        plot_reconstruction(args.plot_results_dir, args.plot_output_dir, args.font_path, labels)
         return 0
     if args.events_table is None or args.output_dir is None:
         raise ValueError("--events-table and --output-dir are required for reconstruction")
