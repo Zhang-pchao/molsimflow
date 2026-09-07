@@ -145,7 +145,7 @@ def _late_summary(path: Path) -> dict[str, dict[str, float]]:
     return result
 
 
-def _load_case(row: dict[str, str]) -> CaseData:
+def _load_case(row: dict[str, str], max_initial_time_ns: float, required_end_ns: float) -> CaseData:
     run_dir = Path(row["run_dir"]).resolve()
     validation_path = run_dir / "VALIDATION.json"
     result_path = run_dir / "ANALYSIS-RESULT.txt"
@@ -164,8 +164,11 @@ def _load_case(row: dict[str, str]) -> CaseData:
     thermo = _read_csv(thermo_path, THERMO_REQUIRED)
     first, last = _strict_time(geometry, geometry_path)
     _strict_time(thermo, thermo_path)
-    if first > 1.0e-9 or last < 10.0 - 1.0e-9:
-        raise ValueError(f"{geometry_path}: does not cover the requested 0--10 ns comparison window")
+    if first > max_initial_time_ns or last < required_end_ns - 1.0e-9:
+        raise ValueError(
+            f"{geometry_path}: coverage [{first}, {last}] ns does not satisfy "
+            f"initial <= {max_initial_time_ns} ns and final >= {required_end_ns} ns"
+        )
     return CaseData(
         case_id=row["case_id"],
         surface=row["surface"],
@@ -277,12 +280,14 @@ def _plot_coverage(coverage: list[dict[str, object]], output: Path) -> None:
 def run(args: argparse.Namespace) -> dict[str, object]:
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=False)
+    if args.max_initial_time_ns < 0.0 or args.required_end_ns <= 0.0:
+        raise ValueError("time coverage bounds must be non-negative and have a positive required end")
     rows = _read_tsv(Path(args.case_manifest))
     accepted_rows = [row for row in rows if row["status"] == "ACCEPTED"]
     deferred_rows = [row for row in rows if row["status"] == "DEFERRED"]
     if deferred_rows and not args.allow_incomplete:
         raise ValueError("manifest contains deferred cases; rerun explicitly with --allow-incomplete")
-    cases = [_load_case(row) for row in accepted_rows]
+    cases = [_load_case(row, args.max_initial_time_ns, args.required_end_ns) for row in accepted_rows]
     if not cases:
         raise ValueError("no accepted cases to aggregate")
     surfaces = list(dict.fromkeys(row["surface"] for row in rows))
@@ -311,6 +316,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "coverage_complete": not deferred_rows,
         "accepted_case_count": len(cases),
         "deferred_case_count": len(deferred_rows),
+        "max_initial_time_ns": args.max_initial_time_ns,
+        "required_end_ns": args.required_end_ns,
         "surfaces": surfaces,
         "claim_boundary": [
             "Each condition is represented by one trajectory; figures are descriptive comparisons only.",
@@ -329,6 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--case-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-incomplete", action="store_true")
+    parser.add_argument("--max-initial-time-ns", type=float, default=0.02)
+    parser.add_argument("--required-end-ns", type=float, default=10.0)
     parser.add_argument("--font-path", type=Path)
     parser.add_argument("--no-plots", action="store_true")
     return parser

@@ -22,7 +22,7 @@ def _case(root: Path, case_id: str) -> Path:
     (run / "ANALYSIS-RESULT.txt").write_text("status=PASS\n", encoding="utf-8")
     geometry = []
     thermo = []
-    for time in (0.0, 8.5, 10.0):
+    for time in (0.01, 8.5, 10.0):
         geometry.append({"time_ns": time, "footprint_equivalent_radius_A": 20.0 + time, "bubble_height_q05_q95_A": 10.0, "gas_side_angle_candidate_deg": 40.0, "relative_shape_anisotropy": 0.1, "largest_cluster_n2_count": 300})
         thermo.append({"time_ns": time, "Temp": 330.0, "Press": 2.0, "normal_minus_tangential_bar": 1.0})
     _write_csv(physchem / "geometry_timeseries.csv", geometry)
