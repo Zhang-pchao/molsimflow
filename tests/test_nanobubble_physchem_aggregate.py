@@ -14,7 +14,7 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writerows(rows)
 
 
-def _case(root: Path, case_id: str) -> Path:
+def _case(root: Path, case_id: str, unavailable_geometry_proxy: bool = False) -> Path:
     run = root / case_id
     physchem = run / "physchem"
     physchem.mkdir(parents=True)
@@ -28,7 +28,18 @@ def _case(root: Path, case_id: str) -> Path:
     _write_csv(physchem / "geometry_timeseries.csv", geometry)
     _write_csv(physchem / "thermo_timeseries.csv", thermo)
     metrics = [metric for metric, _, _ in aggregate.PLOT_METRICS]
-    _write_csv(physchem / "late_window_summary.csv", [{"metric": metric, "mean": 1.0, "std": 0.2, "sample_count": 2} for metric in metrics])
+    _write_csv(
+        physchem / "late_window_summary.csv",
+        [
+            {
+                "metric": metric,
+                "mean": "nan" if unavailable_geometry_proxy and metric == "footprint_equivalent_radius_A" else 1.0,
+                "std": "nan" if unavailable_geometry_proxy and metric == "footprint_equivalent_radius_A" else 0.2,
+                "sample_count": 0 if unavailable_geometry_proxy and metric == "footprint_equivalent_radius_A" else 2,
+            }
+            for metric in metrics
+        ],
+    )
     records = []
     for path in sorted(path for path in run.rglob("*") if path.is_file()):
         if path.name != "OUTPUT-SHA256SUMS":
@@ -66,3 +77,14 @@ def test_aggregate_rejects_invalid_case_checksum(tmp_path: Path) -> None:
         assert "not PASS" in str(error)
     else:
         raise AssertionError("invalid case was accepted")
+
+
+def test_aggregate_preserves_unavailable_geometry_proxy(tmp_path: Path) -> None:
+    run = _case(tmp_path, "mixed", unavailable_geometry_proxy=True)
+    manifest = tmp_path / "cases.tsv"
+    manifest.write_text("case_id\tsurface\tcondition\tstatus\trun_dir\n" f"mixed__pure\tmixed\tpure_water\tACCEPTED\t{run}\n", encoding="utf-8")
+    output = tmp_path / "aggregate"
+    result = aggregate.run(aggregate.build_parser().parse_args(["--case-manifest", str(manifest), "--output-dir", str(output), "--no-plots"]))
+    assert result["late_metric_case_counts"]["footprint_equivalent_radius_A"] == 0
+    ledger = list(csv.DictReader((output / "coverage_ledger.csv").open(encoding="utf-8")))
+    assert ledger[0]["late_geometry_metrics_available"] == "3/4"

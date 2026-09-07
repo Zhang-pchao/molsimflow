@@ -136,9 +136,13 @@ def _late_summary(path: Path) -> dict[str, dict[str, float]]:
             count = int(float(row["sample_count"]))
         except ValueError as error:
             raise ValueError(f"{path}: invalid late-window value") from error
-        if count < 1 or not math.isfinite(mean):
+        if count < 0 or (count > 0 and not math.isfinite(mean)):
             raise ValueError(f"{path}: invalid late-window summary for {metric}")
-        result[metric] = {"mean": mean, "std": std if math.isfinite(std) else 0.0, "count": count}
+        result[metric] = {
+            "mean": mean if count > 0 else math.nan,
+            "std": std if count > 1 and math.isfinite(std) else 0.0,
+            "count": count,
+        }
     missing = {metric for metric, _, _ in PLOT_METRICS}.difference(result)
     if missing:
         raise ValueError(f"{path}: missing plotted metrics {sorted(missing)}")
@@ -235,7 +239,15 @@ def _plot_late_metrics(cases: list[CaseData], output: Path, surfaces: list[str],
     position = {surface: index for index, surface in enumerate(surfaces)}
     for axis, (metric, label, _) in zip(axes[0], metrics):
         for condition, shift in zip(conditions, shifts):
-            selected = [case for case in cases if case.condition == condition]
+            selected = [
+                case
+                for case in cases
+                if case.condition == condition
+                and case.late[metric]["count"] > 0
+                and math.isfinite(case.late[metric]["mean"])
+            ]
+            if not selected:
+                continue
             x = [position[case.surface] + shift for case in selected]
             y = [case.late[metric]["mean"] for case in selected]
             error = [case.late[metric]["std"] for case in selected]
@@ -253,11 +265,12 @@ def _plot_late_metrics(cases: list[CaseData], output: Path, surfaces: list[str],
 def _plot_coverage(coverage: list[dict[str, object]], output: Path) -> None:
     from matplotlib import pyplot as plt
 
-    labels = ["Surface", "Condition", "Status", "Geometry rows", "Last time (ns)", "Thermo rows"]
+    labels = ["Surface", "Condition", "Status", "Geometry rows", "Last time (ns)", "Thermo rows", "Late geometry", "Late thermo"]
     values = [
         [
             str(row["surface"]), str(row["condition"]), str(row["status"]),
             str(row["geometry_rows"]), str(row["geometry_last_time_ns"]), str(row["thermo_rows"]),
+            str(row["late_geometry_metrics_available"]), str(row["late_thermo_metrics_available"]),
         ]
         for row in coverage
     ]
@@ -291,16 +304,20 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     if not cases:
         raise ValueError("no accepted cases to aggregate")
     surfaces = list(dict.fromkeys(row["surface"] for row in rows))
+    geometry_metrics = [metric for metric, _, source in PLOT_METRICS if source == "geometry"]
+    thermo_metrics = [metric for metric, _, source in PLOT_METRICS if source == "thermo"]
     coverage: list[dict[str, object]] = []
     late_rows: list[dict[str, object]] = []
     for row in rows:
         matching = next((case for case in cases if case.case_id == row["case_id"]), None)
         if matching is None:
-            coverage.append({"case_id": row["case_id"], "surface": row["surface"], "condition": row["condition"], "status": row["status"], "run_dir": row["run_dir"], "geometry_rows": "", "geometry_last_time_ns": "", "thermo_rows": ""})
+            coverage.append({"case_id": row["case_id"], "surface": row["surface"], "condition": row["condition"], "status": row["status"], "run_dir": row["run_dir"], "geometry_rows": "", "geometry_last_time_ns": "", "thermo_rows": "", "late_geometry_metrics_available": "", "late_thermo_metrics_available": ""})
             continue
-        coverage.append({"case_id": matching.case_id, "surface": matching.surface, "condition": matching.condition, "status": "ACCEPTED", "run_dir": row["run_dir"], "geometry_rows": len(matching.geometry), "geometry_last_time_ns": f"{float(matching.geometry[-1]['time_ns']):.6g}", "thermo_rows": len(matching.thermo)})
+        geometry_available = sum(matching.late[metric]["count"] > 0 for metric in geometry_metrics)
+        thermo_available = sum(matching.late[metric]["count"] > 0 for metric in thermo_metrics)
+        coverage.append({"case_id": matching.case_id, "surface": matching.surface, "condition": matching.condition, "status": "ACCEPTED", "run_dir": row["run_dir"], "geometry_rows": len(matching.geometry), "geometry_last_time_ns": f"{float(matching.geometry[-1]['time_ns']):.6g}", "thermo_rows": len(matching.thermo), "late_geometry_metrics_available": f"{geometry_available}/{len(geometry_metrics)}", "late_thermo_metrics_available": f"{thermo_available}/{len(thermo_metrics)}"})
         for metric, summary in matching.late.items():
-            late_rows.append({"case_id": matching.case_id, "surface": matching.surface, "condition": matching.condition, "metric": metric, "mean": summary["mean"], "temporal_std": summary["std"], "sample_count": summary["count"]})
+            late_rows.append({"case_id": matching.case_id, "surface": matching.surface, "condition": matching.condition, "metric": metric, "mean": summary["mean"], "temporal_std": summary["std"], "sample_count": summary["count"], "available": summary["count"] > 0})
     _write_csv(output / "coverage_ledger.csv", coverage)
     _write_csv(output / "late_window_comparison.csv", late_rows)
     if not args.no_plots:
@@ -318,11 +335,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "deferred_case_count": len(deferred_rows),
         "max_initial_time_ns": args.max_initial_time_ns,
         "required_end_ns": args.required_end_ns,
+        "late_metric_case_counts": {metric: sum(case.late[metric]["count"] > 0 for case in cases) for metric, _, _ in PLOT_METRICS},
         "surfaces": surfaces,
         "claim_boundary": [
             "Each condition is represented by one trajectory; figures are descriptive comparisons only.",
             "Error bars are within-trajectory temporal standard deviations, not replicate uncertainty or confidence intervals.",
             "Spherical-cap geometry and gas-side angle are molecular-center proxies, not density-dividing-surface contact angles.",
+            "Unavailable proxy values remain unavailable in the ledger and plots; no interpolation or replacement is applied.",
             "Whole-box pressure/stress are diagnostics, not local surface tension or bubble pressure.",
             "No ion causal law, free energy, friction, dissipation, or universal mechanism is inferred.",
         ],
