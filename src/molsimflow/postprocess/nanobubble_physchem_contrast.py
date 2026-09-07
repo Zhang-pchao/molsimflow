@@ -208,21 +208,28 @@ def _plot_contrasts(summary: list[dict[str, object]], output: Path, surfaces: li
     from matplotlib import pyplot as plt
 
     selected = [metric for metric in PLOT_METRICS if metric in metrics]
-    conditions = list(dict.fromkeys(str(row["condition"]) for row in summary))
+    conditions = list(dict.fromkeys(str(row["condition_label"]) for row in summary))
     if not summary:
         raise ValueError("no late-window contrast rows available")
     figure, axes = plt.subplots(len(conditions), len(selected), figsize=(3.4 * len(selected), 2.7 * len(conditions)), squeeze=False)
     positions = {surface: index for index, surface in enumerate(surfaces)}
-    for row_index, condition in enumerate(conditions):
+    for row_index, condition_label in enumerate(conditions):
         for column, metric in enumerate(selected):
             axis = axes[row_index, column]
-            rows = [row for row in summary if row["condition"] == condition and row["metric"] == metric]
+            rows = [
+                row
+                for row in summary
+                if row["condition_label"] == condition_label and row["metric"] == metric
+            ]
             if rows:
                 axis.errorbar(
                     [positions[str(row["surface"])] for row in rows],
                     [float(row["mean_effect_condition_minus_reference"]) for row in rows],
                     yerr=[float(row["temporal_block_std"]) for row in rows],
-                    color=CONDITION_COLORS.get(condition, "#777777"),
+                    color=CONDITION_COLORS.get(
+                        "hcl_63pairs" if condition_label == "HCl" else "naoh_ph13p4",
+                        "#777777",
+                    ),
                     fmt="o",
                     capsize=3,
                 )
@@ -232,7 +239,7 @@ def _plot_contrasts(summary: list[dict[str, object]], output: Path, surfaces: li
             if row_index == 0:
                 axis.set_title(METRICS[metric])
             if column == 0:
-                axis.set_ylabel(f"{_condition_label(condition)} - pure water")
+                axis.set_ylabel(f"{condition_label} - pure water")
     figure.suptitle("8--10 ns block contrasts; bars are temporal block SD, not replicate uncertainty", y=1.01, fontsize=10)
     figure.tight_layout()
     figure.savefig(output / "02_late_window_contrasts.png", dpi=300, bbox_inches="tight")
