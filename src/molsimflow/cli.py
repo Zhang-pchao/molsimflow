@@ -592,6 +592,47 @@ def _cmd_postprocess_nanobubble_ion_distribution(args: argparse.Namespace) -> in
     return ion_main(workflow_args)
 
 
+def _cmd_postprocess_surface_functional_group_orientation(
+    args: argparse.Namespace,
+) -> int:
+    from molsimflow.postprocess.surface_functional_group_orientation import (
+        main as orientation_main,
+    )
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir",
+        "initial_xyz",
+        "surface_range",
+        "water_range",
+        "surface_z_A",
+        "oxygen_type",
+        "hydrogen_type",
+        "surface_depth_A",
+        "oh_cutoff_A",
+        "ch_cutoff_A",
+        "si_terminal_cutoff_A",
+        "local_normal_neighbors",
+        "block_frames",
+        "cosine_bins",
+        "azimuth_bins",
+        "timestep_fs",
+        "minimum_group_integrity_fraction",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    for name in ("font_path", "expected_ch3_sites", "expected_sioh_sites", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return orientation_main(workflow_args)
+
+
 def _cmd_postprocess_nanodroplet_spreading(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.nanodroplet_spreading import main as spreading_main
 
@@ -3526,6 +3567,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
     )
     nanobubble_ions.set_defaults(func=_cmd_postprocess_nanobubble_ion_distribution)
+
+    functional_orientation = postprocess_subparsers.add_parser(
+        "surface-functional-group-orientation",
+        help="Track CH3 and SiOH axes relative to global and local surface normals",
+    )
+    functional_orientation.add_argument(
+        "--trajectory", type=Path, action="append", required=True
+    )
+    functional_orientation.add_argument("--output-dir", type=Path, required=True)
+    functional_orientation.add_argument("--initial-xyz", type=Path, required=True)
+    functional_orientation.add_argument("--surface-range", required=True)
+    functional_orientation.add_argument("--water-range", required=True)
+    functional_orientation.add_argument("--surface-z-A", type=float, required=True)
+    functional_orientation.add_argument("--oxygen-type", type=int, default=2)
+    functional_orientation.add_argument("--hydrogen-type", type=int, default=1)
+    functional_orientation.add_argument("--surface-depth-A", type=float, default=3.0)
+    functional_orientation.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    functional_orientation.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    functional_orientation.add_argument(
+        "--si-terminal-cutoff-A", type=float, default=2.20
+    )
+    functional_orientation.add_argument("--local-normal-neighbors", type=int, default=7)
+    functional_orientation.add_argument("--block-frames", type=int, default=25)
+    functional_orientation.add_argument("--cosine-bins", type=int, default=40)
+    functional_orientation.add_argument("--azimuth-bins", type=int, default=36)
+    functional_orientation.add_argument("--timestep-fs", type=float, default=0.5)
+    functional_orientation.add_argument("--font-path", type=Path)
+    functional_orientation.add_argument("--expected-ch3-sites", type=int)
+    functional_orientation.add_argument("--expected-sioh-sites", type=int)
+    functional_orientation.add_argument(
+        "--minimum-group-integrity-fraction", type=float, default=0.99
+    )
+    functional_orientation.add_argument("--max-frames", type=int)
+    functional_orientation.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    functional_orientation.add_argument("--no-plots", action="store_true")
+    functional_orientation.set_defaults(
+        func=_cmd_postprocess_surface_functional_group_orientation
+    )
 
     nanodroplet_spreading = postprocess_subparsers.add_parser(
         "nanodroplet-spreading", help="Analyze restart-aware PBC nanodroplet spreading"
