@@ -1642,6 +1642,18 @@ def _cmd_postprocess_fes_reweight(args: argparse.Namespace) -> int:
     return run_fes_reweight(workflow_args)
 
 
+def _cmd_postprocess_pimd_reweight(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.pimd_reweight import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
+def _cmd_postprocess_pimd_reweight_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.pimd_reweight_compare import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
 def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.fes_analysis import run_fes2d_grid
 
@@ -2782,6 +2794,11 @@ def _add_fes_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--contour-levels", type=int, default=16)
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument("--cmap", default="viridis")
+
+
+def _add_pimd_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--contract", type=Path, required=True, help="Path-explicit PIMD analysis contract")
+    parser.add_argument("--output", type=Path, required=True, help="Fresh output directory")
 
 
 def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -3994,6 +4011,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes_reweight_postprocess_args(fes_reweight)
     fes_reweight.set_defaults(func=_cmd_postprocess_fes_reweight)
+
+    pimd_reweight = postprocess_subparsers.add_parser(
+        "pimd-reweight",
+        help="Reweight centroid- or bead-mean-biased PIMD and generate diagnostics",
+    )
+    _add_pimd_reweight_postprocess_args(pimd_reweight)
+    pimd_reweight.set_defaults(func=_cmd_postprocess_pimd_reweight)
+
+    pimd_reweight_compare = postprocess_subparsers.add_parser(
+        "pimd-reweight-compare",
+        help="Compare two completed PIMD reweighting analyses",
+    )
+    _add_pimd_reweight_postprocess_args(pimd_reweight_compare)
+    pimd_reweight_compare.set_defaults(func=_cmd_postprocess_pimd_reweight_compare)
 
     fes2d_grid = postprocess_subparsers.add_parser(
         "fes2d-grid",
