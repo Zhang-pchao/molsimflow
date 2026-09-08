@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Mapping, Optional, Sequence, TextIO, Tuple
+from typing import TextIO
 
 import numpy as np
 
@@ -27,18 +30,52 @@ class LammpsDumpFrame:
     timestep: int
     bounds: np.ndarray
     box_header: str
-    atom_fields: Tuple[str, ...]
-    atom_rows: Tuple[Tuple[str, ...], ...]
+    atom_fields: tuple[str, ...]
+    atom_rows: tuple[tuple[str, ...], ...]
 
     @property
     def atom_count(self) -> int:
         return len(self.atom_rows)
 
 
+@contextmanager
+def open_lammps_dump_text(dump_path: Path) -> Iterator[TextIO]:
+    """Open a plain or zstd-compressed LAMMPS dump as a streaming text handle."""
+
+    path = Path(dump_path)
+    if path.suffix != ".zst":
+        with path.open(encoding="utf-8") as handle:
+            yield handle
+        return
+    try:
+        process = subprocess.Popen(
+            ["zstd", "-q", "-dc", "--", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Reading .zst dumps requires the zstd executable") from exc
+    assert process.stdout is not None
+    try:
+        yield process.stdout
+    except BaseException:
+        # A consumer may stop early, in which case zstd can exit on SIGPIPE.
+        process.stdout.close()
+        process.wait()
+        raise
+    else:
+        process.stdout.close()
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        if process.wait():
+            raise ValueError(f"zstd decode failed for {path}: {stderr.strip()}")
+
+
 def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
     """Iterate complete dump rows while preserving every atom column."""
 
-    with Path(dump_path).open(encoding="utf-8") as handle:
+    with open_lammps_dump_text(dump_path) as handle:
         frame_index = 0
         while True:
             line = handle.readline()
@@ -87,10 +124,102 @@ def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
             frame_index += 1
 
 
+def _validate_dump_identity(
+    dump_path: Path,
+    expected_fields: Sequence[str],
+    expected_identity: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[dict[str, object], tuple[int, ...], tuple[tuple[int, int], ...]]:
+    steps = []
+    identity_reference = expected_identity
+    atom_count = 0
+    for frame in iter_lammps_dump_records(dump_path):
+        if frame.atom_fields != tuple(expected_fields):
+            raise ValueError(
+                f"{dump_path}: expected fields {tuple(expected_fields)}, got {frame.atom_fields}"
+            )
+        if steps and frame.timestep <= steps[-1]:
+            raise ValueError(f"{dump_path}: non-increasing timestep {frame.timestep}")
+        identity = tuple((int(row[0]), int(row[1])) for row in frame.atom_rows)
+        if len({atom_id for atom_id, _ in identity}) != frame.atom_count:
+            raise ValueError(f"{dump_path}: duplicate atom id at timestep {frame.timestep}")
+        if identity_reference is None:
+            identity_reference = identity
+            atom_count = frame.atom_count
+        elif identity != identity_reference:
+            raise ValueError(f"{dump_path}: atom id/type mismatch at timestep {frame.timestep}")
+        steps.append(frame.timestep)
+    if not steps or identity_reference is None:
+        raise ValueError(f"{dump_path}: no complete frames")
+    return (
+        {
+            "path": str(dump_path),
+            "fields": list(expected_fields),
+            "frames": len(steps),
+            "atom_count": atom_count or len(identity_reference),
+            "first_step": steps[0],
+            "last_step": steps[-1],
+        },
+        tuple(steps),
+        identity_reference,
+    )
+
+
+def validate_lammps_dump_bundle(
+    coordinate_path: Path,
+    velocity_path: Path,
+    force_path: Path,
+    start_step: int,
+    expected_final_step: int,
+    coordinate_stride: int,
+    vector_stride: int,
+) -> dict[str, object]:
+    """Validate aligned coordinate, velocity, and force custom dumps."""
+
+    if coordinate_stride <= 0 or vector_stride <= 0 or expected_final_step <= start_step:
+        raise ValueError("Invalid timestep range or dump stride")
+    expected_coordinate_steps = tuple(
+        range(start_step + coordinate_stride, expected_final_step + 1, coordinate_stride)
+    )
+    expected_vector_steps = tuple(
+        range(start_step + vector_stride, expected_final_step + 1, vector_stride)
+    )
+    if not expected_coordinate_steps or expected_coordinate_steps[-1] != expected_final_step:
+        raise ValueError("Coordinate stride does not land on the expected final step")
+    if not expected_vector_steps or expected_vector_steps[-1] != expected_final_step:
+        raise ValueError("Vector stride does not land on the expected final step")
+    coordinate, coordinate_steps, identity = _validate_dump_identity(
+        Path(coordinate_path), ("id", "type", "x", "y", "z")
+    )
+    velocity, velocity_steps, _ = _validate_dump_identity(
+        Path(velocity_path), ("id", "type", "vx", "vy", "vz"), identity
+    )
+    force, force_steps, _ = _validate_dump_identity(
+        Path(force_path), ("id", "type", "fx", "fy", "fz"), identity
+    )
+    if velocity_steps != force_steps:
+        raise ValueError("Velocity and force timesteps differ")
+    if not set(velocity_steps).issubset(coordinate_steps):
+        raise ValueError("Velocity/force timesteps are not a subset of coordinate timesteps")
+    if coordinate_steps != expected_coordinate_steps:
+        raise ValueError("Coordinate timesteps do not match the requested output cadence")
+    if velocity_steps != expected_vector_steps:
+        raise ValueError("Velocity/force timesteps do not match the requested output cadence")
+    return {
+        "status": "PASS",
+        "start_step": int(start_step),
+        "expected_final_step": int(expected_final_step),
+        "coordinate_stride": int(coordinate_stride),
+        "vector_stride": int(vector_stride),
+        "coordinate": coordinate,
+        "velocity": velocity,
+        "force": force,
+    }
+
+
 def write_lammps_dump_frame(
     handle: TextIO,
     frame: LammpsDumpFrame,
-    atom_rows: Optional[Sequence[Sequence[object]]] = None,
+    atom_rows: Sequence[Sequence[object]] | None = None,
 ) -> None:
     """Write one parsed frame, optionally replacing its atom rows."""
 
@@ -108,7 +237,7 @@ def write_lammps_dump_frame(
         handle.write(" ".join(str(value) for value in row) + "\n")
 
 
-def _choose_coord_field(fields: Sequence[str], dim: str) -> Tuple[int, bool]:
+def _choose_coord_field(fields: Sequence[str], dim: str) -> tuple[int, bool]:
     for name in (dim, dim + "u", dim + "s"):
         if name in fields:
             return fields.index(name), name.endswith("s")
@@ -117,8 +246,8 @@ def _choose_coord_field(fields: Sequence[str], dim: str) -> Tuple[int, bool]:
 
 def iter_lammps_dump_frames(
     dump_path: Path,
-    needed_atom_ids: Optional[Iterable[int]] = None,
-    max_frames: Optional[int] = None,
+    needed_atom_ids: Iterable[int] | None = None,
+    max_frames: int | None = None,
 ) -> Iterator[LammpsFrame]:
     """Iterate LAMMPS dump frames while retaining selected atom positions.
 
@@ -137,7 +266,7 @@ def iter_lammps_dump_frames(
         y_index, y_scaled = _choose_coord_field(fields, "y")
         z_index, z_scaled = _choose_coord_field(fields, "z")
         lengths = frame.bounds[:, 1] - frame.bounds[:, 0]
-        selected: Dict[int, np.ndarray] = {}
+        selected: dict[int, np.ndarray] = {}
         for parts in frame.atom_rows:
             atom_id = int(parts[id_index])
             if needed is not None and atom_id not in needed:
@@ -223,7 +352,7 @@ def cylinder_membership(
     radius_A: float,
     lower_A: float,
     upper_A: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return cylinder mask, local axial coordinate, and radial distance."""
 
     coords = np.asarray(coords, dtype=float)

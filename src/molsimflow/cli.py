@@ -437,6 +437,58 @@ def _cmd_postprocess_centroids(args: argparse.Namespace) -> int:
     return centroids_main(workflow_args)
 
 
+def _cmd_postprocess_validate_dumps(args: argparse.Namespace) -> int:
+    import json
+
+    from molsimflow.io.lammps_dump import validate_lammps_dump_bundle
+
+    result = validate_lammps_dump_bundle(
+        args.coordinates,
+        args.velocity,
+        args.force,
+        args.start_step,
+        args.expected_final_step,
+        args.coordinate_stride,
+        args.vector_stride,
+    )
+    text = json.dumps(result, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
+def _cmd_postprocess_validate_v3_mechanism_io(args: argparse.Namespace) -> int:
+    import json
+
+    from molsimflow.postprocess.v3_mechanism_io import validate_v3_mechanism_io
+
+    result = validate_v3_mechanism_io(
+        coordinates=args.coordinates,
+        velocity_roi=args.velocity_roi,
+        roi_kinetic=args.roi_kinetic,
+        global_stress=args.global_stress,
+        model_data=args.model_data,
+        final_data=args.final_data,
+        start_step=args.start_step,
+        end_step=args.end_step,
+        natoms=args.natoms,
+        roi_types=tuple(int(value) for value in args.roi_types.split(",") if value),
+        coordinate_every=args.coordinate_every,
+        velocity_every=args.velocity_every,
+        thermo_every=args.thermo_every,
+        kinetic_factor=args.kinetic_factor,
+        final_data_tolerance_A=args.final_data_tolerance_A,
+    )
+    text = json.dumps(result, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
 def _cmd_postprocess_bubble_surface_distance(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bubble_surface_distance import main as surface_distance_main
 
@@ -614,6 +666,21 @@ def _cmd_postprocess_tpcl_pinning_slip_compare(args: argparse.Namespace) -> int:
         str(args.seed),
     ]
     return compare_main(workflow_args)
+
+
+def _cmd_postprocess_tpcl_state_diagnostics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_state_diagnostics import main as state_main
+
+    workflow_args = [
+        "--sources", str(args.sources),
+        "--output-dir", str(args.output_dir),
+        "--timestep-fs", str(args.timestep_fs),
+        "--block-ps", str(args.block_ps),
+        "--font-path", str(args.font_path),
+    ]
+    for field in args.frame_field:
+        workflow_args.extend(["--frame-field", field])
+    return state_main(workflow_args)
 
 
 def _cmd_postprocess_surface_site_enrichment(args: argparse.Namespace) -> int:
@@ -3305,6 +3372,44 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    validate_dumps = postprocess_subparsers.add_parser(
+        "validate-dumps",
+        help="Validate aligned coordinate, velocity, and force LAMMPS dumps",
+    )
+    validate_dumps.add_argument("--coordinates", type=Path, required=True)
+    validate_dumps.add_argument("--velocity", type=Path, required=True)
+    validate_dumps.add_argument("--force", type=Path, required=True)
+    validate_dumps.add_argument("--start-step", type=int, required=True)
+    validate_dumps.add_argument("--expected-final-step", type=int, required=True)
+    validate_dumps.add_argument("--coordinate-stride", type=int, required=True)
+    validate_dumps.add_argument("--vector-stride", type=int, required=True)
+    validate_dumps.add_argument("--output", type=Path)
+    validate_dumps.set_defaults(func=_cmd_postprocess_validate_dumps)
+
+    validate_v3_io = postprocess_subparsers.add_parser(
+        "validate-v3-mechanism-io",
+        help="Validate aligned V3 coordinate, ROI-velocity, and stress outputs",
+    )
+    validate_v3_io.add_argument("--coordinates", type=Path, required=True)
+    validate_v3_io.add_argument("--velocity-roi", type=Path, required=True)
+    validate_v3_io.add_argument("--roi-kinetic", type=Path, required=True)
+    validate_v3_io.add_argument("--global-stress", type=Path, required=True)
+    validate_v3_io.add_argument("--model-data", type=Path, required=True)
+    validate_v3_io.add_argument("--final-data", type=Path, required=True)
+    validate_v3_io.add_argument("--start-step", type=int, required=True)
+    validate_v3_io.add_argument("--end-step", type=int, required=True)
+    validate_v3_io.add_argument("--natoms", type=int, required=True)
+    validate_v3_io.add_argument("--roi-types", required=True)
+    validate_v3_io.add_argument("--coordinate-every", type=int, required=True)
+    validate_v3_io.add_argument("--velocity-every", type=int, required=True)
+    validate_v3_io.add_argument("--thermo-every", type=int, required=True)
+    validate_v3_io.add_argument(
+        "--kinetic-factor", type=float, default=166.053882315, help="metal-unit kinetic factor"
+    )
+    validate_v3_io.add_argument("--final-data-tolerance-A", type=float, default=1.0e-6)
+    validate_v3_io.add_argument("--output", type=Path)
+    validate_v3_io.set_defaults(func=_cmd_postprocess_validate_v3_mechanism_io)
+
     centroids = postprocess_subparsers.add_parser(
         "centroids",
         help="Compute two-bubble centroids from a LAMMPS trajectory",
@@ -3462,6 +3567,18 @@ def build_parser() -> argparse.ArgumentParser:
     tpcl_compare.add_argument("--bootstrap-replicates", type=int, default=2000)
     tpcl_compare.add_argument("--seed", type=int, default=20260830)
     tpcl_compare.set_defaults(func=_cmd_postprocess_tpcl_pinning_slip_compare)
+
+    tpcl_state = postprocess_subparsers.add_parser(
+        "tpcl-state-diagnostics",
+        help="Summarize LAMMPS thermo, pressure, and TPCL geometry in fixed blocks",
+    )
+    tpcl_state.add_argument("--sources", type=Path, required=True)
+    tpcl_state.add_argument("--output-dir", type=Path, required=True)
+    tpcl_state.add_argument("--timestep-fs", type=float, required=True)
+    tpcl_state.add_argument("--block-ps", type=float, default=500.0)
+    tpcl_state.add_argument("--font-path", type=Path, required=True)
+    tpcl_state.add_argument("--frame-field", action="append", default=[])
+    tpcl_state.set_defaults(func=_cmd_postprocess_tpcl_state_diagnostics)
 
     site_enrichment = postprocess_subparsers.add_parser(
         "surface-site-enrichment",

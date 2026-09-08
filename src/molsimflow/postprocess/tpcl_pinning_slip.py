@@ -20,7 +20,12 @@ from pathlib import Path
 import numpy as np
 
 from molsimflow.io.extxyz import read_extxyz_positions
-from molsimflow.io.lammps_dump import box_lengths, minimum_image_vectors, periodic_center
+from molsimflow.io.lammps_dump import (
+    box_lengths,
+    minimum_image_vectors,
+    open_lammps_dump_text,
+    periodic_center,
+)
 from molsimflow.postprocess.interfacial_water_hbond import donor_points_to
 from molsimflow.postprocess.interfacial_water_orientation import assign_hydrogen_neighbors
 from molsimflow.postprocess.nanobubble_attachment import largest_cluster, molecule_centers
@@ -177,7 +182,7 @@ def _selected_array(rows: list[tuple[int, int, float, float, float]], expected: 
 def iter_tpcl_frames(path: Path, config: TpclConfig, segment_index: int) -> Iterator[TpclFrame]:
     """Stream sorted surface, phase, and water selections from an orthorhombic dump."""
 
-    with Path(path).open(encoding="utf-8") as handle:
+    with open_lammps_dump_text(path) as handle:
         frame_index = 0
         while True:
             line = handle.readline()

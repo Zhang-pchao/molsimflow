@@ -23,6 +23,7 @@ analysis = [
   "matplotlib",
   "MDAnalysis",
   "pandas",
+  "scikit-learn",
   "seaborn",
   "scipy",
 ]

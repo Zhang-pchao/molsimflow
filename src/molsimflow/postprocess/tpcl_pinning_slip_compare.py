@@ -51,6 +51,13 @@ BLOCK_METRICS = (
     "local_normal_velocity_A_per_ps",
 )
 FAIR_WINDOW_MIN_CONTOUR_COVERAGE = 0.95
+FAIR_WINDOW_MODES = frozenset(
+    {
+        "common_valid_overlap",
+        "fixed_absolute",
+        "attachment_relative",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -61,10 +68,17 @@ class CaseSpec:
     ch3_sites: int
     oh_sites: int
     attachment_time_ns: float | None
+    comparison_group: str = ""
+    fair_window_mode: str = "common_valid_overlap"
+    fair_window_start_ns: float | None = None
+    fair_window_end_ns: float | None = None
 
     @property
     def ch3_fraction(self) -> float:
-        return self.ch3_sites / (self.ch3_sites + self.oh_sites)
+        total_sites = self.ch3_sites + self.oh_sites
+        if total_sites <= 0:
+            raise ValueError(f"{self.case_id}: surface-site count must be positive")
+        return self.ch3_sites / total_sites
 
 
 @dataclass
@@ -99,6 +113,12 @@ def _int(value: object) -> int:
     return int(float(value))
 
 
+def _optional_float(value: object) -> float | None:
+    if value in {None, "", "NA", "nan"}:
+        return None
+    return float(value)
+
+
 def _nanmean(values: Iterable[float]) -> float:
     array = np.asarray(list(values), dtype=float).reshape(-1)
     finite = array[np.isfinite(array)]
@@ -122,6 +142,12 @@ def read_case_manifest(path: Path) -> list[CaseSpec]:
     cases = []
     for row in rows:
         attachment = row.get("attachment_time_ns", "")
+        fair_window_mode = row.get("fair_window_mode") or "common_valid_overlap"
+        if fair_window_mode not in FAIR_WINDOW_MODES:
+            raise ValueError(
+                f"{row['case_id']}: unsupported fair_window_mode {fair_window_mode!r}; "
+                f"choose from {sorted(FAIR_WINDOW_MODES)}"
+            )
         cases.append(
             CaseSpec(
                 case_id=row["case_id"],
@@ -132,6 +158,10 @@ def read_case_manifest(path: Path) -> list[CaseSpec]:
                 attachment_time_ns=None
                 if attachment in {"", "NA", "nan"}
                 else float(attachment),
+                comparison_group=row.get("comparison_group") or row["kind"],
+                fair_window_mode=fair_window_mode,
+                fair_window_start_ns=_optional_float(row.get("fair_window_start_ns")),
+                fair_window_end_ns=_optional_float(row.get("fair_window_end_ns")),
             )
         )
     if len({case.case_id for case in cases}) != len(cases):
@@ -180,9 +210,15 @@ def load_case(spec: CaseSpec) -> CaseData:
     run_root = latest.resolve(strict=True)
     if run_root.parent.name != "run":
         raise ValueError(f"{spec.case_id}: latest does not resolve below run/")
-    result_record = run_root / "RUN-RESULT.txt"
-    if "status=PASS" not in result_record.read_text(encoding="utf-8"):
-        raise ValueError(f"{spec.case_id}: upstream run is not PASS")
+    result_records = (
+        run_root / "ANALYSIS-RESULT.txt",
+        run_root / "RUN-RESULT.txt",
+    )
+    if not any(
+        record.is_file() and "status=PASS" in record.read_text(encoding="utf-8")
+        for record in result_records
+    ):
+        raise ValueError(f"{spec.case_id}: upstream result is not PASS")
     results = run_root / "results"
     required = (
         "summary.json",
@@ -292,6 +328,217 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, object]], fields: Sequenc
         writer.writerows(rows)
 
 
+IMPORTANT_DATA_FIELDS = (
+    "case_id",
+    "kind",
+    "job_id",
+    "ch3_site_fraction",
+    "fair_window",
+    "fair_start_ns",
+    "fair_end_ns",
+    "fair_contour_coverage_fraction",
+    "fair_valid_duration_ns",
+    "candidate_dwell_jump_clusters",
+    "candidate_cluster_rate_per_valid_ns",
+    "localization_noise_A",
+    "jump_threshold_A",
+    "time_mean_tpcl_radius_A",
+    "time_mean_footprint_area_A2",
+    "time_mean_contact_line_circularity",
+    "block_mean_local_contact_angle_deg",
+    "block_contact_angle_ci025_deg",
+    "block_contact_angle_ci975_deg",
+    "block_mean_local_hydration_A-2",
+    "block_hydration_ci025_A-2",
+    "block_hydration_ci975_A-2",
+    "comparison_status",
+)
+
+
+def _bootstrap_statistic(
+    rows: Sequence[Mapping[str, object]], case_id: str, metric: str, field: str
+) -> float:
+    row = next(
+        (item for item in rows if item["case_id"] == case_id and item["metric"] == metric),
+        None,
+    )
+    return float(row[field]) if row is not None else math.nan
+
+
+def build_important_data_rows(
+    case_rows: Sequence[Mapping[str, object]],
+    block_bootstrap_rows: Sequence[Mapping[str, object]] = (),
+) -> list[dict]:
+    return [
+        {
+            "case_id": row["case_id"],
+            "kind": row["kind"],
+            "job_id": row["job_id"],
+            "ch3_site_fraction": row["ch3_fraction"],
+            "fair_window": row["fair_window"],
+            "fair_start_ns": row["fair_start_ns"],
+            "fair_end_ns": row["fair_end_ns"],
+            "fair_contour_coverage_fraction": row["fair_contour_coverage_fraction"],
+            "fair_valid_duration_ns": row["fair_valid_duration_ns"],
+            "candidate_dwell_jump_clusters": row["fair_event_clusters"],
+            "candidate_cluster_rate_per_valid_ns": row["fair_event_rate_per_valid_ns"],
+            "localization_noise_A": row["localization_noise_A"],
+            "jump_threshold_A": row["jump_threshold_A"],
+            "time_mean_tpcl_radius_A": row["time_mean_tpcl_radius_A"],
+            "time_mean_footprint_area_A2": row["time_mean_footprint_area_A2"],
+            "time_mean_contact_line_circularity": row[
+                "time_mean_contact_line_circularity"
+            ],
+            "block_mean_local_contact_angle_deg": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_contact_angle_deg",
+                "mean",
+            ),
+            "block_contact_angle_ci025_deg": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_contact_angle_deg",
+                "bootstrap_ci025",
+            ),
+            "block_contact_angle_ci975_deg": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_contact_angle_deg",
+                "bootstrap_ci975",
+            ),
+            "block_mean_local_hydration_A-2": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_hydration_areal_density_A-2",
+                "mean",
+            ),
+            "block_hydration_ci025_A-2": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_hydration_areal_density_A-2",
+                "bootstrap_ci025",
+            ),
+            "block_hydration_ci975_A-2": _bootstrap_statistic(
+                block_bootstrap_rows,
+                str(row["case_id"]),
+                "local_hydration_areal_density_A-2",
+                "bootstrap_ci975",
+            ),
+            "comparison_status": row["fair_window_comparison_status"],
+        }
+        for row in case_rows
+    ]
+
+
+def _format_value(value: object) -> str:
+    if isinstance(value, float):
+        return "NA" if not math.isfinite(value) else f"{value:.6g}"
+    return str(value)
+
+
+def _write_important_data_markdown(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    labels = {
+        "case_id": "case",
+        "kind": "interface class",
+        "job_id": "upstream job",
+        "ch3_site_fraction": "CH3 site fraction",
+        "fair_window": "frozen comparison window",
+        "fair_start_ns": "window start (ns)",
+        "fair_end_ns": "window end (ns)",
+        "fair_contour_coverage_fraction": "valid contour coverage",
+        "fair_valid_duration_ns": "valid duration (ns)",
+        "candidate_dwell_jump_clusters": "candidate dwell-jump clusters",
+        "candidate_cluster_rate_per_valid_ns": "candidate rate (ns^-1)",
+        "localization_noise_A": "localization noise (A)",
+        "jump_threshold_A": "jump threshold (A)",
+        "time_mean_tpcl_radius_A": "time-mean TPCL radius (A)",
+        "time_mean_footprint_area_A2": "time-mean footprint area (A^2)",
+        "time_mean_contact_line_circularity": "time-mean circularity",
+        "block_mean_local_contact_angle_deg": "block contact angle (deg)",
+        "block_contact_angle_ci025_deg": "angle CI 2.5% (deg)",
+        "block_contact_angle_ci975_deg": "angle CI 97.5% (deg)",
+        "block_mean_local_hydration_A-2": "block hydration (A^-2)",
+        "block_hydration_ci025_A-2": "hydration CI 2.5% (A^-2)",
+        "block_hydration_ci975_A-2": "hydration CI 97.5% (A^-2)",
+        "comparison_status": "admission status",
+    }
+    lines = [
+        "# Important TPCL data",
+        "",
+        "All event quantities are candidate dwell--jump descriptors under the frozen definition; they are not free-energy barriers or causal estimates.",
+        "",
+        "| " + " | ".join(labels[field] for field in IMPORTANT_DATA_FIELDS) + " |",
+        "| " + " | ".join("---" for _ in IMPORTANT_DATA_FIELDS) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_format_value(row[field]).replace("|", "\\\\|") for field in IMPORTANT_DATA_FIELDS) + " |")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_claim_ledger(
+    path: Path,
+    case_rows: Sequence[Mapping[str, object]],
+    null_summary: Sequence[Mapping[str, object]],
+) -> None:
+    admitted = sum(row["fair_window_comparison_status"] == "ADMITTED" for row in case_rows)
+    candidate_total = sum(int(row["fair_event_clusters"]) for row in case_rows)
+    candidate_claim = (
+        (
+            "| Repeated dwell--jump candidates were observed | "
+            f"{candidate_total} candidates in the frozen windows | "
+            "Report candidate residence-to-transition patterns and their uncertainty | "
+            "Not proof of stick-slip, a barrier, or a universal mechanism |"
+        )
+        if candidate_total
+        else (
+            "| Repeated dwell--jump candidates were observed | "
+            "0 candidates in the frozen windows | "
+            "Report no repeated coarse dwell--jump candidate at the available "
+            "time resolution | "
+            "Does not establish absence of sub-resolution transitions or a mechanism |"
+        )
+    )
+    environment_claim = (
+        (
+            "| Event-aligned environment values were estimated | "
+            "Time-block bootstrap and circular-shift null outputs are retained | "
+            "Report descriptive, condition-specific associations when data are available | "
+            "One trajectory per condition and 0.5 ps output cannot establish causal ordering |"
+        )
+        if candidate_total
+        else (
+            "| Event-aligned environment values were estimated | "
+            "Not applicable: no registered candidate event window | "
+            "Do not report an event-associated environmental change | "
+            "Condition-level environment descriptors remain descriptive only |"
+        )
+    )
+    lines = [
+        "# Scientific claim ledger",
+        "",
+        "| Statement | Evidence status | Permitted interpretation | Explicit limit |",
+        "| --- | --- | --- | --- |",
+        (
+            "| Dynamic PBC-aware TPCL geometry was evaluated | "
+            f"{admitted}/{len(case_rows)} cases admitted to the frozen window | "
+            "Condition-specific geometric descriptors can be compared only for admitted cases | "
+            "Admission does not establish equilibrium |"
+        ),
+        candidate_claim,
+        environment_claim,
+        (
+            "| Local force or mechanical surface tension pathway | "
+            "Not available from these inputs | "
+            "Do not claim it | "
+            "No per-atom force or virial trajectory was supplied |"
+        ),
+    ]
+    if null_summary:
+        lines.extend(["", "Circular-shift null results are tabulated in `circular_shift_null_summary.csv`; BH-adjusted values remain association tests, not causal tests."])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _event_count_in_window(clusters: Sequence[Mapping[str, object]], start: float, end: float) -> int:
     return sum(start <= float(row["transition_time_ns"]) <= end for row in clusters)
 
@@ -340,27 +587,64 @@ def contour_validity_intervals(case: CaseData) -> list[dict]:
     return output
 
 
+def _fair_windows(cases: Sequence[CaseData]) -> dict[str, tuple[float, float, str]]:
+    common_groups: dict[str, list[CaseData]] = defaultdict(list)
+    for case in cases:
+        if case.spec.fair_window_mode == "common_valid_overlap":
+            common_groups[case.spec.comparison_group].append(case)
+    windows: dict[str, tuple[float, float, str]] = {}
+    for group, grouped_cases in common_groups.items():
+        start = max(float(np.min(_valid_times(case))) for case in grouped_cases)
+        end = min(float(np.max(_valid_times(case))) for case in grouped_cases)
+        if not end > start:
+            raise ValueError(f"comparison group {group!r}: common valid window is empty")
+        for case in grouped_cases:
+            windows[case.spec.case_id] = (
+                start,
+                end,
+                f"common_valid_overlap:{group}",
+            )
+    for case in cases:
+        mode = case.spec.fair_window_mode
+        if mode == "common_valid_overlap":
+            continue
+        if case.spec.fair_window_start_ns is None or case.spec.fair_window_end_ns is None:
+            raise ValueError(
+                f"{case.spec.case_id}: {mode} requires fair_window_start_ns and fair_window_end_ns"
+            )
+        start, end = case.spec.fair_window_start_ns, case.spec.fair_window_end_ns
+        if mode == "attachment_relative":
+            if case.spec.attachment_time_ns is None:
+                raise ValueError(
+                    f"{case.spec.case_id}: attachment_relative window requires attachment_time_ns"
+                )
+            start += case.spec.attachment_time_ns
+            end += case.spec.attachment_time_ns
+        if not end > start:
+            raise ValueError(f"{case.spec.case_id}: fair window must have positive duration")
+        windows[case.spec.case_id] = (start, end, mode)
+    return windows
+
+
+def _time_mean_frame_metric(case: CaseData, field: str) -> float:
+    return _nanmean(
+        _float(row.get(field))
+        for row in case.frames
+        if row.get("contour_valid") == "True"
+    )
+
+
 def build_case_summary(cases: Sequence[CaseData], cluster_rows: Sequence[dict]) -> list[dict]:
     clusters_by_case: dict[str, list[dict]] = defaultdict(list)
     for row in cluster_rows:
         clusters_by_case[row["case_id"]].append(row)
-    droplets = [case for case in cases if case.spec.kind == "nanodroplet"]
-    droplet_start = max(float(np.min(_valid_times(case))) for case in droplets)
-    droplet_end = min(float(np.max(_valid_times(case))) for case in droplets)
+    fair_windows = _fair_windows(cases)
     rows = []
     for case in cases:
         valid = _valid_times(case)
         interval_ns = float(case.summary["frame_interval_ps"]) / 1000.0
         clusters = clusters_by_case[case.spec.case_id]
-        if case.spec.kind == "nanobubble":
-            if case.spec.attachment_time_ns is None:
-                raise ValueError(f"{case.spec.case_id}: bubble attachment time is missing")
-            fair_start = case.spec.attachment_time_ns
-            fair_end = fair_start + 3.5
-            fair_name = "attachment_relative_0_3.5_ns"
-        else:
-            fair_start, fair_end = droplet_start, droplet_end
-            fair_name = "common_valid_window"
+        fair_start, fair_end, fair_name = fair_windows[case.spec.case_id]
         all_times = np.asarray([_float(row["time_ns"]) for row in case.frames])
         fair_total_frames = int(np.sum((all_times >= fair_start) & (all_times <= fair_end)))
         fair_frames = int(np.sum((valid >= fair_start) & (valid <= fair_end)))
@@ -387,6 +671,15 @@ def build_case_summary(cases: Sequence[CaseData], cluster_rows: Sequence[dict]) 
                 ),
                 "localization_noise_A": float(case.summary["localization_noise_A"]),
                 "jump_threshold_A": float(case.summary["jump_threshold_A"]),
+                "time_mean_tpcl_radius_A": _time_mean_frame_metric(
+                    case, "contact_line_mean_radius_A"
+                ),
+                "time_mean_footprint_area_A2": _time_mean_frame_metric(
+                    case, "contact_line_area_A2"
+                ),
+                "time_mean_contact_line_circularity": _time_mean_frame_metric(
+                    case, "contact_line_circularity"
+                ),
                 "candidate_event_clusters": len(clusters),
                 "candidate_arc_records": int(case.summary["candidate_arc_record_count"]),
                 "insufficient_repetition_arc_records": status_counts["insufficient_repetition"],
@@ -822,226 +1115,110 @@ def _case_color(fraction: float):
     return colormaps["viridis"](fraction)
 
 
-def write_figures(
+def _kind_styles(cases: Sequence[CaseData]) -> dict[str, tuple[str, str]]:
+    markers = ("o", "s", "^", "D", "v", "P", "X")
+    lines = ("-", "--", ":", "-.")
+    kinds = sorted({case.spec.kind for case in cases})
+    return {
+        kind: (markers[index % len(markers)], lines[index % len(lines)])
+        for index, kind in enumerate(kinds)
+    }
+
+
+def _write_no_event_figures(
     cases: Sequence[CaseData],
     case_rows: Sequence[dict],
-    clusters: Sequence[dict],
     block_bootstrap_rows: Sequence[dict],
-    event_delta_rows: Sequence[dict],
-    aligned_summary: Sequence[dict],
-    null_rows: Sequence[dict],
     sensitivity_rows: Sequence[dict],
-    output: Path,
-    font_path: Path,
+    figures: Path,
+    styles: Mapping[str, tuple[str, str]],
+    plt,
 ) -> None:
-    _configure_matplotlib(font_path)
-    from matplotlib import pyplot as plt
+    """Write condition-level figures when no registered event is available."""
+    kinds = sorted({case.spec.kind for case in cases})
 
-    figures = output / "figures"
-    figures.mkdir()
-    figure, axes = plt.subplots(3, 1, figsize=(7.2, 8.5), sharex=True)
-    for kind, marker in (("nanobubble", "o"), ("nanodroplet", "s")):
-        rows = sorted((row for row in case_rows if row["kind"] == kind), key=lambda row: row["ch3_fraction"])
-        x = [row["ch3_fraction"] for row in rows]
-        axes[0].plot(
-            x,
-            [
-                row["fair_event_rate_per_valid_ns"]
-                if row["fair_window_comparison_status"] == "ADMITTED"
-                else math.nan
-                for row in rows
-            ],
-            marker=marker,
-            fillstyle="none",
-            label=kind,
-        )
-        axes[1].plot(
-            x,
-            [row["localization_noise_A"] for row in rows],
-            marker=marker,
-            fillstyle="none",
-            label=kind,
-        )
-        axes[2].plot(
-            x,
-            [row["fair_contour_coverage_fraction"] for row in rows],
-            marker=marker,
-            fillstyle="none",
-            label=kind,
-        )
-    axes[0].set_ylabel(r"Candidate clusters ns$^{-1}$")
-    axes[1].set_ylabel(r"Localization noise (Å)")
-    axes[2].set_ylabel("Fair-window contour coverage")
-    axes[2].set_xlabel(r"CH$_3$ site fraction")
-    axes[0].legend(frameon=False)
-    for axis in axes:
-        axis.spines[["top", "right"]].set_visible(False)
-    figure.tight_layout()
-    _save_figure(figure, figures / "01_eight_case_summary")
-    plt.close(figure)
-
-    plotted_metrics = TRACE_METRICS[:4]
-    figure, axes = plt.subplots(2, 2, figsize=(9.0, 7.0), sharex=True)
-    labels = {
-        "local_hydration_areal_density_A-2": r"Hydration density change (Å$^{-2}$)",
-        "local_water_water_hbond_degree": "Water H-bond degree change",
-        "local_surface_water_hbond_per_h2o": r"Surface--water H-bond change per H$_2$O",
-        "local_n2_contact_count": r"Local N$_2$ contact change",
-    }
-    for axis, metric in zip(axes.flat, plotted_metrics):
-        lag_grid = sorted(
-            {row["lag_ps"] for row in aligned_summary if row["metric"] == metric}
-        )
-        for case in cases:
+    def draw_case_metric(axis, field: str, label: str) -> None:
+        for kind in kinds:
+            marker, line = styles[kind]
             rows = sorted(
-                (
-                    row
-                    for row in aligned_summary
-                    if row["case_id"] == case.spec.case_id and row["metric"] == metric
-                ),
-                key=lambda row: row["lag_ps"],
+                (row for row in case_rows if row["kind"] == kind),
+                key=lambda row: row["ch3_fraction"],
             )
-            if not rows:
-                continue
-            values_by_lag = {row["lag_ps"]: row["mean_delta"] for row in rows}
             axis.plot(
-                lag_grid,
-                [values_by_lag.get(lag, math.nan) for lag in lag_grid],
-                color=_case_color(case.spec.ch3_fraction),
-                linestyle="-" if case.spec.kind == "nanobubble" else "--",
-                label=case.spec.case_id,
-            )
-        axis.axvline(0.0, color="0.5", lw=0.8)
-        axis.axhline(0.0, color="0.75", lw=0.6)
-        axis.set_ylabel(labels[metric])
-        axis.spines[["top", "right"]].set_visible(False)
-    axes[1, 0].set_xlabel("Time from candidate transition (ps)")
-    axes[1, 1].set_xlabel("Time from candidate transition (ps)")
-    handles, legend_labels = axes[0, 0].get_legend_handles_labels()
-    if handles:
-        figure.legend(handles, legend_labels, frameon=False, ncol=4, loc="upper center")
-        figure.tight_layout(rect=(0, 0, 1, 0.92))
-    else:
-        axes[0, 0].text(0.5, 0.5, "No repeated candidate clusters", ha="center", transform=axes[0, 0].transAxes)
-        figure.tight_layout()
-    _save_figure(figure, figures / "02_event_aligned_environment")
-    plt.close(figure)
-
-    figure, axes = plt.subplots(1, 2, figsize=(9.0, 4.0))
-    for index, case_id in enumerate(sorted({row["case_id"] for row in null_rows})):
-        rows = [row for row in null_rows if row["case_id"] == case_id]
-        null = [row["boundary_event_fraction"] for row in rows if not row["is_observed"]]
-        observed = next(row["boundary_event_fraction"] for row in rows if row["is_observed"])
-        axes[0].scatter(
-            np.full(len(null), index),
-            null,
-            s=18,
-            facecolors="none",
-            edgecolors="0.55",
-        )
-        axes[0].scatter(index, observed, marker="D", color="black", s=35)
-        null_distance = [row["mean_boundary_proxy_A"] for row in rows if not row["is_observed"]]
-        observed_distance = next(row["mean_boundary_proxy_A"] for row in rows if row["is_observed"])
-        axes[1].scatter(
-            np.full(len(null_distance), index),
-            null_distance,
-            s=18,
-            facecolors="none",
-            edgecolors="0.55",
-        )
-        axes[1].scatter(index, observed_distance, marker="D", color="black", s=35)
-    labels = sorted({row["case_id"] for row in null_rows})
-    for axis in axes:
-        axis.set_xticks(range(len(labels)), labels, rotation=25, ha="right")
-        axis.spines[["top", "right"]].set_visible(False)
-    axes[0].set_ylabel("Boundary-associated event fraction")
-    axes[1].set_ylabel(r"Mean boundary proxy (Å)")
-    if not labels:
-        for axis in axes:
-            axis.text(0.5, 0.5, "No mixed-case candidate clusters", ha="center", transform=axis.transAxes)
-    figure.tight_layout()
-    _save_figure(figure, figures / "03_chemistry_circular_shift_null")
-    plt.close(figure)
-
-    bubbles = [case for case in cases if case.spec.kind == "nanobubble"]
-    figure, axes = plt.subplots(len(bubbles), 2, figsize=(9.0, 2.2 * len(bubbles)), squeeze=False)
-    clusters_by_case: dict[str, list[dict]] = defaultdict(list)
-    for row in clusters:
-        clusters_by_case[row["case_id"]].append(row)
-    for row_index, case in enumerate(sorted(bubbles, key=lambda item: -item.spec.ch3_fraction)):
-        time = np.asarray([_float(row["time_ns"]) for row in case.frames])
-        radius = np.asarray([_float(row["decomposed_mean_radius_A"]) for row in case.frames])
-        valid = np.isfinite(radius)
-        color = _case_color(case.spec.ch3_fraction)
-        axes[row_index, 0].plot(time, radius, color=color, lw=0.8)
-        relative = time - float(case.spec.attachment_time_ns)
-        common = valid & (relative >= 0.0) & (relative <= 3.5)
-        baseline = _nanmean(radius[common][:5]) if np.any(common) else math.nan
-        common_radius = np.where(common, radius - baseline, math.nan)
-        axes[row_index, 1].plot(relative, common_radius, color=color, lw=0.8)
-        for event in clusters_by_case[case.spec.case_id]:
-            axes[row_index, 0].axvline(event["transition_time_ns"], color="black", lw=0.4, alpha=0.45)
-            event_relative = event["transition_time_ns"] - float(case.spec.attachment_time_ns)
-            if 0.0 <= event_relative <= 3.5:
-                axes[row_index, 1].axvline(event_relative, color="black", lw=0.4, alpha=0.45)
-        axes[row_index, 0].set_ylabel(case.spec.case_id)
-        axes[row_index, 0].spines[["top", "right"]].set_visible(False)
-        axes[row_index, 1].spines[["top", "right"]].set_visible(False)
-    axes[-1, 0].set_xlabel("Absolute time (ns)")
-    axes[-1, 1].set_xlabel("Time after attachment (ns)")
-    axes[0, 0].set_title(r"Mean $R_{CL}$ (Å)")
-    axes[0, 1].set_title(r"Common-window $\Delta R_{CL}$ (Å)")
-    figure.tight_layout()
-    _save_figure(figure, figures / "04_bubble_absolute_attachment_time")
-    plt.close(figure)
-
-    figure, axes = plt.subplots(1, 2, figsize=(9.0, 4.0), sharex=True)
-    for kind, marker in (("nanobubble", "o"), ("nanodroplet", "s")):
-        for multiplier in sorted({row["jump_threshold_multiplier"] for row in sensitivity_rows}):
-            rows = sorted(
-                (
-                    row
-                    for row in sensitivity_rows
-                    if row["kind"] == kind and row["jump_threshold_multiplier"] == multiplier
-                ),
-                key=lambda row: row["case_id"],
-            )
-            axis = axes[0] if kind == "nanobubble" else axes[1]
-            axis.plot(
-                range(len(rows)),
-                [row["retained_repeated_event_clusters"] for row in rows],
+                [row["ch3_fraction"] for row in rows],
+                [row[field] for row in rows],
                 marker=marker,
                 fillstyle="none",
-                label=f"{multiplier:.2g}x",
+                linestyle=line,
+                label=kind,
             )
-            axis.set_xticks(range(len(rows)), [row["case_id"] for row in rows], rotation=30, ha="right")
-            axis.set_title(kind)
-            axis.set_ylabel("Retained repeated clusters")
-            axis.spines[["top", "right"]].set_visible(False)
-    axes[0].legend(frameon=False, title="Jump threshold")
+        axis.set_ylabel(label)
+        axis.spines[["top", "right"]].set_visible(False)
+
+    figure, axes = plt.subplots(2, 2, figsize=(9.4, 7.2), sharex=True)
+    draw_case_metric(axes[0, 0], "time_mean_tpcl_radius_A", r"Mean TPCL radius (Å)")
+    draw_case_metric(axes[0, 1], "time_mean_footprint_area_A2", r"Footprint area (Å$^2$)")
+    draw_case_metric(
+        axes[1, 0],
+        "time_mean_contact_line_circularity",
+        "Contact-line circularity",
+    )
+    for kind in kinds:
+        marker, line = styles[kind]
+        rows = sorted(
+            (
+                row
+                for row in block_bootstrap_rows
+                if row["kind"] == kind and row["metric"] == "local_contact_angle_deg"
+            ),
+            key=lambda row: row["ch3_fraction"],
+        )
+        if rows:
+            means = np.asarray([row["mean"] for row in rows])
+            lower = means - np.asarray([row["bootstrap_ci025"] for row in rows])
+            upper = np.asarray([row["bootstrap_ci975"] for row in rows]) - means
+            axes[1, 1].errorbar(
+                [row["ch3_fraction"] for row in rows],
+                means,
+                yerr=np.vstack((lower, upper)),
+                marker=marker,
+                fillstyle="none",
+                linestyle=line,
+                capsize=2,
+                label=kind,
+            )
+    axes[1, 1].set_ylabel(r"Local contact angle (deg)")
+    axes[1, 1].spines[["top", "right"]].set_visible(False)
+    for axis in axes[1]:
+        axis.set_xlabel(r"CH$_3$ site fraction")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        axes[0, 0].legend(handles, labels, frameon=False)
+    figure.suptitle(
+        "Condition-level TPCL geometry; no repeated dwell--jump candidate detected",
+        y=0.995,
+    )
     figure.tight_layout()
-    _save_figure(figure, figures / "05_stricter_threshold_sensitivity")
+    _save_figure(figure, figures / "01_geometry_wetting_state")
     plt.close(figure)
 
-    figure, axes = plt.subplots(2, 1, figsize=(9.0, 6.5), sharex=False)
-    for axis, kind in zip(axes, ("nanobubble", "nanodroplet")):
-        rows = [row for row in clusters if row["kind"] == kind]
-        for row in rows:
-            axis.scatter(
-                row["transition_time_ns"],
-                row["theta_deg"],
-                s=30,
-                facecolors="none",
-                edgecolors=_case_color(float(row["ch3_fraction"])),
-            )
-        axis.set_title(kind)
-        axis.set_ylabel(r"Candidate angle $\theta$ (deg)")
+    ordered_cases = sorted(cases, key=lambda item: (item.spec.kind, item.spec.case_id))
+    figure, axes = plt.subplots(
+        len(ordered_cases),
+        1,
+        figsize=(8.0, max(2.2, 2.0 * len(ordered_cases))),
+        squeeze=False,
+    )
+    for axis, case in zip(axes[:, 0], ordered_cases):
+        time = np.asarray([_float(row["time_ns"]) for row in case.frames])
+        radius = np.asarray([_float(row["decomposed_mean_radius_A"]) for row in case.frames])
+        axis.plot(time, radius, color=_case_color(case.spec.ch3_fraction), lw=0.8)
+        axis.set_ylabel(case.spec.case_id)
         axis.spines[["top", "right"]].set_visible(False)
-        if not rows:
-            axis.text(0.5, 0.5, "No repeated candidate clusters", ha="center", transform=axis.transAxes)
-    axes[1].set_xlabel("Absolute time (ns)")
+    axes[-1, 0].set_xlabel("Absolute time (ns)")
+    axes[0, 0].set_title(r"Mean TPCL radius $R_{CL}$; no candidate transition was detected")
     figure.tight_layout()
-    _save_figure(figure, figures / "06_candidate_event_map")
+    _save_figure(figure, figures / "02_tpcl_radius_timeseries")
     plt.close(figure)
 
     metrics = (
@@ -1061,10 +1238,8 @@ def write_figures(
         if row["fair_window_comparison_status"] == "ADMITTED"
     }
     for axis, metric, label in zip(axes, metrics, metric_labels):
-        for kind, marker, linestyle in (
-            ("nanobubble", "o", "-"),
-            ("nanodroplet", "s", "--"),
-        ):
+        for kind in kinds:
+            marker, line = styles[kind]
             rows = sorted(
                 (
                     row
@@ -1075,75 +1250,280 @@ def write_figures(
                 ),
                 key=lambda row: row["ch3_fraction"],
             )
+            if rows:
+                means = np.asarray([row["mean"] for row in rows])
+                lower = means - np.asarray([row["bootstrap_ci025"] for row in rows])
+                upper = np.asarray([row["bootstrap_ci975"] for row in rows]) - means
+                axis.errorbar(
+                    [row["ch3_fraction"] for row in rows],
+                    means,
+                    yerr=np.vstack((lower, upper)),
+                    marker=marker,
+                    fillstyle="none",
+                    linestyle=line,
+                    capsize=2,
+                    label=kind,
+                )
+        axis.set_xlabel(r"CH$_3$ site fraction")
+        axis.set_ylabel(label)
+        axis.spines[["top", "right"]].set_visible(False)
+    if axes[0].get_legend_handles_labels()[0]:
+        axes[0].legend(frameon=False)
+    figure.suptitle("Condition-level TPCL environment; not event-aligned", y=1.02)
+    figure.tight_layout()
+    _save_figure(figure, figures / "03_block_environment_by_chemistry")
+    plt.close(figure)
+
+    figure, axis_grid = plt.subplots(
+        1,
+        len(kinds),
+        figsize=(4.5 * len(kinds), 4.0),
+        squeeze=False,
+    )
+    for axis, kind in zip(axis_grid[0], kinds):
+        marker, line = styles[kind]
+        for multiplier in sorted(
+            {row["jump_threshold_multiplier"] for row in sensitivity_rows}
+        ):
+            rows = sorted(
+                (
+                    row
+                    for row in sensitivity_rows
+                    if row["kind"] == kind
+                    and row["jump_threshold_multiplier"] == multiplier
+                ),
+                key=lambda row: row["case_id"],
+            )
+            if rows:
+                axis.plot(
+                    range(len(rows)),
+                    [row["retained_repeated_event_clusters"] for row in rows],
+                    marker=marker,
+                    fillstyle="none",
+                    linestyle=line,
+                    label=f"{multiplier:.2g}x",
+                )
+                axis.set_xticks(
+                    range(len(rows)),
+                    [row["case_id"] for row in rows],
+                    rotation=30,
+                    ha="right",
+                )
+        axis.set_title(kind)
+        axis.set_ylabel("Repeated candidate clusters")
+        axis.set_ylim(-0.1, 1.0)
+        axis.spines[["top", "right"]].set_visible(False)
+    if axis_grid[0, 0].get_legend_handles_labels()[0]:
+        axis_grid[0, 0].legend(frameon=False, title="Jump threshold")
+    figure.suptitle(
+        "No repeated dwell--jump candidate under baseline or stricter thresholds",
+        y=1.02,
+    )
+    figure.tight_layout()
+    _save_figure(figure, figures / "04_detector_robustness")
+    plt.close(figure)
+
+
+def write_figures(
+    cases: Sequence[CaseData],
+    case_rows: Sequence[dict],
+    clusters: Sequence[dict],
+    block_bootstrap_rows: Sequence[dict],
+    event_delta_rows: Sequence[dict],
+    aligned_summary: Sequence[dict],
+    null_rows: Sequence[dict],
+    sensitivity_rows: Sequence[dict],
+    output: Path,
+    font_path: Path,
+) -> None:
+    _configure_matplotlib(font_path)
+    from matplotlib import pyplot as plt
+
+    figures = output / "figures"
+    figures.mkdir()
+    kinds = sorted({case.spec.kind for case in cases})
+    styles = _kind_styles(cases)
+    if not clusters:
+        _write_no_event_figures(
+            cases,
+            case_rows,
+            block_bootstrap_rows,
+            sensitivity_rows,
+            figures,
+            styles,
+            plt,
+        )
+        return
+
+    figure, axes = plt.subplots(3, 1, figsize=(7.2, 8.5), sharex=True)
+    for kind in kinds:
+        marker, line = styles[kind]
+        rows = sorted((row for row in case_rows if row["kind"] == kind), key=lambda row: row["ch3_fraction"])
+        x = [row["ch3_fraction"] for row in rows]
+        axes[0].plot(x, [row["fair_event_rate_per_valid_ns"] if row["fair_window_comparison_status"] == "ADMITTED" else math.nan for row in rows], marker=marker, fillstyle="none", linestyle=line, label=kind)
+        axes[1].plot(x, [row["localization_noise_A"] for row in rows], marker=marker, fillstyle="none", linestyle=line, label=kind)
+        axes[2].plot(x, [row["fair_contour_coverage_fraction"] for row in rows], marker=marker, fillstyle="none", linestyle=line, label=kind)
+    axes[0].set_ylabel(r"Candidate clusters ns$^{-1}$")
+    axes[1].set_ylabel(r"Localization noise (Å)")
+    axes[2].set_ylabel("Fair-window contour coverage")
+    axes[2].set_xlabel(r"CH$_3$ site fraction")
+    if kinds:
+        axes[0].legend(frameon=False)
+    for axis in axes:
+        axis.spines[["top", "right"]].set_visible(False)
+    figure.tight_layout()
+    _save_figure(figure, figures / "01_case_summary")
+    plt.close(figure)
+
+    plotted_metrics = TRACE_METRICS[:4]
+    figure, axes = plt.subplots(2, 2, figsize=(9.0, 7.0), sharex=True)
+    labels = {
+        "local_hydration_areal_density_A-2": r"Hydration density change (Å$^{-2}$)",
+        "local_water_water_hbond_degree": "Water H-bond degree change",
+        "local_surface_water_hbond_per_h2o": r"Surface--water H-bond change per H$_2$O",
+        "local_n2_contact_count": r"Local N$_2$ contact change",
+    }
+    for axis, metric in zip(axes.flat, plotted_metrics):
+        lag_grid = sorted({row["lag_ps"] for row in aligned_summary if row["metric"] == metric})
+        for case in cases:
+            rows = sorted((row for row in aligned_summary if row["case_id"] == case.spec.case_id and row["metric"] == metric), key=lambda row: row["lag_ps"])
+            if not rows:
+                continue
+            values_by_lag = {row["lag_ps"]: row["mean_delta"] for row in rows}
+            axis.plot(lag_grid, [values_by_lag.get(lag, math.nan) for lag in lag_grid], color=_case_color(case.spec.ch3_fraction), linestyle=styles[case.spec.kind][1], label=case.spec.case_id)
+        axis.axvline(0.0, color="0.5", lw=0.8)
+        axis.axhline(0.0, color="0.75", lw=0.6)
+        axis.set_ylabel(labels[metric])
+        axis.spines[["top", "right"]].set_visible(False)
+    axes[1, 0].set_xlabel("Time from candidate transition (ps)")
+    axes[1, 1].set_xlabel("Time from candidate transition (ps)")
+    handles, legend_labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        figure.legend(handles, legend_labels, frameon=False, ncol=min(4, len(handles)), loc="upper center")
+        figure.tight_layout(rect=(0, 0, 1, 0.92))
+    else:
+        axes[0, 0].text(0.5, 0.5, "No repeated candidate clusters", ha="center", transform=axes[0, 0].transAxes)
+        figure.tight_layout()
+    _save_figure(figure, figures / "02_event_aligned_environment")
+    plt.close(figure)
+
+    figure, axes = plt.subplots(1, 2, figsize=(9.0, 4.0))
+    null_case_ids = sorted({row["case_id"] for row in null_rows})
+    for index, case_id in enumerate(null_case_ids):
+        rows = [row for row in null_rows if row["case_id"] == case_id]
+        observed_rows = [row for row in rows if row["is_observed"]]
+        if not observed_rows:
+            continue
+        observed = observed_rows[0]
+        axes[0].scatter(np.full(sum(not row["is_observed"] for row in rows), index), [row["boundary_event_fraction"] for row in rows if not row["is_observed"]], s=18, facecolors="none", edgecolors="0.55")
+        axes[0].scatter(index, observed["boundary_event_fraction"], marker="D", color="black", s=35)
+        axes[1].scatter(np.full(sum(not row["is_observed"] for row in rows), index), [row["mean_boundary_proxy_A"] for row in rows if not row["is_observed"]], s=18, facecolors="none", edgecolors="0.55")
+        axes[1].scatter(index, observed["mean_boundary_proxy_A"], marker="D", color="black", s=35)
+    for axis in axes:
+        axis.set_xticks(range(len(null_case_ids)), null_case_ids, rotation=25, ha="right")
+        axis.spines[["top", "right"]].set_visible(False)
+    axes[0].set_ylabel("Boundary-associated event fraction")
+    axes[1].set_ylabel(r"Mean boundary proxy (Å)")
+    if not null_case_ids:
+        for axis in axes:
+            axis.text(0.5, 0.5, "No mixed-case candidate clusters", ha="center", transform=axis.transAxes)
+    figure.tight_layout()
+    _save_figure(figure, figures / "03_chemistry_circular_shift_null")
+    plt.close(figure)
+
+    clusters_by_case: dict[str, list[dict]] = defaultdict(list)
+    for row in clusters:
+        clusters_by_case[row["case_id"]].append(row)
+    ordered_cases = sorted(cases, key=lambda item: (item.spec.kind, item.spec.case_id))
+    figure, axes = plt.subplots(len(ordered_cases), 1, figsize=(8.0, max(2.2, 2.0 * len(ordered_cases))), squeeze=False)
+    for axis, case in zip(axes[:, 0], ordered_cases):
+        time = np.asarray([_float(row["time_ns"]) for row in case.frames])
+        radius = np.asarray([_float(row["decomposed_mean_radius_A"]) for row in case.frames])
+        axis.plot(time, radius, color=_case_color(case.spec.ch3_fraction), lw=0.8)
+        for event in clusters_by_case[case.spec.case_id]:
+            axis.axvline(event["transition_time_ns"], color="black", lw=0.4, alpha=0.45)
+        axis.set_ylabel(case.spec.case_id)
+        axis.spines[["top", "right"]].set_visible(False)
+    axes[-1, 0].set_xlabel("Absolute time (ns)")
+    axes[0, 0].set_title(r"Mean TPCL radius $R_{CL}$ (Å); vertical lines are candidate transitions")
+    figure.tight_layout()
+    _save_figure(figure, figures / "04_case_radius_timeseries")
+    plt.close(figure)
+
+    figure, axis_grid = plt.subplots(1, len(kinds), figsize=(4.5 * len(kinds), 4.0), squeeze=False)
+    for axis, kind in zip(axis_grid[0], kinds):
+        marker, line = styles[kind]
+        for multiplier in sorted({row["jump_threshold_multiplier"] for row in sensitivity_rows}):
+            rows = sorted((row for row in sensitivity_rows if row["kind"] == kind and row["jump_threshold_multiplier"] == multiplier), key=lambda row: row["case_id"])
+            if rows:
+                axis.plot(range(len(rows)), [row["retained_repeated_event_clusters"] for row in rows], marker=marker, fillstyle="none", linestyle=line, label=f"{multiplier:.2g}x")
+                axis.set_xticks(range(len(rows)), [row["case_id"] for row in rows], rotation=30, ha="right")
+        axis.set_title(kind)
+        axis.set_ylabel("Retained repeated clusters")
+        axis.spines[["top", "right"]].set_visible(False)
+    if axis_grid[0, 0].get_legend_handles_labels()[0]:
+        axis_grid[0, 0].legend(frameon=False, title="Jump threshold")
+    figure.tight_layout()
+    _save_figure(figure, figures / "05_stricter_threshold_sensitivity")
+    plt.close(figure)
+
+    figure, axis_grid = plt.subplots(len(kinds), 1, figsize=(9.0, max(3.0, 2.8 * len(kinds))), squeeze=False)
+    for axis, kind in zip(axis_grid[:, 0], kinds):
+        rows = [row for row in clusters if row["kind"] == kind]
+        for row in rows:
+            axis.scatter(row["transition_time_ns"], row["theta_deg"], s=30, facecolors="none", edgecolors=_case_color(float(row["ch3_fraction"])))
+        axis.set_title(kind)
+        axis.set_ylabel(r"Candidate angle $\theta$ (deg)")
+        axis.spines[["top", "right"]].set_visible(False)
+        if not rows:
+            axis.text(0.5, 0.5, "No repeated candidate clusters", ha="center", transform=axis.transAxes)
+    axis_grid[-1, 0].set_xlabel("Absolute time (ns)")
+    figure.tight_layout()
+    _save_figure(figure, figures / "06_candidate_event_map")
+    plt.close(figure)
+
+    metrics = ("local_hydration_areal_density_A-2", "local_water_water_hbond_degree", "local_surface_water_hbond_per_h2o")
+    metric_labels = (r"Hydration density (Å$^{-2}$)", "Water H-bond degree", r"Surface--water H-bonds per H$_2$O")
+    figure, axes = plt.subplots(1, 3, figsize=(11.0, 3.8), sharex=True)
+    admitted_cases = {row["case_id"] for row in case_rows if row["fair_window_comparison_status"] == "ADMITTED"}
+    for axis, metric, label in zip(axes, metrics, metric_labels):
+        for kind in kinds:
+            marker, line = styles[kind]
+            rows = sorted((row for row in block_bootstrap_rows if row["kind"] == kind and row["metric"] == metric and row["case_id"] in admitted_cases), key=lambda row: row["ch3_fraction"])
             if not rows:
                 continue
             means = np.asarray([row["mean"] for row in rows])
             lower = means - np.asarray([row["bootstrap_ci025"] for row in rows])
             upper = np.asarray([row["bootstrap_ci975"] for row in rows]) - means
-            axis.errorbar(
-                [row["ch3_fraction"] for row in rows],
-                means,
-                yerr=np.vstack((lower, upper)),
-                marker=marker,
-                fillstyle="none",
-                linestyle=linestyle,
-                capsize=2,
-                label=kind,
-            )
+            axis.errorbar([row["ch3_fraction"] for row in rows], means, yerr=np.vstack((lower, upper)), marker=marker, fillstyle="none", linestyle=line, capsize=2, label=kind)
         axis.set_xlabel(r"CH$_3$ site fraction")
         axis.set_ylabel(label)
         axis.spines[["top", "right"]].set_visible(False)
-    axes[0].legend(frameon=False)
+    if axes[0].get_legend_handles_labels()[0]:
+        axes[0].legend(frameon=False)
     figure.tight_layout()
     _save_figure(figure, figures / "07_fair_window_block_environment")
     plt.close(figure)
 
-    delta_metrics = (
-        "local_hydration_areal_density_A-2",
-        "local_water_water_hbond_degree",
-        "local_surface_water_hbond_per_h2o",
-        "local_n2_contact_count",
-    )
-    delta_labels = (
-        r"Event $\Delta$ hydration (Å$^{-2}$)",
-        r"Event $\Delta$ water H-bond degree",
-        r"Event $\Delta$ surface H-bonds per H$_2$O",
-        r"Event $\Delta$ local N$_2$ contacts",
-    )
+    delta_metrics = ("local_hydration_areal_density_A-2", "local_water_water_hbond_degree", "local_surface_water_hbond_per_h2o", "local_n2_contact_count")
+    delta_labels = (r"Event $\Delta$ hydration (Å$^{-2}$)", r"Event $\Delta$ water H-bond degree", r"Event $\Delta$ surface H-bonds per H$_2$O", r"Event $\Delta$ local N$_2$ contacts")
     figure, axes = plt.subplots(2, 2, figsize=(9.0, 7.0), sharex=True)
     for axis, metric, label in zip(axes.flat, delta_metrics, delta_labels):
-        for kind, marker, linestyle in (
-            ("nanobubble", "o", "-"),
-            ("nanodroplet", "s", "--"),
-        ):
-            rows = sorted(
-                (
-                    row
-                    for row in event_delta_rows
-                    if row["kind"] == kind and row["metric"] == metric
-                ),
-                key=lambda row: row["ch3_fraction"],
-            )
+        for kind in kinds:
+            marker, line = styles[kind]
+            rows = sorted((row for row in event_delta_rows if row["kind"] == kind and row["metric"] == metric), key=lambda row: row["ch3_fraction"])
             if not rows:
                 continue
             means = np.asarray([row["mean_block_delta"] for row in rows])
             lower = means - np.asarray([row["bootstrap_ci025"] for row in rows])
             upper = np.asarray([row["bootstrap_ci975"] for row in rows]) - means
-            axis.errorbar(
-                [row["ch3_fraction"] for row in rows],
-                means,
-                yerr=np.vstack((lower, upper)),
-                marker=marker,
-                fillstyle="none",
-                linestyle=linestyle,
-                capsize=2,
-                label=kind,
-            )
+            axis.errorbar([row["ch3_fraction"] for row in rows], means, yerr=np.vstack((lower, upper)), marker=marker, fillstyle="none", linestyle=line, capsize=2, label=kind)
         axis.axhline(0.0, color="0.65", lw=0.7)
         axis.set_xlabel(r"CH$_3$ site fraction")
         axis.set_ylabel(label)
         axis.spines[["top", "right"]].set_visible(False)
-    axes[0, 0].legend(frameon=False)
+    if axes[0, 0].get_legend_handles_labels()[0]:
+        axes[0, 0].legend(frameon=False)
     figure.tight_layout()
     _save_figure(figure, figures / "08_event_delta_block_bootstrap")
     plt.close(figure)
@@ -1153,13 +1533,14 @@ def _write_report(
     path: Path,
     cases: Sequence[CaseData],
     case_rows: Sequence[dict],
+    important_rows: Sequence[dict],
     null_summary: Sequence[dict],
     event_delta_rows: Sequence[dict],
     seed: int,
     block_ps: float,
 ) -> None:
     lines = [
-        "# TPCL pinning--slip cross-case P0 comparison",
+        "# TPCL dwell--jump cross-case comparison",
         "",
         "Status: `PASS`",
         "",
@@ -1195,6 +1576,20 @@ def _write_report(
             f"{row['fair_contour_coverage_fraction']:.1%} contour coverage, "
             f"window `{row['fair_window']}`; "
             f"comparison `{row['fair_window_comparison_status']}`."
+        )
+    lines.extend(["", "## Time-mean geometry and block environment", ""])
+    for row in important_rows:
+        lines.append(
+            f"- `{row['case_id']}`: time-mean TPCL radius "
+            f"{row['time_mean_tpcl_radius_A']:.4g} A; footprint "
+            f"{row['time_mean_footprint_area_A2']:.4g} A^2; circularity "
+            f"{row['time_mean_contact_line_circularity']:.4g}; local contact angle "
+            f"{row['block_mean_local_contact_angle_deg']:.4g} deg "
+            f"(time-block 95% interval [{row['block_contact_angle_ci025_deg']:.4g}, "
+            f"{row['block_contact_angle_ci975_deg']:.4g}]); local hydration "
+            f"{row['block_mean_local_hydration_A-2']:.4g} A^-2 "
+            f"([{row['block_hydration_ci025_A-2']:.4g}, "
+            f"{row['block_hydration_ci975_A-2']:.4g}])."
         )
     lines.extend(
         [
@@ -1266,8 +1661,6 @@ def run_compare(
     if block_ps <= 0 or event_half_window_ps <= 0 or bootstrap_replicates < 100:
         raise ValueError("Comparison settings are outside their valid range")
     cases = [load_case(spec) for spec in read_case_manifest(manifest)]
-    if {case.spec.kind for case in cases} != {"nanobubble", "nanodroplet"}:
-        raise ValueError("Comparison requires both nanobubble and nanodroplet cases")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=False)
     clusters = [row for case in cases for row in cluster_summary(case)]
@@ -1295,6 +1688,7 @@ def run_compare(
                     **row,
                 }
             )
+    important_rows = build_important_data_rows(case_rows, bootstrap_rows)
     aligned = [row for case in cases for row in build_event_aligned_rows(case, event_half_window_ps)]
     aligned_summary = summarize_event_aligned(aligned)
     event_delta_rows = bootstrap_event_deltas(
@@ -1310,6 +1704,7 @@ def run_compare(
     ]
     tables = {
         "case_summary.csv": (case_rows, list(case_rows[0])),
+        "important_data.csv": (important_rows, list(IMPORTANT_DATA_FIELDS)),
         "contour_validity_intervals.csv": (
             validity_intervals,
             list(validity_intervals[0]),
@@ -1373,14 +1768,19 @@ def run_compare(
         output / "report.md",
         cases,
         case_rows,
+        important_rows,
         null_summary,
         event_delta_rows,
         seed,
         block_ps,
     )
+    _write_important_data_markdown(output / "IMPORTANT-DATA.md", important_rows)
+    _write_claim_ledger(output / "SCIENTIFIC-CLAIM-LEDGER.md", case_rows, null_summary)
     summary = {
         "status": "PASS",
         "case_count": len(cases),
+        "case_kinds": sorted({case.spec.kind for case in cases}),
+        "comparison_groups": sorted({case.spec.comparison_group for case in cases}),
         "upstream_jobs": {case.spec.case_id: case.job_id for case in cases},
         "candidate_event_clusters": len(clusters),
         "candidate_clusters_by_case": {

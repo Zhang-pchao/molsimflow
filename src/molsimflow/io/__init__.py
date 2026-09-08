@@ -10,6 +10,7 @@ from molsimflow.io.lammps_dump import (
     iter_lammps_dump_records,
     midpoint_minimum_image,
     minimum_image_vectors,
+    open_lammps_dump_text,
     periodic_center,
     write_lammps_dump_frame,
 )
@@ -24,7 +25,8 @@ __all__ = [
     "iter_lammps_dump_records",
     "midpoint_minimum_image",
     "minimum_image_vectors",
-    "periodic_center",
+    "open_lammps_dump_text",
     "parse_cp2k_energy_forces",
+    "periodic_center",
     "write_lammps_dump_frame",
 ]
