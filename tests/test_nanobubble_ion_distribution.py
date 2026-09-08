@@ -103,6 +103,8 @@ def test_dump_selection_and_bubble_coordinates(tmp_path: Path):
             "H3O_plus_candidate": empty,
             "OH_minus_candidate": empty,
         },
+        hydrogen_ids_by_oxygen={},
+        surface_hydrogen_donors={},
         frame=frame,
         time_ns=0.5,
         stages=("pre_attachment",),
@@ -118,6 +120,49 @@ def test_dump_selection_and_bubble_coordinates(tmp_path: Path):
     assert np.isclose(rows[0]["z_from_terminal_plane_A"], 16.0)
     assert np.isclose(rows[0]["r_minus_bubble_R90_A"], 1.0)
     assert np.isclose(rows[0]["nearest_main_n2_center_A"], 1.5)
+
+
+def test_ion_samples_preserve_surface_origin_hydrogen_provenance(tmp_path: Path):
+    frame = IonFrame(
+        tmp_path / "frame.dump",
+        0,
+        20,
+        np.array([[0.0, 20.0], [0.0, 20.0], [0.0, 20.0]]),
+        np.empty((0, 3)),
+        np.empty((0, 3)),
+        np.array([10]),
+        np.array([[12.0, 10.0, 8.0]]),
+        np.array([10]),
+        np.array([[12.0, 10.0, 8.0]]),
+        np.array([30, 31, 32]),
+        np.empty((3, 3)),
+        np.empty(0, dtype=int),
+        np.empty((0, 3)),
+        np.empty(0, dtype=int),
+        np.empty((0, 3)),
+    )
+    empty = (np.empty(0, dtype=int), np.empty((0, 3), dtype=float))
+    rows = build_ion_samples(
+        {
+            "Na_plus": empty,
+            "Cl_minus": empty,
+            "H3O_plus_candidate": (np.array([10]), np.array([[12.0, 10.0, 8.0]])),
+            "OH_minus_candidate": empty,
+        },
+        hydrogen_ids_by_oxygen={10: (30, 31, 32)},
+        surface_hydrogen_donors={31: 7},
+        frame=frame,
+        time_ns=0.00001,
+        stages=("late",),
+        top_si_z_A=2.0,
+        terminal_plane_z_A=3.0,
+        bubble_center=np.array([10.0, 10.0, 8.0]),
+        bubble_R90_A=1.0,
+        main_n2_centers=np.array([[10.0, 10.0, 8.0]]),
+    )
+    assert rows[0]["hydrogen_ids"] == "30;31;32"
+    assert rows[0]["surface_origin_hydrogen_ids"] == "31"
+    assert rows[0]["surface_origin_donor_ids"] == "7"
 
 
 def test_zst_dump_is_streamed_without_materializing_a_copy(tmp_path: Path):

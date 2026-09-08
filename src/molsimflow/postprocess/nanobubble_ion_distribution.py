@@ -49,6 +49,9 @@ SAMPLE_FIELDS = (
     "species",
     "formal_charge_e",
     "atom_id",
+    "hydrogen_ids",
+    "surface_origin_hydrogen_ids",
+    "surface_origin_donor_ids",
     "x_A",
     "y_A",
     "z_A",
@@ -330,6 +333,8 @@ def classify_mobile_species(
 def build_ion_samples(
     species: dict[str, tuple[np.ndarray, np.ndarray]],
     *,
+    hydrogen_ids_by_oxygen: dict[int, tuple[int, ...]],
+    surface_hydrogen_donors: dict[int, int],
     frame: IonFrame,
     time_ns: float,
     stages: Sequence[str],
@@ -368,6 +373,15 @@ def build_ion_samples(
                 radial,
                 nearest,
             ):
+                hydrogen_ids = hydrogen_ids_by_oxygen.get(int(atom_id), ())
+                surface_hydrogen_ids = tuple(
+                    hydrogen_id
+                    for hydrogen_id in hydrogen_ids
+                    if hydrogen_id in surface_hydrogen_donors
+                )
+                donor_ids = tuple(
+                    sorted({surface_hydrogen_donors[hydrogen_id] for hydrogen_id in surface_hydrogen_ids})
+                )
                 rows.append(
                     {
                         "stage": stage,
@@ -376,6 +390,11 @@ def build_ion_samples(
                         "species": name,
                         "formal_charge_e": SPECIES_CHARGE[name],
                         "atom_id": int(atom_id),
+                        "hydrogen_ids": ";".join(map(str, hydrogen_ids)),
+                        "surface_origin_hydrogen_ids": ";".join(
+                            map(str, surface_hydrogen_ids)
+                        ),
+                        "surface_origin_donor_ids": ";".join(map(str, donor_ids)),
                         "x_A": float(point[0]),
                         "y_A": float(point[1]),
                         "z_A": float(point[2]),
@@ -399,6 +418,7 @@ def analyze_frame(
     carbon_ids: np.ndarray,
     carbon_indices: np.ndarray,
     initial_sioh_ids: np.ndarray,
+    surface_hydrogen_donors: dict[int, int],
     surface_start: int,
     surface_reference,
     cluster_cutoff_A: float,
@@ -469,6 +489,8 @@ def analyze_frame(
     }
     samples = build_ion_samples(
         species,
+        hydrogen_ids_by_oxygen=grouped,
+        surface_hydrogen_donors=surface_hydrogen_donors,
         frame=frame,
         time_ns=time_ns,
         stages=stages,
@@ -535,6 +557,12 @@ def run_analysis(args: argparse.Namespace) -> dict:
         [int(site["atom_id"]) for site in sites if site["site_type"] == "SiOH"],
         dtype=int,
     )
+    surface_hydrogen_donors = {
+        int(hydrogen_id): int(site["atom_id"])
+        for site in sites
+        if site["site_type"] == "SiOH"
+        for hydrogen_id in site["_initial_hydrogen_ids"]
+    }
     surface_reference = load_surface_reference(
         args.reference_structure,
         args.surface_range,
@@ -576,6 +604,7 @@ def run_analysis(args: argparse.Namespace) -> dict:
                 carbon_ids=carbon_ids,
                 carbon_indices=carbon_indices,
                 initial_sioh_ids=initial_sioh_ids,
+                surface_hydrogen_donors=surface_hydrogen_donors,
                 surface_start=args.surface_range[0],
                 surface_reference=surface_reference,
                 cluster_cutoff_A=args.cluster_cutoff_A,
@@ -611,6 +640,11 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "initial_top_sioh_count": len(initial_sioh_ids),
         "species_count_ranges": species_ranges,
         "sample_rows": len(samples),
+        "surface_origin_h3o_sample_rows": sum(
+            row["species"] == "H3O_plus_candidate"
+            and bool(row["surface_origin_hydrogen_ids"])
+            for row in samples
+        ),
         "reactive_species_are_geometric_candidates": True,
         "formal_charges_are_species_labels_not_atomic_partial_charges": True,
         "gas_interface_is_main_n2_cluster_geometry_not_a_thermodynamic_dividing_surface": True,
@@ -642,6 +676,10 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "gas_cluster_definition": "largest PBC-connected cluster of consecutive N2 molecular centers",
         "bubble_R90_definition": "90th percentile radius of main-cluster N2 molecular centers",
         "nearest_gas_interface_proxy": "minimum distance to a main-cluster N2 molecular center",
+        "surface_origin_definition": (
+            "a current solution-oxygen H atom has the same atom ID as an H initially "
+            "assigned to a top-surface SiOH oxygen"
+        ),
         "top_si_window_A": args.top_si_window_A,
         "terminal_surface_z_A": args.terminal_surface_z_A,
         "surface_depth_A": args.surface_depth_A,
