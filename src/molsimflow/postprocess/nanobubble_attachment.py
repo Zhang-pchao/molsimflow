@@ -239,13 +239,25 @@ def run_analysis(args: argparse.Namespace) -> dict:
     raw_frames = 0
     stop = False
     last_bounds = None
+    minimum_steps = args.min_step or [0] * len(args.trajectory)
+    maximum_steps = args.max_step or [None] * len(args.trajectory)
+    if len(minimum_steps) != len(args.trajectory) or len(maximum_steps) != len(args.trajectory):
+        raise ValueError("--min-step and --max-step must be supplied once per --trajectory")
+    if any(lower < 0 for lower in minimum_steps):
+        raise ValueError("--min-step must be non-negative")
+    if any(upper is not None and upper < lower for lower, upper in zip(minimum_steps, maximum_steps)):
+        raise ValueError("--max-step must be at least its corresponding --min-step")
     surface_reference = (
         load_surface_reference(args.reference_structure, args.surface_range, args.surface_z_A)
         if args.reference_structure is not None
         else None
     )
-    for trajectory in args.trajectory:
+    for trajectory, minimum_step, maximum_step in zip(args.trajectory, minimum_steps, maximum_steps):
         for frame in iter_selected_frames(trajectory, args.surface_range, args.nitrogen_range):
+            if frame.step < minimum_step:
+                continue
+            if maximum_step is not None and frame.step > maximum_step:
+                break
             raw_frames += 1
             last_bounds = frame.bounds
             surface_z = (
@@ -304,7 +316,14 @@ def run_analysis(args: argparse.Namespace) -> dict:
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     manifest = {
-        "trajectories": [str(Path(path).resolve()) for path in args.trajectory],
+        "trajectories": [
+            {
+                "path": str(Path(path).resolve()),
+                "min_step": lower,
+                "max_step": upper,
+            }
+            for path, lower, upper in zip(args.trajectory, minimum_steps, maximum_steps)
+        ],
         "surface_atom_range": list(args.surface_range),
         "nitrogen_atom_range": list(args.nitrogen_range),
         "restart_policy": "later segment replaces earlier frame at duplicate timestep",
@@ -328,6 +347,8 @@ def run_analysis(args: argparse.Namespace) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trajectory", type=Path, action="append", required=True)
+    parser.add_argument("--min-step", type=int, action="append")
+    parser.add_argument("--max-step", type=int, action="append")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-stem", default="attachment_kinetics")
     parser.add_argument("--surface-range", type=parse_range, required=True)
