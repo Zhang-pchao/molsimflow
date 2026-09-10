@@ -87,8 +87,10 @@ The frame weight is `exp(beta * mean_b B(q_b))`.  Per-bead weights and
 backend contract.  The frame-mean CV is emitted only as a diagnostic sampling
 coordinate; the quantum target remains the weighted bead distribution.
 
-`quasi_static: true` records an analysis assumption; it does not prove that an
-adaptive OPES trajectory has reached that regime.  The OPES log weight is
+The JSON boolean `quasi_static: true` is required for `quasi_static_opes`.
+Missing values, `false`, strings, and numbers are rejected; legacy contracts
+must explicitly declare this assumption before analysis. This declaration does
+not prove that an adaptive OPES trajectory has reached that regime.  The OPES log weight is
 `+opes.bias / kBT`.  `opes.rct` is retained only as a diagnostic and is never
 subtracted from the weight.
 
@@ -141,6 +143,17 @@ centroid_coord:       U = B(Q(R_centroid))
 bead_mean:            U = B(mean_b q_b)
 bead_density_shared:  U = mean_b B(q_b)
 ```
+
+The histogram API `quantum_fes_1d` preserves primary probability support even
+when individual bead histograms do not overlap. Its `probability_support` mask
+marks finite primary bins; the backward-compatible `support` mask marks bins
+where both estimators are finite. Zero-count bins stay infinite, and both
+curves use the primary minimum as their common zero. An empty primary support
+is rejected. KDE plots have their own density-support masks.
+
+Log frame weights are normalized after removing their maximum, so changing a
+finite energy zero does not change normalization. A conditioning bin whose
+normalized mass underflows to zero contributes zero to the decomposition.
 
 The core API provides a weighted conditional decomposition as an independent
 finite-sample regression.  Its histogram mass must agree with the direct route

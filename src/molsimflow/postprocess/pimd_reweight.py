@@ -16,6 +16,7 @@ import numpy as np
 
 from molsimflow.postprocess.pimd_fes import (
     frame_log_weights,
+    normalized_log_weights as _normalized_log_weights,
     restart_unique_indices,
     total_bias_energy,
     validate_bias_mode,
@@ -139,10 +140,8 @@ def logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray | float
 
 
 def normalized_log_weights(raw: Sequence[float]) -> np.ndarray:
-    raw_array = np.asarray(raw, dtype=float)
-    require(raw_array.ndim == 1 and raw_array.size > 0, "empty log weights")
-    require(np.isfinite(raw_array).all(), "non-finite log weights")
-    return raw_array - float(logsumexp(raw_array))
+    """Normalize frame weights while preserving the workflow keyword API."""
+    return _normalized_log_weights(raw)
 
 
 def cumulative_weight_diagnostics(
@@ -2303,7 +2302,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     kbt_ev = float(reweight["kbt_eV"])
     expected_kbt = KB_EV_PER_K * float(reweight["temperature_K"])
     require(abs(kbt_ev - expected_kbt) <= 1e-12, "kBT/temperature mismatch")
-    quasi_static_declared = bool(reweight.get("quasi_static", True))
+    quasi_static_declared = reweight.get("quasi_static") is True
     if weight_kind == "precomputed":
         log_weight_column = str(reweight["log_weight_column"])
         raw_log_weights = frame_log_weights(

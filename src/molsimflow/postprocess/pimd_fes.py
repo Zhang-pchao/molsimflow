@@ -24,7 +24,8 @@ def normalized_log_weights(values: Sequence[float] | np.ndarray) -> np.ndarray:
     _require(raw.ndim == 1 and raw.size > 0, "log weights must be a nonempty vector")
     _require(np.isfinite(raw).all(), "log weights must be finite")
     maximum = float(np.max(raw))
-    return raw - (maximum + math.log(float(np.sum(np.exp(raw - maximum)))))
+    shifted = raw - maximum
+    return shifted - math.log(float(np.sum(np.exp(shifted))))
 
 
 def validate_bias_mode(value: str) -> str:
@@ -223,6 +224,8 @@ def quantum_histogram_masses(
             if not np.any(mask):
                 continue
             marginal = float(np.sum(weights[mask]))
+            if marginal == 0.0:
+                continue
             for bead in range(values.shape[1]):
                 conditional += (
                     marginal
@@ -245,7 +248,14 @@ def quantum_fes_1d(
     *,
     kbt: float,
 ) -> Dict[str, np.ndarray]:
-    """Return probability-mean and same-zero bead-logmean free energies."""
+    """Return probability-mean and same-zero bead-logmean free energies.
+
+    The primary FES uses all bins with positive bead-averaged probability.
+    The logmean diagnostic is infinite wherever any bead has zero mass.
+    Both use the primary FES minimum as their common zero.  The legacy
+    support key denotes common support for comparing the two estimators;
+    probability_support describes the primary result independently.
+    """
 
     _require(np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
     edges = np.asarray(bin_edges, dtype=float)
@@ -256,9 +266,10 @@ def quantum_fes_1d(
     with np.errstate(divide="ignore"):
         raw_eq8 = -float(kbt) * np.log(direct_density)
         raw_eq10 = np.mean(-float(kbt) * np.log(bead_density), axis=0)
-    common = np.isfinite(raw_eq8) & np.isfinite(raw_eq10)
-    _require(np.any(common), "no common finite Eq. 8/Eq. 10 support")
-    zero = float(np.min(raw_eq8[common]))
+    probability_support = np.isfinite(raw_eq8)
+    common = probability_support & np.isfinite(raw_eq10)
+    _require(np.any(probability_support), "no finite probability-mean support")
+    zero = float(np.min(raw_eq8[probability_support]))
     probability_mean = raw_eq8 - zero
     logmean_diagnostic = raw_eq10 - zero
     return {
@@ -268,5 +279,6 @@ def quantum_fes_1d(
         "eq8": probability_mean,
         "eq10": logmean_diagnostic,
         "support": common,
+        "probability_support": probability_support,
         "centers": 0.5 * (edges[:-1] + edges[1:]),
     }

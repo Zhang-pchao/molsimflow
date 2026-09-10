@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
+import pytest
 
 from molsimflow.postprocess.pimd_fes import (
     assemble_bead_frames,
@@ -506,7 +507,21 @@ def test_ring_polymer_spread_uses_only_requested_trajectory_steps():
         assert [int(row["step"]) for row in rows] == [0, 2]
 
 
-def test_core_profile_runs_one_generic_cv_with_precomputed_weights():
+@pytest.mark.parametrize(
+    "weight_kind, declaration, rejected",
+    [
+        ("precomputed", None, False),
+        ("fixed_bias", None, False),
+        ("quasi_static_opes", True, False),
+        ("quasi_static_opes", None, True),
+        ("quasi_static_opes", False, True),
+        ("quasi_static_opes", "false", True),
+        ("quasi_static_opes", 1, True),
+    ],
+)
+def test_core_profile_runs_one_generic_cv_with_declared_weights(
+    weight_kind, declaration, rejected,
+):
     def write_plumed(path, fields, rows):
         body = ["#! FIELDS " + " ".join(fields)]
         body.extend(" ".join(f"{value:.12g}" for value in row) for row in rows)
@@ -568,9 +583,18 @@ def test_core_profile_runs_one_generic_cv_with_precomputed_weights():
             },
             "plots": {"cv_labels": {"coordination": "Coordination number"}},
         }
+        contract["reweight"]["weight_kind"] = weight_kind
+        if weight_kind != "precomputed":
+            contract["reweight"]["bias_column"] = "logw"
+        if declaration is not None:
+            contract["reweight"]["quasi_static"] = declaration
         contract_path = root / "contract.json"
         contract_path.write_text(json.dumps(contract), encoding="utf-8")
         output = root / "analysis"
+        if rejected:
+            with pytest.raises(ValueError, match="quasi-static OPES must be declared explicitly"):
+                analyze(contract_path, output)
+            return
         summary = analyze(contract_path, output)
         assert summary["status"] == "PASS"
         assert summary["analysis_profile"] == "core"
