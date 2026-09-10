@@ -75,3 +75,41 @@ def test_invalid_block_layout_is_rejected(size):
 def test_invalid_reference_is_rejected(reference):
     with pytest.raises(ValueError):
         estimate(reference_bin=reference)
+
+@pytest.mark.parametrize("state_log_weight", [0.0, np.log(2.0)])
+def test_repeated_bernoulli_ensemble_calibrates_block_variance(state_log_weight):
+    """Compare ensemble and jackknife variance with a Bernoulli delta-method oracle."""
+    rng = np.random.default_rng(20260910)
+    independent_frames = 256
+    probability = 0.35
+    repetition = 8
+    estimates = []
+    variances = []
+    for _ in range(128):
+        independent = rng.binomial(1, probability, size=independent_frames)
+        values = np.repeat(independent, repetition).astype(float)
+        result = quantum_fes_block_jackknife_1d(
+            values[:, None],
+            state_log_weight * values,
+            [-0.5, 0.5, 1.5],
+            kbt=1.0,
+            block_size=16 * repetition,
+            reference_bin=0,
+        )
+        estimates.append(result["free_energy_difference"][1])
+        variances.append(result["standard_error"][1] ** 2)
+
+    # F = -log(exp(a)*p/(1-p)); dF/dp = -1/(p*(1-p)).
+    # Repeated observations are fully correlated; N counts original draws only.
+    expected_variance = 1 / (independent_frames * probability * (1 - probability))
+    empirical_variance = np.var(estimates, ddof=1)
+    mean_variance = np.mean(variances)
+    # 128 replicates give about 13% relative MC error for a variance estimate.
+    # These predeclared 40% envelopes test calibration, not exact finite-N equality.
+    assert 0.6 < empirical_variance / expected_variance < 1.4
+    assert 0.6 < mean_variance / expected_variance < 1.4
+    assert 0.6 < mean_variance / empirical_variance < 1.4
+    true_difference = -state_log_weight - np.log(probability / (1 - probability))
+    assert abs(np.mean(estimates) - true_difference) < 4 * np.sqrt(
+        expected_variance / len(estimates)
+    )

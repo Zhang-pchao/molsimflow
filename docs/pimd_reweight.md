@@ -278,3 +278,19 @@ The current implementation recomputes each deleted-block histogram for stable
 normalization, costing O(B*N*P) for B blocks, N frames and P beads. It is an
 explicit 1D histogram API; it is not yet wired into the CLI KDE reports or
 the 2D estimator. Existing CLI block diagnostics retain their original meaning.
+
+
+### Statistical regression coverage
+
+A fixed-seed ensemble regression uses independent Bernoulli draws repeated
+eight times to create exactly known within-cluster correlation. Both uniform
+weights and state-dependent importance weights are checked against the
+analytic free-energy difference and its large-sample delta-method variance.
+The independent sample count is the number of original draws, not repeated
+frames. Ensemble variance, mean jackknife variance and their ratio are checked
+with finite-ensemble tolerances; this is not an exact finite-sample identity.
+
+This provides calibration for a controlled stationary two-state model.
+It does not validate arbitrary correlation tails, adaptive bias histories,
+rare-event support, KDE bandwidth bias or confidence-interval coverage.
+Users still need block-length sensitivity and independent-replica comparisons.
