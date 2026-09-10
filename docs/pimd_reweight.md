@@ -246,3 +246,35 @@ Timestamp alignment accepts roundoff on either side of a source timestamp,
 including endpoints, within a finite nonnegative tolerance (default `1e-8` in
 the supplied time units). Every target must match exactly one distinct source
 frame. Missing or ambiguous matches are rejected; no interpolation is performed.
+
+## Block jackknife for one-dimensional histogram FES
+
+The library API `pimd_fes.quantum_fes_block_jackknife_1d` estimates standard
+errors of probability-mean FES differences relative to an explicitly selected
+`reference_bin`. It accepts the same complete-frame bead CVs, log weights and
+bin edges as `quantum_fes_1d`, plus `block_size` in frames.
+
+All beads remain together when a contiguous block is deleted. Blocks must be
+equal-sized and cover every frame; no tail is silently discarded. Each
+leave-one-block-out estimate renormalizes its retained weights independently,
+including when the deleted block carried nearly all the original weight.
+Unequal bin widths are included in the density ratio.
+
+For B deleted-block estimates theta_b, the reported standard error is
+sqrt((B-1)/B * sum_b (theta_b - mean(theta))^2). The point estimate remains
+the full-data FES difference. A fixed reference avoids changing the free-energy
+zero separately in every replicate. If the reference loses support on any
+deletion, estimation fails. Other bins losing support have a false support
+mask and NaN standard error, never an artificial zero.
+
+Choose blocks longer than the relevant correlation scale and examine stability
+over block lengths while retaining enough blocks. The mathematical minimum
+of two blocks is not evidence of a reliable error estimate. This function
+does not determine correlation times, certify independence or generate
+confidence intervals. Duplicating beads cannot increase statistical sample
+size. Adaptive-bias weighting assumptions still require separate validation.
+
+The current implementation recomputes each deleted-block histogram for stable
+normalization, costing O(B*N*P) for B blocks, N frames and P beads. It is an
+explicit 1D histogram API; it is not yet wired into the CLI KDE reports or
+the 2D estimator. Existing CLI block diagnostics retain their original meaning.

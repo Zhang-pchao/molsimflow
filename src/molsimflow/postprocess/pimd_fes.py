@@ -282,3 +282,69 @@ def quantum_fes_1d(
         "probability_support": probability_support,
         "centers": 0.5 * (edges[:-1] + edges[1:]),
     }
+
+
+def quantum_fes_block_jackknife_1d(
+    bead_cv: Sequence[Sequence[float]] | np.ndarray,
+    log_frame_weights: Sequence[float] | np.ndarray,
+    bin_edges: Sequence[float] | np.ndarray,
+    *,
+    kbt: float,
+    block_size: int,
+    reference_bin: int,
+) -> dict[str, object]:
+    """Estimate standard errors of FES differences using contiguous frame blocks.
+
+    All beads of a frame stay together. Equal blocks must cover all frames;
+    the caller must choose blocks long enough to accommodate correlation.
+    This does not estimate autocorrelation times or assert block independence.
+    Unsupported bins receive NaN uncertainty, never zero uncertainty.
+    """
+    values = np.asarray(bead_cv, dtype=float)
+    weights = np.asarray(log_frame_weights, dtype=float)
+    full = quantum_fes_1d(values, weights, bin_edges, kbt=kbt)
+    _require(
+        isinstance(block_size, (int, np.integer)) and not isinstance(block_size, bool)
+        and block_size > 0, "block_size must be a positive integer",
+    )
+    block_size = int(block_size)
+    frames = len(values)
+    _require(frames % block_size == 0, "equal blocks must cover all frames")
+    blocks = frames // block_size
+    _require(blocks >= 2, "jackknife requires at least two blocks")
+    bins = len(full["probability_mean"])
+    _require(
+        isinstance(reference_bin, (int, np.integer)) and not isinstance(reference_bin, bool)
+        and 0 <= reference_bin < bins, "invalid reference_bin",
+    )
+    _require(full["probability_support"][reference_bin], "reference bin has no support")
+    estimates = []
+    for block in range(blocks):
+        keep = np.ones(frames, dtype=bool)
+        keep[block * block_size : (block + 1) * block_size] = False
+        # Normalize afresh so deleting a dominant-weight block remains stable.
+        partial = quantum_fes_1d(values[keep], weights[keep], bin_edges, kbt=kbt)
+        _require(
+            partial["probability_support"][reference_bin],
+            "reference bin loses support after block deletion",
+        )
+        curve = partial["probability_mean"]
+        estimates.append(curve - curve[reference_bin])
+    leave_one_out = np.asarray(estimates)
+    support = np.all(np.isfinite(leave_one_out), axis=0)
+    standard_error = np.full(bins, np.nan)
+    supported = leave_one_out[:, support]
+    standard_error[support] = np.sqrt(
+        (blocks - 1) / blocks
+        * np.sum((supported - np.mean(supported, axis=0)) ** 2, axis=0)
+    )
+    curve = full["probability_mean"]
+    return {
+        "free_energy_difference": curve - curve[reference_bin],
+        "standard_error": standard_error,
+        "support": support,
+        "reference_bin": int(reference_bin),
+        "block_size": int(block_size),
+        "blocks": int(blocks),
+        "leave_one_block_out": leave_one_out,
+    }
