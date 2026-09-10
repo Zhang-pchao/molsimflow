@@ -532,6 +532,8 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
     with TemporaryDirectory() as directory:
         root = Path(directory)
         times = np.arange(12, dtype=float)
+        sampling_times = times * 4.0
+        bead_times = times * 2.0
         # A biased three-state sample with exactly known target probabilities.
         centers = np.array([-0.75, 0.0, 0.75])
         counts = np.array([6, 3, 3])
@@ -546,13 +548,13 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         write_plumed(
             root / "sampling.colvar",
             ("time", "mean.coordination", "logw"),
-            zip(times, sampling_values, supplied_weights),
+            zip(sampling_times, sampling_values, supplied_weights),
         )
         for bead, values in enumerate(bead_values):
             write_plumed(
                 root / f"bead-{bead}.colvar",
                 ("time", "coordination"),
-                zip(times, values),
+                zip(bead_times, values),
             )
         manifest = root / "RAW-SHA256SUMS"
         manifest.write_text("".join(
@@ -569,6 +571,8 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
                 "bead_colvars": ["bead-0.colvar", "bead-1.colvar"],
                 "sampling_label": "Coordination mean",
                 "sampling_slug": "coordination_mean",
+                "sampling_time_scale_to_fs": 0.25,
+                "bead_time_scale_to_fs": 0.5,
             },
             "selection": {
                 "first_time_ps": 0.0,
@@ -664,6 +668,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             np.repeat(probabilities / counts, counts),
             rtol=1e-9, atol=1e-12,
         )
+        np.testing.assert_allclose(frames["time_ps"], times / 1000.0)
 
 
 @pytest.mark.parametrize("bias_mode", ["centroid_coord", "bead_mean", "bead_density_shared"])

@@ -213,6 +213,21 @@ def time_window_mask(
     )
 
 
+def time_scale_to_fs(value: object, label: str) -> float:
+    """Validate one explicit conversion from an input time column to fs."""
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {label}") from None
+    require(np.isfinite(scale) and scale > 0.0, f"invalid {label}")
+    return scale
+
+
+def time_values_to_fs(values: Sequence[float] | np.ndarray, scale: float) -> np.ndarray:
+    """Apply one validated raw-time conversion scale."""
+    return np.asarray(values, dtype=float) * scale
+
+
 def aligned_time_indices(
     source: Sequence[float] | np.ndarray,
     target: Sequence[float] | np.ndarray,
@@ -2289,6 +2304,20 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
+    sampling_time_scale_to_fs = time_scale_to_fs(
+        source.get("sampling_time_scale_to_fs", 1.0),
+        "sampling_time_scale_to_fs",
+    )
+    bead_time_scale_to_fs = time_scale_to_fs(
+        source.get("bead_time_scale_to_fs", 1.0),
+        "bead_time_scale_to_fs",
+    )
+    kernel_time_scale_to_fs = time_scale_to_fs(
+        source.get("kernel_time_scale_to_fs", sampling_time_scale_to_fs),
+        "kernel_time_scale_to_fs",
+    )
+    bead_offset_fs = float(source.get("bead_time_offset_fs", 0.0))
+    require(np.isfinite(bead_offset_fs), "invalid bead_time_offset_fs")
     run_root = Path(source["run_root"])
     require(run_root.is_dir(), f"run root missing: {run_root}")
     raw_manifest = run_root / source["raw_manifest"]
@@ -2336,7 +2365,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         deduplicated_bead_tables.append((bead_fields, bead_data[bead_keep]))
         bead_restart_duplicates.append(duplicate_count)
     bead_tables = deduplicated_bead_tables
-    time_fs = field(centroid_data, fields, "time")
+    time_fs = time_values_to_fs(field(centroid_data, fields, "time"), sampling_time_scale_to_fs)
     first_time_fs = float(selection["first_time_ps"]) * 1000.0
     last_time_fs = float(selection["last_time_ps"]) * 1000.0
     all_steps = np.rint(time_fs / float(selection["timestep_fs"])).astype(int)
@@ -2385,10 +2414,11 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     bead_arrays = []
     bead_selections = []
     for bead_fields, bead_data in bead_tables:
-        bead_time = field(bead_data, bead_fields, "time")
-        bead_offset_fs = float(source.get("bead_time_offset_fs", 0.0))
+        bead_time_fs = time_values_to_fs(
+            field(bead_data, bead_fields, "time"), bead_time_scale_to_fs
+        )
         bead_selected = aligned_time_indices(
-            bead_time + bead_offset_fs, time_fs[selected]
+            bead_time_fs + bead_offset_fs, time_fs[selected]
         )
         bead_selections.append(bead_selected)
         bead_arrays.append(
@@ -3114,7 +3144,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         )
 
     kernels_fields, kernels = read_plumed(run_root / source["kernels"])
-    kernel_time_fs = field(kernels, kernels_fields, "time")
+    kernel_time_fs = time_values_to_fs(
+        field(kernels, kernels_fields, "time"), kernel_time_scale_to_fs
+    )
     kernel_mask = time_window_mask(kernel_time_fs, first_time_fs, last_time_fs)
     require(bool(np.any(kernel_mask)), "no KERNELS rows in selected time window")
     kernel_time_ps = kernel_time_fs[kernel_mask] / 1000.0

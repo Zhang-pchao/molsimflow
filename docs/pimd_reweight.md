@@ -94,6 +94,27 @@ not prove that an adaptive OPES trajectory has reached that regime.  The OPES lo
 `+opes.bias / kBT`.  `opes.rct` is retained only as a diagnostic and is never
 subtracted from the weight.
 
+Raw time columns are converted explicitly before frame selection or alignment.
+The conversion is data-source metadata, not an engine name heuristic:
+
+```json
+{
+  "source": {
+    "sampling_time_scale_to_fs": 0.00025,
+    "bead_time_scale_to_fs": 0.00025,
+    "kernel_time_scale_to_fs": 0.00025,
+    "bead_time_offset_fs": 0.0
+  }
+}
+```
+
+The three scales multiply the corresponding raw `time` columns. They must be
+finite and positive and default to `1.0` for existing femtosecond-based
+contracts. `kernel_time_scale_to_fs` defaults to the sampling scale.
+`bead_time_offset_fs` is applied after bead-time scaling and remains optional.
+No missing frame is synthesized: converted timestamps must still map to one
+distinct source frame.
+
 The core `molsimflow.postprocess.pimd_fes.frame_log_weights` API also supports:
 
 - `fixed_bias`, using `+total_bias_energy / kBT`;
@@ -204,6 +225,7 @@ The implementation rejects:
 - repeated bead input files, including relative-path aliases, symlinks, and hard links;
 - a missing or misaligned frame between sampling and bead tables;
 - an ambiguous timestamp match or reuse of one source frame for multiple target frames;
+- a non-finite or non-positive raw-time conversion scale;
 - decreasing frame IDs across a restart seam;
 - duplicate restart frames when the policy is `error`;
 - non-finite CVs, energies, or weights;

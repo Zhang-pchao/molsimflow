@@ -3,7 +3,23 @@
 import numpy as np
 import pytest
 
-from molsimflow.postprocess.pimd_reweight import aligned_time_indices
+from molsimflow.postprocess.pimd_reweight import (
+    aligned_time_indices,
+    time_scale_to_fs,
+    time_values_to_fs,
+)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan"), "bad"])
+def test_time_scale_to_fs_requires_a_finite_positive_value(value):
+    with pytest.raises(ValueError, match="sampling_time_scale_to_fs"):
+        time_scale_to_fs(value, "sampling_time_scale_to_fs")
+
+
+def test_time_values_to_fs_applies_non_unit_kernel_scale():
+    raw_kernel_time = np.array([0.0, 4000.0, 8000.0])
+    scale = time_scale_to_fs(0.00025, "kernel_time_scale_to_fs")
+    np.testing.assert_allclose(time_values_to_fs(raw_kernel_time, scale), [0.0, 1.0, 2.0])
 
 
 @pytest.mark.parametrize("offset", [-1e-10, 1e-10])
