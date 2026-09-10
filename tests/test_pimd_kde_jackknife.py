@@ -78,3 +78,69 @@ def test_invalid_kde_uncertainty_arguments(change):
     options.update(change)
     with pytest.raises(ValueError):
         quantum_kde_block_jackknife(np.zeros((6, 1, 1)), np.zeros(6), [[0, 1]], [0.5], **options)
+
+
+def test_markov_chain_kde_block_length_calibration(record_property):
+    """Check weighted KDE uncertainty against known exponential time correlation."""
+    rng = np.random.default_rng(782431)
+    frames = 2048
+    replicas = 96
+    rho = 0.9
+    flip_probability = (1 - rho) / 2
+    state_weight = 2.0
+    bandwidth = 0.5
+    estimates = []
+    short_variances = []
+    long_variances = []
+    for _ in range(replicas):
+        # A stationary symmetric two-state Markov chain has Cov(X_0,X_l)=rho^l/4.
+        initial = rng.integers(2)
+        flips = rng.binomial(1, flip_probability, size=frames - 1)
+        states = np.concatenate(([initial], (initial + np.cumsum(flips)) % 2))
+        values = states.astype(float)[:, None, None]
+        log_weights = states * np.log(state_weight)
+        results = [
+            quantum_kde_block_jackknife(
+                values, log_weights, [[0.0, 1.0]], [bandwidth],
+                kbt=1.0, block_frames=size, reference_grid_index=[0],
+                relative_density_support=1e-8,
+            )
+            for size in (16, 128)
+        ]
+        estimates.append(results[1]["free_energy_difference"][1])
+        short_variances.append(results[0]["standard_error"][1] ** 2)
+        long_variances.append(results[1]["standard_error"][1] ** 2)
+
+    # At empirical state fraction p, the KDE density ratio is
+    # [k*(1-p)+a*p] / [(1-p)+k*a*p], with k the cross-state Gaussian kernel.
+    cross_kernel = np.exp(-0.5 / bandwidth**2)
+    numerator = (cross_kernel + state_weight) / 2
+    denominator = (1 + cross_kernel * state_weight) / 2
+    truth = -np.log(numerator / denominator)
+    derivative = -(
+        (state_weight - cross_kernel) / numerator
+        - (cross_kernel * state_weight - 1) / denominator
+    )
+    lags = np.arange(1, frames)
+    variance_fraction = (1 + 2 * np.sum((1 - lags / frames) * rho**lags)) / (4 * frames)
+    theoretical_variance = derivative**2 * variance_fraction
+    empirical_variance = np.var(estimates, ddof=1)
+    short_variance = np.mean(short_variances)
+    long_variance = np.mean(long_variances)
+    for name, value in {
+        "theoretical_variance": theoretical_variance,
+        "empirical_variance": empirical_variance,
+        "short_block_variance": short_variance,
+        "long_block_variance": long_variance,
+        "mean_fes_difference": np.mean(estimates),
+        "target_fes_difference": truth,
+    }.items():
+        record_property(name, float(value))
+
+    # The delta method is asymptotic; 96 replicas give about 15% variance MC error.
+    # Predeclared 40% envelopes allow finite-chain and finite-ensemble variation.
+    assert 0.6 < empirical_variance / theoretical_variance < 1.4
+    assert 0.6 < long_variance / theoretical_variance < 1.4
+    assert 0.6 < long_variance / empirical_variance < 1.4
+    assert short_variance < 0.85 * long_variance
+    assert abs(np.mean(estimates) - truth) < 4 * np.sqrt(theoretical_variance / replicas)

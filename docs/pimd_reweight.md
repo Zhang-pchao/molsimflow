@@ -332,3 +332,23 @@ Positive Gaussian density and relative-density support do not prove adequate
 rare-event sampling. Compare block lengths and independent replicas separately.
 Cost grows with the number of deletion blocks, frames, beads and grid points;
 this optional calculation is disabled unless explicitly configured.
+
+### Correlated-process regression and practical block choice
+
+A stationary symmetric two-state Markov-chain regression supplements the
+independent-draw calibration. Its autocorrelation is exactly rho^lag, and the
+finite-length variance of the state fraction is available by summing that
+covariance. The weighted two-state Gaussian KDE density ratio gives an
+independent delta-method reference for the FES variance. The test compares
+96 independent chains and two block lengths using a fixed random seed;
+the shorter blocks must reveal underestimation, while the longer-block
+variance must agree with theory and across-chain dispersion within declared
+finite-ensemble tolerances.
+
+For an actual analysis, compare several block lengths with sufficient retained
+blocks, examine stability of uncertainties at the same reference and supported
+coordinates, and compare independent simulation replicas. Do not concatenate
+replicas across a deletion block. Record the selected frame spacing as well as
+block_frames. A plateau over a narrow range is not proof that slow modes or
+rare transitions have been sampled; the regression's block sizes and
+tolerances are not automatic production-admission thresholds.
