@@ -654,3 +654,112 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             np.repeat(probabilities / counts, counts),
             rtol=1e-9, atol=1e-12,
         )
+
+
+@pytest.mark.parametrize("bias_mode", ["centroid_coord", "bead_mean", "bead_density_shared"])
+def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
+    # Unequal axes, bandwidths, and correlated centers expose axis swaps.
+    centers = np.array([[-0.7, 0.4], [0.1, -0.5], [0.65, 0.8]])
+    counts = np.array([6, 3, 3])
+    probabilities = np.array([0.2, 0.3, 0.5])
+    samples = np.repeat(centers, counts, axis=0)
+    weights = np.repeat(probabilities / counts, counts)
+    offsets = np.array([[-0.12, 0.2], [0.12, -0.2]])
+    times = np.arange(len(samples), dtype=float)
+
+    def write_colvar(name, fields, values):
+        np.savetxt(
+            tmp_path / name, values, fmt="%.17g",
+            header="FIELDS " + " ".join(fields), comments="#! ",
+        )
+
+    write_colvar(
+        "sampling.colvar", ["time", "x", "y", "logw"],
+        np.column_stack([times, samples, np.log(weights)]),
+    )
+    for bead, offset in enumerate(offsets):
+        write_colvar(
+            f"bead-{bead}.colvar", ["time", "x", "y"],
+            np.column_stack([times, samples + offset]),
+        )
+    # A real manifest is retained, without asserting entry verification here.
+    manifest = tmp_path / "RAW-SHA256SUMS"
+    manifest.write_text("".join(
+        f"{sha256(tmp_path / name)}  {name}\n"
+        for name in ["sampling.colvar", "bead-0.colvar", "bead-1.colvar"]
+    ), encoding="utf-8")
+    temperature = 300.0
+    bandwidth = np.array([0.25, 0.4])
+    contract = {
+        "analysis_profile": "core",
+        "source": {
+            "run_root": str(tmp_path),
+            "raw_manifest": manifest.name,
+            "raw_manifest_sha256": sha256(manifest),
+            "sampling_colvar": "sampling.colvar",
+            "bead_colvars": ["bead-0.colvar", "bead-1.colvar"],
+            "sampling_label": "Sampling coordinates",
+            "sampling_slug": "sampling",
+        },
+        "selection": {
+            "first_time_ps": 0.0, "last_time_ps": 0.011,
+            "timestep_fs": 1.0, "expected_frames": len(times),
+        },
+        "reweight": {
+            "cv_names": ["x", "y"],
+            "bias_mode": bias_mode,
+            "weight_kind": "precomputed", "log_weight_column": "logw",
+            "temperature_K": temperature, "kbt_eV": KB_EV_PER_K * temperature,
+            "grid": {"x": [-1.2, 1.2, 23], "y": [-1.3, 1.5, 17]},
+            "bandwidth_variants": {"primary": bandwidth.tolist()},
+            "primary_bandwidth": "primary", "relative_density_support": 1e-8,
+            "blocks": 2, "plot_max_kcal_mol": 12.0,
+            "difference_max_kcal_mol": 2.0,
+        },
+        "plots": {"cv_labels": {"x": "First coordinate", "y": "Second coordinate"}},
+    }
+    contract_path = tmp_path / "contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    output = tmp_path / "analysis"
+    summary = analyze(contract_path, output)
+    assert summary["status"] == "PASS"
+    assert summary["fes"]["dimensions"] == 2
+
+    table = np.genfromtxt(output / "fes2d" / "primary.csv", delimiter=",", names=True)
+    assert len(table) == 23 * 17
+    assert len(np.unique(table["x"])) == 23
+    assert len(np.unique(table["y"])) == 17
+    points = np.column_stack([table["x"], table["y"]])
+
+    def density(offset):
+        # Closed-form finite Gaussian mixture; no production estimator helpers.
+        return sum(
+            probability * np.exp(-0.5 * np.sum(
+                ((points - center - offset) / bandwidth) ** 2, axis=1
+            ))
+            for center, probability in zip(centers, probabilities)
+        )
+
+    bead_densities = np.array([density(offset) for offset in offsets])
+    rt = 8.31446261815324 * temperature / 4184.0
+    expected = {
+        "F_centroid_kcal_mol": -rt * np.log(density(np.zeros(2))),
+        "F_eq8_kcal_mol": -rt * np.log(np.mean(bead_densities, axis=0)),
+        "F_eq10_kcal_mol": -rt * np.mean(np.log(bead_densities), axis=0),
+    }
+    for column, free_energy in expected.items():
+        np.testing.assert_allclose(
+            table[column], free_energy - np.min(free_energy), rtol=1e-9, atol=1e-9
+        )
+    assert summary["reweighting"]["ess"] == pytest.approx(1.0 / sum(weights**2))
+    assert summary["reweighting"]["ess_fraction"] == pytest.approx(
+        1.0 / sum(weights**2) / len(times)
+    )
+    blocks = np.genfromtxt(
+        output / "blocks" / "block-diagnostics.csv", delimiter=",", names=True
+    )
+    np.testing.assert_array_equal(blocks["frames"], [6, 6])
+    for row, block_weights in zip(blocks, np.array_split(weights, 2)):
+        normalized = block_weights / sum(block_weights)
+        assert row["ess"] == pytest.approx(1.0 / sum(normalized**2))
+        assert row["max_weight"] == pytest.approx(max(normalized))

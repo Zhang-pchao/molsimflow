@@ -185,6 +185,20 @@ With `restart_duplicate_policy: keep_first`, the predecessor endpoint is kept
 and the repeated successor endpoint is removed.  The number of removed rows is
 stored in the summary.
 
+## Numerical regression coverage
+
+The core-profile tests compare exported 1D and 2D FES tables with closed-form
+Gaussian mixtures from a biased three-state sample. The 2D cases use unequal
+grid sizes and bandwidths and cover all three bias modes with precomputed
+frame weights. These cases test estimator and export arithmetic; they do not
+validate the dynamics that generated a production trajectory.
+
+Reported weight ESS is `1 / sum_n W_n^2`, calculated over complete frames.
+Block diagnostics renormalize weights within each block. This weight ESS does
+not account for temporal autocorrelation, and block-to-full FES differences
+are diagnostics, not confidence intervals. Correlation-aware uncertainty and
+independent-replica convergence require separate assessment.
+
 ## Scientific boundary
 
 A successful command establishes input alignment, estimator arithmetic, and
