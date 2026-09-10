@@ -590,6 +590,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
                 "bandwidth_variants": {"primary": [0.25], "wide": [0.35]},
                 "primary_bandwidth": "primary",
                 "relative_density_support": 1e-8,
+                "uncertainty": {"block_frames": 3, "reference_grid_index": [30]},
                 "blocks": 2,
                 "plot_max_kcal_mol": 12.0,
             },
@@ -611,6 +612,10 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         assert summary["status"] == "PASS"
         assert summary["analysis_profile"] == "core"
         assert summary["fes"]["dimensions"] == 1
+        uncertainty = np.genfromtxt(output / "blocks" / "quantum-fes-uncertainty.csv", delimiter=",", names=True)
+        assert len(uncertainty) == 61
+        assert uncertainty["standard_error_eV"][30] == 0
+        assert json.loads((output / "blocks" / "quantum-fes-uncertainty.json").read_text())["blocks"] == 4
         assert summary["fes"]["probability_mean_label"] == "Quantum FES"
         assert summary["reference_crosscheck"] is None
         assert (output / "figures" / "fes1d-coordination.png").is_file()
@@ -718,6 +723,7 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
             "grid": {"x": [-1.2, 1.2, 23], "y": [-1.3, 1.5, 17]},
             "bandwidth_variants": {"primary": bandwidth.tolist()},
             "primary_bandwidth": "primary", "relative_density_support": 1e-8,
+            "uncertainty": {"block_frames": 3, "reference_grid_index": [11, 8]},
             "blocks": 2, "plot_max_kcal_mol": 12.0,
             "difference_max_kcal_mol": 2.0,
         },
@@ -729,12 +735,40 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
     summary = analyze(contract_path, output)
     assert summary["status"] == "PASS"
     assert summary["fes"]["dimensions"] == 2
+    uncertainty = np.genfromtxt(output / "blocks" / "quantum-fes-uncertainty.csv", delimiter=",", names=True)
+    assert len(uncertainty) == 23 * 17
+    assert uncertainty["standard_error_eV"][8 * 23 + 11] == 0
 
     table = np.genfromtxt(output / "fes2d" / "primary.csv", delimiter=",", names=True)
     assert len(table) == 23 * 17
     assert len(np.unique(table["x"])) == 23
     assert len(np.unique(table["y"])) == 17
     points = np.column_stack([table["x"], table["y"]])
+
+    # Independently reconstruct the four deleted-block KDE ratios.
+    uncertainty_points = np.column_stack([uncertainty["x"], uncertainty["y"]])
+    deletion_curves = []
+    for deleted_block in range(4):
+        keep = np.arange(len(samples)) // 3 != deleted_block
+        kernels = np.exp(-0.5 * np.sum(
+            ((uncertainty_points[:, None, None, :]
+              - samples[keep][None, :, None, :] - offsets[None, None, :, :])
+             / bandwidth) ** 2, axis=-1
+        ))
+        density = np.sum(kernels * weights[keep][None, :, None], axis=(1, 2))
+        deletion_curves.append(
+            -KB_EV_PER_K * temperature * np.log(density / density[8 * 23 + 11])
+        )
+    deletion_curves = np.array(deletion_curves)
+    expected_error = np.sqrt(3 / 4 * np.sum(
+        (deletion_curves - deletion_curves.mean(axis=0)) ** 2, axis=0
+    ))
+    supported = uncertainty["support"].astype(bool)
+    np.testing.assert_allclose(
+        uncertainty["standard_error_eV"][supported], expected_error[supported],
+        rtol=1e-9, atol=1e-12,
+    )
+
 
     def density(offset):
         # Closed-form finite Gaussian mixture; no production estimator helpers.

@@ -493,6 +493,184 @@ def weighted_log_kde_2d(
     return output.reshape(len(y_grid), len(x_grid))
 
 
+
+def quantum_kde_block_jackknife(
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    grids: Sequence[np.ndarray],
+    bandwidth: Sequence[float],
+    *,
+    kbt: float,
+    block_frames: int,
+    reference_grid_index: Sequence[int],
+    relative_density_support: float,
+) -> dict[str, object]:
+    """Estimate fixed-bandwidth probability-mean FES errors in one or two CVs.
+
+    Grid indices follow CV order; 2D arrays follow the existing (y, x) layout.
+    Whole contiguous frame blocks are deleted. Support must survive every
+    deletion. This estimates sampling error, not KDE smoothing bias.
+    """
+    values = np.asarray(beads, dtype=float)
+    axes = [np.asarray(axis, dtype=float) for axis in grids]
+    widths = np.asarray(bandwidth, dtype=float)
+    dims = len(axes)
+    require(dims in (1, 2), "jackknife requires one or two CV grids")
+    require(
+        values.ndim == 3
+        and values.shape[2] == dims
+        and values.shape[0] > 0
+        and values.shape[1] > 0,
+        "invalid bead shape",
+    )
+    require(np.isfinite(values).all(), "non-finite bead CV")
+    require(
+        all(
+            axis.ndim == 1
+            and len(axis) > 0
+            and np.isfinite(axis).all()
+            and np.all(np.diff(axis) > 0)
+            for axis in axes
+        ),
+        "invalid grid",
+    )
+    require(
+        widths.shape == (dims,) and np.isfinite(widths).all() and np.all(widths > 0),
+        "invalid bandwidth",
+    )
+    require(np.isfinite(kbt) and kbt > 0, "kBT must be finite and positive")
+    require(
+        np.isfinite(relative_density_support) and 0 < relative_density_support <= 1,
+        "invalid relative density support",
+    )
+    weights = np.asarray(raw_log_weights, dtype=float)
+    require(weights.shape == (len(values),), "weight/frame shape mismatch")
+    normalized_log_weights(weights)
+    require(
+        isinstance(block_frames, (int, np.integer))
+        and not isinstance(block_frames, bool)
+        and block_frames > 0,
+        "block_frames must be a positive integer",
+    )
+    size = int(block_frames)
+    require(len(values) % size == 0, "equal blocks must cover all frames")
+    blocks = len(values) // size
+    require(blocks >= 2, "jackknife requires at least two blocks")
+    require(
+        isinstance(reference_grid_index, (list, tuple, np.ndarray)), "invalid reference_grid_index"
+    )
+    index = tuple(reference_grid_index)
+    require(
+        len(index) == dims
+        and all(
+            isinstance(i, (int, np.integer)) and not isinstance(i, bool) and 0 <= i < len(axis)
+            for i, axis in zip(index, axes)
+        ),
+        "invalid reference_grid_index",
+    )
+    array_index = index if dims == 1 else index[::-1]
+    threshold = math.log(relative_density_support)
+
+    def curve(keep):
+        selected = values[keep]
+        logw = normalized_log_weights(weights[keep])
+        if dims == 1:
+            logs = [
+                weighted_log_kde_1d(selected[:, b, 0], logw, axes[0], widths[0])
+                for b in range(values.shape[1])
+            ]
+        else:
+            logs = [
+                weighted_log_kde_2d(selected[:, b], logw, axes[0], axes[1], widths)
+                for b in range(values.shape[1])
+            ]
+        logp = np.asarray(logsumexp(np.asarray(logs), axis=0)) - math.log(values.shape[1])
+        require(np.isfinite(logp).all(), "non-finite KDE density")
+        support = logp - np.max(logp) >= threshold
+        require(support[array_index], "reference grid point loses density support")
+        return -float(kbt) * (logp - logp[array_index]), support
+
+    full, support = curve(np.ones(len(values), dtype=bool))
+    estimates = []
+    for block in range(blocks):
+        keep = np.ones(len(values), dtype=bool)
+        keep[block * size : (block + 1) * size] = False
+        current, current_support = curve(keep)
+        estimates.append(current)
+        support &= current_support
+    deleted = np.asarray(estimates)
+    error = np.sqrt(
+        (blocks - 1) / blocks * np.sum((deleted - np.mean(deleted, axis=0)) ** 2, axis=0)
+    )
+    error[~support] = np.nan
+    return {
+        "free_energy_difference": full,
+        "standard_error": error,
+        "support": support,
+        "blocks": blocks,
+        "block_frames": size,
+    }
+
+
+def write_kde_uncertainty(
+    output: Path,
+    reweight: Mapping[str, object],
+    cv_names: Sequence[str],
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    kbt: float,
+) -> None:
+    """Write optional whole-frame sampling errors without changing block diagnostics."""
+    if "uncertainty" not in reweight:
+        return
+    config = reweight["uncertainty"]
+    require(
+        isinstance(config, dict) and set(config) == {"block_frames", "reference_grid_index"},
+        "invalid uncertainty configuration",
+    )
+    grids = [np.linspace(*reweight["grid"][name]) for name in cv_names]
+    bandwidth = reweight["bandwidth_variants"][reweight["primary_bandwidth"]]
+    result = quantum_kde_block_jackknife(
+        beads,
+        raw_log_weights,
+        grids,
+        bandwidth,
+        kbt=kbt,
+        block_frames=config["block_frames"],
+        reference_grid_index=config["reference_grid_index"],
+        relative_density_support=float(reweight["relative_density_support"]),
+    )
+    points = np.column_stack([axis.ravel() for axis in np.meshgrid(*grids)])
+    fields = list(cv_names) + ["delta_F_eV", "standard_error_eV", "support"]
+    rows = []
+    for n, point in enumerate(points):
+        row = dict(zip(cv_names, point))
+        row.update(
+            delta_F_eV=result["free_energy_difference"].ravel()[n],
+            standard_error_eV=result["standard_error"].ravel()[n],
+            support=int(result["support"].ravel()[n]),
+        )
+        rows.append(row)
+    write_csv(output / "blocks" / "quantum-fes-uncertainty.csv", rows, fields)
+    metadata = {
+        "estimator": "probability_mean",
+        "method": "delete_one_frame_block_jackknife",
+        "blocks": result["blocks"],
+        "block_frames": result["block_frames"],
+        "reference_grid_index": config["reference_grid_index"],
+        "reference_coordinates": [
+            float(axis[i]) for axis, i in zip(grids, config["reference_grid_index"])
+        ],
+        "bandwidth": list(bandwidth),
+        "relative_density_support": float(reweight["relative_density_support"]),
+        "units": "eV",
+        "scope": "Fixed-bandwidth sampling standard error; not smoothing bias or a confidence interval.",
+    }
+    (output / "blocks" / "quantum-fes-uncertainty.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def compute_surfaces(
     beads: np.ndarray,
     centroid: np.ndarray,
@@ -2380,6 +2558,8 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     log_weights = normalized_log_weights(raw_log_weights)
     weights = np.exp(log_weights)
     require(abs(float(np.sum(weights)) - 1.0) <= 1e-12, "weight normalization failed")
+
+    write_kde_uncertainty(output, reweight, cv_names, beads, raw_log_weights, kbt_ev)
 
     if len(cv_names) == 1:
         return finalize_core_1d(

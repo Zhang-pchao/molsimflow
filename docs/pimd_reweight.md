@@ -294,3 +294,41 @@ This provides calibration for a controlled stationary two-state model.
 It does not validate arbitrary correlation tails, adaptive bias histories,
 rare-event support, KDE bandwidth bias or confidence-interval coverage.
 Users still need block-length sensitivity and independent-replica comparisons.
+
+## Optional KDE sampling uncertainty in analysis reports
+
+Add an `uncertainty` object under `reweight` to enable whole-frame block
+jackknife for the primary probability-mean KDE FES:
+
+```json
+"uncertainty": {
+  "block_frames": 100,
+  "reference_grid_index": [20, 15]
+}
+```
+
+Indices are zero-based and follow `cv_names` order; use one index for one CV.
+The example numbers are illustrative, not recommended block lengths.
+Equal blocks must cover all selected frames and leave at least two blocks.
+Choose an interior reference supported in the full data and every deletion;
+an unsupported reference is an error. Other points losing relative density
+support receive NaN standard errors and `support=0`.
+
+The primary bandwidth and grid remain fixed across deletions. All beads of a
+frame share its weight and remain together. Weights are normalized afresh for
+each retained sample. The API is `quantum_kde_block_jackknife`; it supports
+one or two CVs, using the existing two-dimensional (y, x) array layout.
+
+Outputs are `blocks/quantum-fes-uncertainty.csv` and its JSON metadata.
+CSV columns contain the CV coordinates, `delta_F_eV`,
+`standard_error_eV`, and `support`. Free-energy differences use the fixed
+reference, so their zero generally differs from the minimum-zero plotting
+tables. JSON records block count, reference coordinates, bandwidth, support
+threshold and units. Existing block-difference diagnostics are unchanged.
+
+This is fixed-bandwidth sampling uncertainty, not KDE smoothing bias, a
+confidence interval, autocorrelation analysis, or independent-replica validation.
+Positive Gaussian density and relative-density support do not prove adequate
+rare-event sampling. Compare block lengths and independent replicas separately.
+Cost grows with the number of deletion blocks, frames, beads and grid points;
+this optional calculation is disabled unless explicitly configured.
