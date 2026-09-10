@@ -530,13 +530,21 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
     with TemporaryDirectory() as directory:
         root = Path(directory)
         times = np.arange(12, dtype=float)
-        sampling_values = np.linspace(-0.9, 0.9, len(times))
+        # A biased three-state sample with exactly known target probabilities.
+        centers = np.array([-0.75, 0.0, 0.75])
+        counts = np.array([6, 3, 3])
+        probabilities = np.array([0.2, 0.3, 0.5])
+        sampling_values = np.repeat(centers, counts)
         bead_values = (sampling_values - 0.12, sampling_values + 0.12)
-        log_weights = np.linspace(-0.2, 0.2, len(times))
+        log_weights = np.log(np.repeat(probabilities / counts, counts))
+        temperature = 300.0
+        supplied_weights = log_weights
+        if weight_kind != "precomputed":
+            supplied_weights = log_weights * KB_EV_PER_K * temperature
         write_plumed(
             root / "sampling.colvar",
             ("time", "mean.coordination", "logw"),
-            zip(times, sampling_values, log_weights),
+            zip(times, sampling_values, supplied_weights),
         )
         for bead, values in enumerate(bead_values):
             write_plumed(
@@ -546,7 +554,6 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             )
         manifest = root / "RAW-SHA256SUMS"
         manifest.write_text("synthetic core-profile fixture\n", encoding="utf-8")
-        temperature = 300.0
         contract = {
             "analysis_profile": "core",
             "source": {
@@ -603,3 +610,47 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         assert summary["reference_crosscheck"] is None
         assert (output / "figures" / "fes1d-coordination.png").is_file()
         assert (output / "figures" / "cv-time-series.png").is_file()
+
+        # Closed-form Gaussian mixtures, independent of production KDE,
+        # log-weight normalization, and eV-to-kcal conversion helpers.
+        table = np.genfromtxt(
+            output / "fes1d" / "coordination.csv", delimiter=",", names=True
+        )
+        grid = table["coordination"]
+        sigma = 0.25
+        sampling_density = sum(
+            probability * np.exp(-0.5 * ((grid - center) / sigma) ** 2)
+            for center, probability in zip(centers, probabilities)
+        )
+        bead_densities = [
+            sum(
+                probability
+                * np.exp(-0.5 * ((grid - center - offset) / sigma) ** 2)
+                for center, probability in zip(centers, probabilities)
+            )
+            for offset in (-0.12, 0.12)
+        ]
+        # The common Gaussian prefactor cancels in the FES reference shift.
+        rt_kcal_mol = 8.31446261815324 * temperature / 4184.0
+        expected = {
+            "F_sampling_kcal_mol": -rt_kcal_mol * np.log(sampling_density),
+            "F_quantum_probability_mean_kcal_mol": (
+                -rt_kcal_mol * np.log(np.mean(bead_densities, axis=0))
+            ),
+            "F_bead_logmean_diagnostic_kcal_mol": (
+                -rt_kcal_mol * np.mean(np.log(bead_densities), axis=0)
+            ),
+        }
+        for column, free_energy in expected.items():
+            np.testing.assert_allclose(
+                table[column], free_energy - np.min(free_energy),
+                rtol=1e-9, atol=1e-9,
+            )
+        frames = np.genfromtxt(
+            output / "tables" / "frame-series.csv", delimiter=",", names=True
+        )
+        np.testing.assert_allclose(
+            frames["normalized_weight"],
+            np.repeat(probabilities / counts, counts),
+            rtol=1e-9, atol=1e-12,
+        )
