@@ -2083,6 +2083,13 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         sampling_colvar = source["centroid_colvar"]
     centroid_path = run_root / str(sampling_colvar)
     bead_paths = [run_root / value for value in source["bead_colvars"]]
+    # Resolve filesystem identity, including symlinks and hard links, without
+    # rejecting distinct files whose bead observations happen to be identical.
+    bead_stats = [path.stat() for path in bead_paths]
+    require(
+        len({(stat.st_dev, stat.st_ino) for stat in bead_stats}) == len(bead_paths),
+        "duplicate bead input file",
+    )
     fields, centroid_data = read_plumed(centroid_path)
     bead_tables = [read_plumed(path) for path in bead_paths]
     require(

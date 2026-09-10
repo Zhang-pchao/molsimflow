@@ -172,6 +172,7 @@ estimator.
 The implementation rejects:
 
 - a frame with a missing or duplicate bead;
+- repeated bead input files, including relative-path aliases, symlinks, and hard links;
 - a missing or misaligned frame between sampling and bead tables;
 - an ambiguous timestamp match or reuse of one source frame for multiple target frames;
 - decreasing frame IDs across a restart seam;

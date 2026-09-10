@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -763,3 +764,52 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
         normalized = block_weights / sum(block_weights)
         assert row["ess"] == pytest.approx(1.0 / sum(normalized**2))
         assert row["max_weight"] == pytest.approx(max(normalized))
+
+
+@pytest.mark.parametrize(
+    "alias", ["bead.colvar", "./bead.colvar", "bead-link.colvar", "bead-hardlink.colvar", "bead-copy.colvar"]
+)
+def test_analyze_checks_bead_file_identity(tmp_path, alias):
+    bead = tmp_path / "bead.colvar"
+    bead.write_text("#! FIELDS time x\n0 0\n1 0.2\n2 0.4\n3 0.6\n")
+    if alias == "bead-link.colvar":
+        (tmp_path / alias).symlink_to(bead.name)
+    if alias == "bead-copy.colvar":
+        (tmp_path / alias).write_bytes(bead.read_bytes())
+    if alias == "bead-hardlink.colvar":
+        os.link(bead, tmp_path / alias)
+    sampling = tmp_path / "sampling.colvar"
+    sampling.write_text("#! FIELDS time x logw\n0 0 0\n1 0.2 0\n2 0.4 0\n3 0.6 0\n")
+    manifest = tmp_path / "RAW-SHA256SUMS"
+    manifest.write_text(f"{sha256(bead)}  {bead.name}\n")
+    contract = {
+        "analysis_profile": "core",
+        "source": {
+            "run_root": str(tmp_path),
+            "raw_manifest": manifest.name,
+            "raw_manifest_sha256": sha256(manifest),
+            "sampling_colvar": sampling.name,
+            "bead_colvars": [bead.name, alias],
+        },
+        "selection": {
+            "first_time_ps": 0.0, "last_time_ps": 0.003,
+            "timestep_fs": 1.0, "expected_frames": 4,
+        },
+        "reweight": {
+            "cv_names": ["x"], "bias_mode": "bead_mean",
+            "weight_kind": "precomputed", "log_weight_column": "logw",
+            "temperature_K": 300.0, "kbt_eV": KB_EV_PER_K * 300.0,
+            "grid": {"x": [-1.0, 1.0, 21]},
+            "bandwidth_variants": {"primary": [0.3]},
+            "primary_bandwidth": "primary", "relative_density_support": 1e-8,
+            "blocks": 2, "plot_max_kcal_mol": 12.0,
+        },
+        "plots": {"cv_labels": {"x": "Coordinate"}},
+    }
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(contract))
+    if alias == "bead-copy.colvar":
+        assert analyze(path, tmp_path / "analysis")["status"] == "PASS"
+    else:
+        with pytest.raises(ValueError, match="duplicate bead input file"):
+            analyze(path, tmp_path / "analysis")
