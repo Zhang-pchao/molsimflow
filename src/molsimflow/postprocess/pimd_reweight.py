@@ -7,6 +7,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -73,6 +74,43 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_manifest_inputs(
+    manifest: Path, run_root: Path, inputs: Sequence[Path],
+) -> Dict[str, str]:
+    """Verify consumed files against GNU SHA256SUMS, relative to run_root."""
+    entries: Dict[Path, str] = {}
+    for line_number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+        match = re.fullmatch(r"(\\?)([0-9a-fA-F]{64}) [ *](.+)", line)
+        require(match is not None, f"invalid SHA256SUMS record at line {line_number}")
+        escaped, digest, name = match.groups()
+        if escaped:
+            # GNU checksum tools escape backslash, newline, and carriage return.
+            require(
+                re.fullmatch(r"(?:[^\\]|\\[\\nr])*", name) is not None,
+                f"invalid SHA256SUMS filename escape at line {line_number}",
+            )
+            name = re.sub(
+                r"\\([\\nr])",
+                lambda item: {"\\": "\\", "n": "\n", "r": "\r"}[item.group(1)],
+                name,
+            )
+        path = (run_root / name).resolve()
+        require(path not in entries, f"duplicate SHA256SUMS entry: {name}")
+        entries[path] = digest.lower()
+    require(bool(entries), "empty SHA256SUMS manifest")
+    verified: Dict[str, str] = {}
+    for path in inputs:
+        resolved = path.resolve()
+        require(resolved in entries, f"input missing from SHA256SUMS: {path}")
+        if str(resolved) in verified:
+            continue
+        require(path.is_file(), f"input is not a regular file: {path}")
+        digest = sha256(path)
+        require(digest == entries[resolved], f"input hash mismatch: {path}")
+        verified[str(resolved)] = digest
+    return verified
 
 
 def artifact_basename(config: Mapping[str, object], key: str, default: str) -> str:
@@ -2089,6 +2127,16 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     require(
         len({(stat.st_dev, stat.st_ino) for stat in bead_stats}) == len(bead_paths),
         "duplicate bead input file",
+    )
+    consumed_paths = [centroid_path, *bead_paths]
+    if profile == "water_ionization_opes":
+        consumed_paths.append(run_root / source["kernels"])
+        consumed_paths.extend(run_root / name for name in source["thermo_logs"])
+        consumed_paths.extend(run_root / name for name in source["trajectories"])
+    verified_inputs = verify_manifest_inputs(raw_manifest, run_root, consumed_paths)
+    (output / "provenance" / "verified-inputs.json").write_text(
+        json.dumps({"scope": "consumed inputs", "sha256": verified_inputs}, indent=2)
+        + "\n", encoding="utf-8",
     )
     fields, centroid_data = read_plumed(centroid_path)
     bead_tables = [read_plumed(path) for path in bead_paths]

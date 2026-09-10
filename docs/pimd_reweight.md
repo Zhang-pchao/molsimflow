@@ -167,6 +167,35 @@ optionally provide `reference.driver` to run the historical
 external driver is not a runtime dependency and is never the authoritative
 estimator.
 
+
+## Input integrity
+
+`source.raw_manifest` must be a GNU SHA256SUMS text manifest, with paths
+relative to `source.run_root` (absolute paths are also accepted). Text and
+binary markers, spaces in names, and GNU escaped filenames are supported.
+`source.raw_manifest_sha256` authenticates the manifest against the supplied
+contract; it is not an independent signature or trust anchor.
+
+Before analysis, each consumed source-data file must be listed and match its
+SHA-256 digest. The core profile checks the sampling and bead COLVAR files.
+The diagnostic profile also checks its KERNELS, thermo logs and trajectories.
+Missing entries, conflicting or duplicate resolved paths, malformed records,
+and changed data are rejected. Unconsumed entries are parsed but their files
+are not read or required to be present. Identical input paths shared by
+sampling and one bead are hashed once.
+
+The output `provenance/verified-inputs.json` records the verified paths and
+digests. This preflight reads the consumed files once for hashing in addition
+to analysis reads, so large trajectories incur an extra sequential I/O pass.
+Use immutable, completed inputs: preflight verification does not lock files
+or protect against changes made during analysis. External reference-driver
+identity is recorded separately by the reference cross-check.
+
+Existing contracts with complete SHA256SUMS manifests need no new option.
+Placeholder manifests or manifests missing consumed inputs must be replaced
+with real checksums and their contract hash updated before use. A successful
+manifest check does not establish scientific validity.
+
 ## Fail-closed checks
 
 The implementation rejects:

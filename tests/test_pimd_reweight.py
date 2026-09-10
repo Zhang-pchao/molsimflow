@@ -43,6 +43,7 @@ from molsimflow.postprocess.pimd_reweight import (
     time_window_mask,
     transform_piecewise_logdistance_fes,
     validate_piecewise_logdistance_printed,
+    verify_manifest_inputs,
 )
 from molsimflow.postprocess.pimd_reweight_compare import (
     aligned_surface_difference,
@@ -554,7 +555,10 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
                 zip(times, values),
             )
         manifest = root / "RAW-SHA256SUMS"
-        manifest.write_text("synthetic core-profile fixture\n", encoding="utf-8")
+        manifest.write_text("".join(
+            f"{sha256(root / name)}  {name}\n"
+            for name in ["sampling.colvar", "bead-0.colvar", "bead-1.colvar"]
+        ), encoding="utf-8")
         contract = {
             "analysis_profile": "core",
             "source": {
@@ -781,7 +785,12 @@ def test_analyze_checks_bead_file_identity(tmp_path, alias):
     sampling = tmp_path / "sampling.colvar"
     sampling.write_text("#! FIELDS time x logw\n0 0 0\n1 0.2 0\n2 0.4 0\n3 0.6 0\n")
     manifest = tmp_path / "RAW-SHA256SUMS"
-    manifest.write_text(f"{sha256(bead)}  {bead.name}\n")
+    names = [sampling.name, bead.name]
+    if alias == "bead-copy.colvar":
+        names.append(alias)
+    manifest.write_text("".join(
+        f"{sha256(tmp_path / name)}  {name}\n" for name in names
+    ))
     contract = {
         "analysis_profile": "core",
         "source": {
@@ -813,3 +822,74 @@ def test_analyze_checks_bead_file_identity(tmp_path, alias):
     else:
         with pytest.raises(ValueError, match="duplicate bead input file"):
             analyze(path, tmp_path / "analysis")
+
+
+def test_analyze_rejects_changed_input_before_parsing(tmp_path):
+    data = tmp_path / "sample.colvar"
+    data.write_text("#! FIELDS time x logw\n0 1 0\n")
+    manifest = tmp_path / "RAW-SHA256SUMS"
+    manifest.write_text(f"{sha256(data)}  {data.name}\n")
+    contract = {
+        "analysis_profile": "core",
+        "source": {
+            "run_root": str(tmp_path), "raw_manifest": manifest.name,
+            "raw_manifest_sha256": sha256(manifest),
+            "sampling_colvar": data.name, "bead_colvars": [data.name],
+        },
+        "selection": {}, "reweight": {},
+    }
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(contract))
+    data.write_text("#! FIELDS time x logw\n0 2 0\n")
+    with pytest.raises(ValueError, match="input hash mismatch"):
+        analyze(path, tmp_path / "analysis")
+
+
+@pytest.mark.parametrize("name", ["plain", "with spaces", "back\\slash", "line\nbreak"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_manifest_verifies_consumed_inputs_only(tmp_path, name, binary):
+    data = tmp_path / name
+    data.write_text("immutable data\n")
+    encoded = name.replace("\\", "\\\\").replace("\n", "\\n")
+    prefix = "\\" if encoded != name else ""
+    marker = "*" if binary else " "
+    manifest = tmp_path / "SHA256SUMS"
+    manifest.write_text(
+        f"{prefix}{sha256(data)} {marker}{encoded}\n"
+        + "0" * 64 + "  unconsumed-missing-trajectory\n"
+    )
+    verified = verify_manifest_inputs(manifest, tmp_path, [data, data])
+    assert verified == {str(data.resolve()): sha256(data)}
+
+
+@pytest.mark.parametrize(
+    "kind, message",
+    [
+        ("missing", "input missing from SHA256SUMS"),
+        ("changed", "input hash mismatch"),
+        ("duplicate", "duplicate SHA256SUMS entry"),
+        ("malformed", "invalid SHA256SUMS record"),
+        ("empty", "empty SHA256SUMS manifest"),
+        ("escape", "invalid SHA256SUMS filename escape"),
+    ],
+)
+def test_manifest_rejects_invalid_inputs(tmp_path, kind, message):
+    data = tmp_path / "data"
+    data.write_text("original")
+    record = f"{sha256(data)}  data\n"
+    if kind == "missing":
+        record = record.replace("data", "different")
+    elif kind == "changed":
+        data.write_text("modified")
+    elif kind == "duplicate":
+        record += record.replace("data", "./data")
+    elif kind == "malformed":
+        record = "not a checksum record\n"
+    elif kind == "empty":
+        record = ""
+    elif kind == "escape":
+        record = "\\" + record.replace("data", r"bad\q")
+    manifest = tmp_path / "SHA256SUMS"
+    manifest.write_text(record)
+    with pytest.raises(ValueError, match=message):
+        verify_manifest_inputs(manifest, tmp_path, [data])
