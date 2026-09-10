@@ -173,6 +173,7 @@ The implementation rejects:
 
 - a frame with a missing or duplicate bead;
 - a missing or misaligned frame between sampling and bead tables;
+- an ambiguous timestamp match or reuse of one source frame for multiple target frames;
 - decreasing frame IDs across a restart seam;
 - duplicate restart frames when the policy is `error`;
 - non-finite CVs, energies, or weights;
@@ -196,3 +197,8 @@ For adaptive shared bead-density OPES, `quasi_static: true` remains an explicit
 analysis assumption.  A successful reconstruction does not prove that the
 time-dependent shared field is quasi-static or that the resulting FES has
 converged.
+
+Timestamp alignment accepts roundoff on either side of a source timestamp,
+including endpoints, within a finite nonnegative tolerance (default `1e-8` in
+the supplied time units). Every target must match exactly one distinct source
+frame. Missing or ambiguous matches are rejected; no interpolation is performed.

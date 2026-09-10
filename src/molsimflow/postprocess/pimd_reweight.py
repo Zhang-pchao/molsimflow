@@ -181,7 +181,10 @@ def aligned_time_indices(
     *,
     tolerance: float = 1e-8,
 ) -> np.ndarray:
-    """Map a monotonic target grid onto a possibly denser or sparser source grid."""
+    """Match each target to one distinct source frame within a finite tolerance.
+
+    Missing or ambiguous matches raise instead of interpolating or reusing data.
+    """
     source_times = np.asarray(source, dtype=float)
     target_times = np.asarray(target, dtype=float)
     require(source_times.ndim == target_times.ndim == 1, "invalid time-grid rank")
@@ -190,13 +193,15 @@ def aligned_time_indices(
     require(np.isfinite(target_times).all(), "non-finite target time grid")
     require(np.all(np.diff(source_times) > 0.0), "source time grid is not strictly increasing")
     require(np.all(np.diff(target_times) > 0.0), "target time grid is not strictly increasing")
-    require(float(tolerance) >= 0.0, "negative time-grid tolerance")
-    indices = np.searchsorted(source_times, target_times)
-    require(np.all(indices < source_times.size), "target time is beyond source grid")
-    require(
-        np.all(np.abs(source_times[indices] - target_times) <= float(tolerance)),
-        "target time is absent from source grid",
-    )
+    tolerance = float(tolerance)
+    require(np.isfinite(tolerance) and tolerance >= 0.0, "invalid time-grid tolerance")
+    # Find the entire closed tolerance interval, not just its right neighbour.
+    indices = np.searchsorted(source_times, target_times - tolerance, side="left")
+    stops = np.searchsorted(source_times, target_times + tolerance, side="right")
+    matches = stops - indices
+    require(np.all(matches > 0), "target time is absent from source grid")
+    require(np.all(matches == 1), "ambiguous time-grid match within tolerance")
+    require(np.all(np.diff(indices) > 0), "target times map to the same source frame")
     return indices
 
 
