@@ -374,3 +374,29 @@ replicas across a deletion block. Record the selected frame spacing as well as
 block_frames. A plateau over a narrow range is not proof that slow modes or
 rare transitions have been sampled; the regression's block sizes and
 tolerances are not automatic production-admission thresholds.
+
+# Bead-count convergence
+
+Use the LAMMPS centroid-virial estimator printed as `f_pi[7]` to reproduce the
+legacy bead-count check without fixed paths or fixed column numbers. Prepare a
+CSV manifest whose paths are absolute or relative to the manifest:
+
+```csv
+label,beads,log
+P16,16,run/p16/log.lammps.0
+P32,32,run/p32/log.lammps.0
+P36,36,run/p36/log.lammps.0
+```
+
+Then run:
+
+```bash
+molsimflow postprocess pimd-bead-convergence \
+  --manifest cases.csv --output convergence-v1 \
+  --burn-in-ps 2 --blocks 5 --write-plot
+```
+
+The command writes per-bead-count block standard errors and comparisons to the
+largest bead count. `within_sigma` means only that the sampled means are not
+distinguishable at the requested block-error threshold; it is not proof of
+equilibrium or scientific convergence.
