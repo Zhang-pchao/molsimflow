@@ -4157,7 +4157,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pimd_reweight = postprocess_subparsers.add_parser(
         "pimd-reweight",
-        help="Reweight centroid- or bead-mean-biased PIMD and generate diagnostics",
+        help="Reweight centroid-, bead-mean-, or shared-bead-density-biased PIMD",
     )
     _add_pimd_reweight_postprocess_args(pimd_reweight)
     pimd_reweight.set_defaults(func=_cmd_postprocess_pimd_reweight)

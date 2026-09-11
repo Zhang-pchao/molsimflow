@@ -25,6 +25,7 @@ from molsimflow.postprocess.pimd_reweight import (
     compute_surfaces,
     cumulative_weight_diagnostics,
     cv_column_names,
+    default_cv_label,
     diagnostic_cv_spec,
     estimator_plot_labels,
     inverse_piecewise_logdistance,
@@ -44,6 +45,7 @@ from molsimflow.postprocess.pimd_reweight import (
     transform_piecewise_logdistance_fes,
     validate_piecewise_logdistance_printed,
     verify_manifest_inputs,
+    write_csv,
 )
 from molsimflow.postprocess.pimd_reweight_compare import (
     aligned_surface_difference,
@@ -101,15 +103,32 @@ def test_all_three_bias_modes_and_total_path_energies_are_explicit():
     )
 
 
-def test_estimator_plot_labels_use_equation_numbers_only_for_centroid():
-    centroid = estimator_plot_labels("centroid_coord")
-    assert centroid["probability_mean"] == "Quantum FES (Lamaire Eq. 8)"
-    assert centroid["logmean"] == "Bead-logmean diagnostic (Lamaire Eq. 10)"
-    for mode in ("bead_mean", "bead_density_shared"):
+def test_estimator_plot_labels_explain_the_estimators_for_all_bias_modes():
+    for mode in ("centroid_coord", "bead_mean", "bead_density_shared"):
         labels = estimator_plot_labels(mode)
-        assert labels["probability_mean"] == "Quantum FES"
-        assert labels["logmean"] == "Bead-logmean diagnostic"
-        assert "Eq." not in " ".join(labels.values())
+        assert labels["probability_mean"] == (
+            "Quantum FES: probability-averaged beads (Eq. 8)"
+        )
+        assert labels["logmean"] == (
+            "Quantum FES: free-energy-averaged beads (Eq. 10)"
+        )
+
+
+def test_default_cv_labels_include_symbols_and_physical_units():
+    assert default_cv_label("ionization") == r"Ionization state, $s_a$ (dimensionless)"
+    assert default_cv_label("iondistance") == r"Ion separation, $s_t$ ($\AA$)"
+    assert default_cv_label("logdistance") == (
+        r"Log ion-separation coordinate, $s'_t$ (dimensionless)"
+    )
+    assert default_cv_label("custom") == "custom"
+
+
+def test_csv_adds_kj_peer_for_legacy_kcal_energy_columns(tmp_path):
+    path = tmp_path / "energy.csv"
+    write_csv(path, [{"x": 1.0, "F_kcal_mol": 2.0}], ["x", "F_kcal_mol"])
+    table = np.genfromtxt(path, delimiter=",", names=True)
+    assert table["F_kcal_mol"] == pytest.approx(2.0)
+    assert table["F_kJ_mol"] == pytest.approx(8.368)
 
 
 def test_analysis_profile_and_protocol_labels_are_explicit():
@@ -620,7 +639,9 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         assert len(uncertainty) == 61
         assert uncertainty["standard_error_eV"][30] == 0
         assert json.loads((output / "blocks" / "quantum-fes-uncertainty.json").read_text())["blocks"] == 4
-        assert summary["fes"]["probability_mean_label"] == "Quantum FES"
+        assert summary["fes"]["probability_mean_label"] == (
+            "Quantum FES: probability-averaged beads (Eq. 8)"
+        )
         assert summary["reference_crosscheck"] is None
         assert (output / "figures" / "fes1d-coordination.png").is_file()
         assert (output / "figures" / "cv-time-series.png").is_file()

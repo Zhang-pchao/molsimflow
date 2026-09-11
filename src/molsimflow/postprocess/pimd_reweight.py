@@ -26,7 +26,26 @@ from molsimflow.postprocess.pimd_fes import (
 
 KB_EV_PER_K = 8.617333262145e-5
 EV_TO_KCAL_MOL = 23.06054783061903
+KCAL_TO_KJ_MOL = 4.184
 ANALYSIS_PROFILES = {"core", "water_ionization_opes"}
+
+FES_COLORS = (
+    (34, 75, 121),
+    (40, 108, 133),
+    (57, 156, 146),
+    (70, 168, 143),
+    (85, 180, 138),
+    (118, 194, 116),
+    (184, 216, 81),
+    (216, 220, 72),
+    (250, 223, 63),
+    (255, 207, 69),
+    (255, 186, 78),
+    (252, 164, 83),
+    (237, 133, 74),
+    (214, 87, 59),
+    (255, 255, 255),
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -42,17 +61,21 @@ def analysis_profile(contract: Mapping[str, object]) -> str:
 
 
 def estimator_plot_labels(bias_mode: str) -> Dict[str, str]:
-    """Return method-aware plot labels without leaking internal estimator keys."""
-    mode = validate_bias_mode(bias_mode)
-    suffixes = (
-        (" (Lamaire Eq. 8)", " (Lamaire Eq. 10)")
-        if mode == "centroid_coord"
-        else ("", "")
-    )
+    """Return reader-facing names while retaining the literature equation numbers."""
+    validate_bias_mode(bias_mode)
     return {
-        "probability_mean": f"Quantum FES{suffixes[0]}",
-        "logmean": f"Bead-logmean diagnostic{suffixes[1]}",
+        "probability_mean": "Quantum FES: probability-averaged beads (Eq. 8)",
+        "logmean": "Quantum FES: free-energy-averaged beads (Eq. 10)",
     }
+
+
+def default_cv_label(name: str) -> str:
+    """Return publication-readable labels for the maintained water-ionization CVs."""
+    return {
+        "ionization": r"Ionization state, $s_a$ (dimensionless)",
+        "iondistance": r"Ion separation, $s_t$ ($\AA$)",
+        "logdistance": r"Log ion-separation coordinate, $s'_t$ (dimensionless)",
+    }.get(str(name), str(name))
 
 
 def sampling_protocol_label(reweight: Mapping[str, object]) -> str:
@@ -796,12 +819,25 @@ def field(data: np.ndarray, fields: Sequence[str], name: str) -> np.ndarray:
 
 
 def write_csv(path: Path, rows: Iterable[Mapping[str, object]], fieldnames: Sequence[str]) -> None:
+    """Write CSV while adding kJ/mol peers for legacy kcal/mol energy columns."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    expanded = []
+    kj_columns = {}
+    for name in fieldnames:
+        expanded.append(name)
+        if name.endswith("_kcal_mol"):
+            target = name.replace("_kcal_mol", "_kJ_mol")
+            expanded.append(target)
+            kj_columns[name] = target
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(fieldnames))
+        writer = csv.DictWriter(handle, fieldnames=expanded)
         writer.writeheader()
-        writer.writerows(rows)
+        for source in rows:
+            row = dict(source)
+            for legacy, target in kj_columns.items():
+                row[target] = float(row[legacy]) * KCAL_TO_KJ_MOL
+            writer.writerow(row)
 
 
 def write_filtered_colvar(
@@ -1121,6 +1157,12 @@ def plot_fes2d(
     bead_count: int | None = None,
 ) -> None:
     plt, _ = _matplotlib()
+    from matplotlib.colors import LinearSegmentedColormap
+
+    max_kj = float(max_kcal) * KCAL_TO_KJ_MOL
+    levels = np.linspace(0.0, max_kj, len(FES_COLORS) + 1)
+    colors = [tuple(channel / 255.0 for channel in color) for color in FES_COLORS]
+    cmap = LinearSegmentedColormap.from_list("molsimflow_fes", colors, N=len(FES_COLORS))
     fig, axes = plt.subplots(
         1, 3, figsize=(14.5, 4.2), sharex=True, sharey=True, constrained_layout=True
     )
@@ -1132,8 +1174,14 @@ def plot_fes2d(
     )
     image = None
     for axis, (name, title) in zip(axes, labels):
-        values = np.where(supports[name], surfaces_kcal[name], np.nan)
-        image = axis.pcolormesh(x_grid, y_grid, values, shading="auto", cmap="viridis", vmin=0.0, vmax=max_kcal)
+        values = np.asarray(surfaces_kcal[name]) * KCAL_TO_KJ_MOL
+        image = axis.contourf(
+            x_grid, y_grid, values, levels=levels, cmap=cmap, extend="max"
+        )
+        axis.contour(
+            x_grid, y_grid, values, levels=levels[1:-1], colors="black",
+            linewidths=0.4, alpha=0.55,
+        )
         axis.set_title(title)
         axis.set_xlabel(cv_labels[0])
     axes[0].set_ylabel(cv_labels[1])
@@ -1141,12 +1189,12 @@ def plot_fes2d(
         for axis in axes:
             axis.set_xlim(*zoom[0])
             axis.set_ylim(*zoom[1])
-    fig.colorbar(image, ax=axes, label="Free energy (kcal/mol)", pad=0.02, shrink=0.9)
-    bead_prefix = f"P={bead_count} " if bead_count is not None else ""
-    fig.suptitle(
-        f"{bead_prefix}{sampling_label.lower()} sampling with {protocol_label}: "
-        "reweighted 2D free-energy surfaces"
+    fig.colorbar(
+        image, ax=axes, orientation="horizontal", label="Free energy (kJ/mol)",
+        pad=0.13, shrink=0.72, ticks=levels[::2],
     )
+    bead_prefix = f"P={bead_count} " if bead_count is not None else ""
+    fig.suptitle(f"{bead_prefix}reweighted free-energy comparison")
     save_figure(fig, output / "figures" / f"fes2d-comparison{suffix}")
     plt.close(fig)
 
@@ -1214,25 +1262,35 @@ def plot_fes1d(
     fig, axis = plt.subplots(figsize=(7.2, 4.8))
     estimator_labels = estimator_plot_labels(bias_mode)
     styles = {
-        "centroid": (sampling_label, "#d97706", "-"),
-        "eq8": (estimator_labels["probability_mean"], "#2563eb", "--"),
+        "centroid": (f"{sampling_label} FES", "#d97706", "-"),
+        "eq8": (estimator_labels["probability_mean"], "#2563eb", "-"),
         "eq10": (estimator_labels["logmean"], "#b91c1c", "-"),
     }
     for key in ("centroid", "eq8", "eq10"):
         label, color, linestyle = styles[key]
         axis.plot(
             grid,
-            np.where(supports[key], curves_kcal[key], np.nan),
+            np.asarray(curves_kcal[key]) * KCAL_TO_KJ_MOL,
             label=label,
             color=color,
             linestyle=linestyle,
-            linewidth=2.0,
+            linewidth=2.1,
         )
+    visible = np.any(
+        np.stack([np.asarray(curves_kcal[key]) for key in ("centroid", "eq8", "eq10")])
+        <= float(max_kcal),
+        axis=0,
+    )
+    if np.any(visible):
+        selected = grid[visible]
+        padding = 0.03 * max(float(selected[-1] - selected[0]), float(grid[1] - grid[0]))
+        axis.set_xlim(max(float(grid[0]), float(selected[0] - padding)),
+                      min(float(grid[-1]), float(selected[-1] + padding)))
     axis.set_xlabel(cv_label)
-    axis.set_ylabel("Free energy (kcal/mol)")
-    axis.set_ylim(0.0, max_kcal)
-    axis.set_title(f"Reweighted 1D free energy: {name}")
-    axis.legend(frameon=False)
+    axis.set_ylabel("Free energy (kJ/mol)")
+    axis.set_ylim(0.0, float(max_kcal) * KCAL_TO_KJ_MOL)
+    axis.set_title("Reweighted 1D free-energy comparison")
+    axis.legend(frameon=False, fontsize=8)
     axis.grid(color="#d1d5db", linewidth=0.6, alpha=0.7)
     save_figure(fig, output / "figures" / f"fes1d-{name}")
     plt.close(fig)
@@ -2409,7 +2467,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         "derived_coordinate is available only in the two-CV water-ionization profile",
     )
     configured_labels = contract["plots"].get("cv_labels", {})
-    cv_labels = tuple(str(configured_labels.get(name, name)) for name in cv_names)
+    cv_labels = tuple(
+        str(configured_labels.get(name, default_cv_label(name))) for name in cv_names
+    )
     centroid = np.column_stack([field(centroid_data, fields, name)[selected] for name in sampling_cv_names])
     bead_arrays = []
     bead_selections = []
