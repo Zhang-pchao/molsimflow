@@ -377,9 +377,15 @@ tolerances are not automatic production-admission thresholds.
 
 # Bead-count convergence
 
-Use the LAMMPS centroid-virial estimator printed as `f_pi[7]` to reproduce the
-legacy bead-count check without fixed paths or fixed column numbers. Prepare a
-CSV manifest whose paths are absolute or relative to the manifest:
+Use one or more named LAMMPS PIMD estimators to compare bead counts without
+fixed paths or fixed column numbers. The standard energy and pressure check is:
+
+- `f_pi[5]`: primitive kinetic-energy estimator (eV)
+- `f_pi[6]`: virial energy estimator (eV)
+- `f_pi[7]`: centroid-virial energy estimator (eV)
+- `f_pi[10]`: centroid-virial pressure estimator (bar)
+
+Prepare a CSV manifest whose paths are absolute or relative to the manifest:
 
 ```csv
 label,beads,log
@@ -393,10 +399,13 @@ Then run:
 ```bash
 molsimflow postprocess pimd-bead-convergence \
   --manifest cases.csv --output convergence-v1 \
+  --field 'f_pi[5]' --field 'f_pi[6]' --field 'f_pi[7]' --field 'f_pi[10]' \
   --burn-in-ps 2 --blocks 5 --write-plot
 ```
 
-The command writes per-bead-count block standard errors and comparisons to the
-largest bead count. `within_sigma` means only that the sampled means are not
-distinguishable at the requested block-error threshold; it is not proof of
-equilibrium or scientific convergence.
+The command writes long-form summaries, per-estimator comparisons to the largest
+bead count, and one multi-panel plot labelled with physical quantities and
+units. A single `--field` also writes the legacy `bead_summary.csv` and
+`reference_comparison.csv` files. `within_sigma` means only that the sampled
+means are not distinguishable at the requested block-error threshold; it is not
+proof of equilibrium or scientific convergence.

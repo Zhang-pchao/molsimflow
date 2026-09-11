@@ -1737,8 +1737,6 @@ def _cmd_postprocess_pimd_bead_convergence(args: argparse.Namespace) -> int:
         str(args.manifest),
         "--output",
         str(args.output),
-        "--field",
-        args.field,
         "--burn-in-ps",
         str(args.burn_in_ps),
         "--blocks",
@@ -1746,6 +1744,8 @@ def _cmd_postprocess_pimd_bead_convergence(args: argparse.Namespace) -> int:
         "--sigma",
         str(args.sigma),
     ]
+    for field in args.fields or ["f_pi[7]"]:
+        workflow_args.extend(("--field", field))
     if args.write_plot:
         workflow_args.append("--write-plot")
     return convergence_main(workflow_args)
@@ -2901,7 +2901,12 @@ def _add_pimd_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None
 def _add_pimd_bead_convergence_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--manifest", type=Path, required=True, help="CSV with label,beads,log")
     parser.add_argument("--output", type=Path, required=True, help="Fresh output directory")
-    parser.add_argument("--field", default="f_pi[7]", help="LAMMPS thermo estimator")
+    parser.add_argument(
+        "--field",
+        action="append",
+        dest="fields",
+        help="LAMMPS thermo estimator; repeat to compare several estimators",
+    )
     parser.add_argument("--burn-in-ps", type=float, default=0.0)
     parser.add_argument("--blocks", type=int, default=5)
     parser.add_argument("--sigma", type=float, default=2.0)
