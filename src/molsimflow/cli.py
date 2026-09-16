@@ -1723,6 +1723,12 @@ def _cmd_postprocess_pimd_reweight(args: argparse.Namespace) -> int:
     return run(["--contract", str(args.contract), "--output", str(args.output)])
 
 
+def _cmd_postprocess_quantum_path(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.quantum_path_analysis import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
 def _cmd_postprocess_pimd_reweight_compare(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.pimd_reweight_compare import run
 
@@ -4198,6 +4204,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_pimd_reweight_postprocess_args(pimd_reweight)
     pimd_reweight.set_defaults(func=_cmd_postprocess_pimd_reweight)
+
+    quantum_path = postprocess_subparsers.add_parser(
+        "quantum-path",
+        help="Extract quantum-path descriptors and whole-frame conditional diagnostics",
+    )
+    _add_pimd_reweight_postprocess_args(quantum_path)
+    quantum_path.set_defaults(func=_cmd_postprocess_quantum_path)
 
     pimd_reweight_compare = postprocess_subparsers.add_parser(
         "pimd-reweight-compare",
