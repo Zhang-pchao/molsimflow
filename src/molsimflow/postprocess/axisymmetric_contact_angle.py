@@ -12,7 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import box_lengths, minimum_image_vectors, periodic_center
+from molsimflow.io.lammps_dump import (
+    box_lengths,
+    minimum_image_vectors,
+    open_lammps_dump_text,
+    periodic_center,
+)
 from molsimflow.postprocess.surface_reference import SurfaceReference, load_surface_reference
 
 
@@ -42,7 +47,7 @@ def iter_selected_frames(
     atom_type: int | None,
     surface_range: tuple[int, int] | None = None,
 ) -> Iterator[CoordinateFrame]:
-    with Path(path).open(encoding="utf-8") as handle:
+    with open_lammps_dump_text(Path(path)) as handle:
         while True:
             line = handle.readline()
             if not line:
