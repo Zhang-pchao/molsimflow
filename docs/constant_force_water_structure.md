@@ -84,7 +84,9 @@ produce exchange rows and terminate one residence episode.
 Water O-H ownership uses the nearest oxygen inside oh_cutoff_A. A hydrogen bond
 requires O-O distance within oo_cutoff_A and donor O-H...O angular deviation
 within hbond_angle_deg. Water-water and water-surface donor directions are
-reported separately.
+reported separately. Tetrahedral order is defined only for water oxygen with at
+least four oxygen neighbors inside oo_cutoff_A; lower-coordination values are
+reported as NaN.
 
 Each region reports:
 

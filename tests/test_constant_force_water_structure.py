@@ -2,13 +2,16 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from molsimflow.cli import build_parser
 from molsimflow.postprocess.constant_force_water_structure import (
+    ChemistryFrame,
     edge_similarity,
     hbond_component_metrics,
     run_contract,
+    water_order_metrics,
 )
 
 
@@ -57,6 +60,40 @@ def test_edge_similarity_and_network_metrics():
     count, largest = hbond_component_metrics({1, 2, 3, 4}, previous | current)
     assert count == 1
     assert largest == 1.0
+
+
+def test_water_order_requires_four_neighbors_inside_oo_cutoff():
+    bounds = np.asarray([[0.0, 10.0], [0.0, 10.0], [0.0, 10.0]])
+    water = np.asarray(
+        [
+            [5.0, 5.0, 5.0],
+            [0.5, 0.5, 0.5],
+            [9.5, 0.5, 0.5],
+            [0.5, 9.5, 0.5],
+            [9.5, 9.5, 9.5],
+        ]
+    )
+    frame = ChemistryFrame(
+        step=0,
+        bounds=bounds,
+        water_ids=np.arange(1, 6),
+        water=water,
+        surface_oxygen_ids=np.asarray([], dtype=int),
+        surface_oxygen=np.empty((0, 3)),
+        water_oh=tuple(np.empty((0, 3)) for _ in water),
+        surface_oh=(),
+        water_h_coordination=np.zeros(len(water), dtype=int),
+    )
+
+    qtet, _lsi, coordination = water_order_metrics(
+        frame,
+        oo_cutoff_A=3.5,
+        lsi_cutoff_A=3.7,
+        lsi_neighbor_cap=24,
+    )
+
+    assert coordination[0] == 0
+    assert np.isnan(qtet[0])
 
 
 def test_layer_contract_reports_exchange_and_one_ps_persistence(tmp_path):

@@ -383,14 +383,14 @@ def water_order_metrics(
             if int(neighbor) != oxygen_index and math.isfinite(float(distance))
         )
         ordered_distances = np.asarray([item[0] for item in ordered])
-        if len(ordered) >= 4:
+        coordination[oxygen_index] = int(np.count_nonzero(ordered_distances <= oo_cutoff_A))
+        if coordination[oxygen_index] >= 4:
             nearest = np.asarray([item[1] for item in ordered[:4]], dtype=int)
             vectors = minimum_image_vectors(
                 frame.water[nearest] - frame.water[oxygen_index], lengths
             )
             qtet[oxygen_index] = tetrahedral_order(vectors)
         lsi[oxygen_index] = local_structure_index(ordered_distances, lsi_cutoff_A)[0]
-        coordination[oxygen_index] = int(np.count_nonzero(ordered_distances <= oo_cutoff_A))
     return qtet, lsi, coordination
 
 
