@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 
 from molsimflow.cli import build_parser
-from molsimflow.postprocess.constant_force_islands import run_contract as run_islands
+from molsimflow.postprocess.constant_force_islands import (
+    match_components,
+    run_contract as run_islands,
+)
 from molsimflow.postprocess.constant_force_layers import nearest_sites, run_contract as run_layers
 from molsimflow.postprocess.constant_force_oxygen import connected_components
 
@@ -81,6 +84,18 @@ def test_island_tracking_resolves_merge_and_split(tmp_path):
     assert (tmp_path / "islands-output" / "OUTPUT-SHA256SUMS").is_file()
 
 
+def test_component_matching_keeps_large_lineage_during_satellite_merge():
+    previous = {1: set(range(100)), 2: {100}}
+    current = [set(range(101))]
+    assignment, overlaps = match_components(
+        previous,
+        current,
+        overlap_fraction=0.25,
+    )
+    assert overlaps == {(1, 0): 100, (2, 0): 1}
+    assert assignment == {0: 1}
+
+
 def _layer_contract(tmp_path: Path) -> Path:
     positions = [(1, 1.0, 1.0, 1.0), (2, 2.0, 1.0, 1.5), (3, 3.0, 1.0, 2.5), (4, 4.0, 1.0, 3.0)]
     cases = []
@@ -117,6 +132,11 @@ def test_layer_transport_subtracts_baseline_and_tracks_exchange(tmp_path):
     fy = [row for row in responses if row["branch_id"] == "fy"]
     assert [float(row["mean_excess_axis_velocity_mps"]) for row in fx] == pytest.approx([1.0, 1.0])
     assert [float(row["mean_excess_axis_velocity_mps"]) for row in fy] == pytest.approx([2.0, 2.0])
+    assert [float(row["mean_count"]) for row in fx] == pytest.approx([1.5, 2.5])
+    assert [float(row["occupied_fraction"]) for row in fx] == pytest.approx([1.0, 1.0])
+    assert [float(row["mean_excess_surface_flux_molecules_per_A_ps"]) for row in fx] == pytest.approx(
+        [0.00015, 0.00025]
+    )
     assert (tmp_path / "layers-output" / "density_modes.tsv").is_file()
 
 

@@ -47,9 +47,11 @@ SITE_FIELDS = (
 )
 RESPONSE_FIELDS = (
     "case_id", "branch_id", "direction", "layer_index", "samples",
+    "occupied_fraction", "mean_count", "valid_paired_velocity_samples",
     "mean_axis_velocity_mps", "baseline_axis_velocity_mps",
     "mean_excess_axis_velocity_mps", "block_excess_sem_mps",
     "mean_surface_flux_molecules_per_A_ps",
+    "mean_excess_surface_flux_molecules_per_A_ps",
 )
 
 
@@ -315,7 +317,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     }
     response_groups: dict[
         tuple[str, str, str, int],
-        list[tuple[float, float, float, float, float]],
+        list[tuple[float, float, float, float, float, float, float]],
     ] = defaultdict(list)
     for row in layer_rows:
         direction = row["direction"]
@@ -324,6 +326,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
             base_axis = axis
             excess = 0.0
             flux = float(row["surface_flux_x_molecules_per_A_ps"])
+            excess_flux = 0.0
         else:
             reference = baseline.get((row["case_id"], row["step"], row["layer_index"]))
             if reference is None:
@@ -332,8 +335,12 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
             flux_key = "surface_flux_x_molecules_per_A_ps" if direction == "x" else "surface_flux_y_molecules_per_A_ps"
             axis = float(row[key]); base_axis = float(reference[key]); excess = axis - base_axis
             flux = float(row[flux_key])
+            excess_flux = flux - float(reference[flux_key])
         response_groups[(row["case_id"], row["branch_id"], direction, int(row["layer_index"]))].append(
-            (float(row["time_ps"]), axis, base_axis, excess, flux)
+            (
+                float(row["time_ps"]), axis, base_axis, excess, flux,
+                float(row["count"]), excess_flux,
+            )
         )
     response_rows = []
     for (case_id, branch_id, direction, layer), values in sorted(response_groups.items()):
@@ -348,11 +355,15 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         response_rows.append({
             "case_id": case_id, "branch_id": branch_id, "direction": direction,
             "layer_index": layer, "samples": len(values),
+            "occupied_fraction": float(np.mean(array[:, 5] > 0.0)),
+            "mean_count": float(np.mean(array[:, 5])),
+            "valid_paired_velocity_samples": int(np.count_nonzero(np.isfinite(array[:, 3]))),
             "mean_axis_velocity_mps": float(np.nanmean(array[:, 1])),
             "baseline_axis_velocity_mps": float(np.nanmean(array[:, 2])),
             "mean_excess_axis_velocity_mps": float(np.nanmean(array[:, 3])),
             "block_excess_sem_mps": sem,
             "mean_surface_flux_molecules_per_A_ps": float(np.nanmean(array[:, 4])),
+            "mean_excess_surface_flux_molecules_per_A_ps": float(np.nanmean(array[:, 6])),
         })
 
     write_tsv(output / "layer_timeseries.tsv", layer_rows, LAYER_FIELDS)

@@ -100,8 +100,8 @@ def match_components(
     }
     candidates = sorted(
         (
-            overlap / min(len(previous[track]), len(current[index])),
             overlap,
+            overlap / min(len(previous[track]), len(current[index])),
             track,
             index,
         )
