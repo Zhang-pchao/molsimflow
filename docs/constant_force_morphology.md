@@ -19,6 +19,16 @@ geometric split and merge events. Each island row contains its PBC-aware
 wrapped and unwrapped center, velocity, retained membership, and exchanged
 oxygen counts.
 
+`molecule_exchange.tsv` preserves every oxygen identity whose island owner
+changes between consecutive frames. The `exchange_class` column distinguishes
+transfer between two persistent island tracks, split or merge lineage
+reassignment, and entry or exit when the selected oxygen population changes.
+`track_exchange_summary.tsv` aggregates each source-target pair, while
+`branch_transport_summary.tsv` reports main-island and size-weighted satellite
+velocities, gross and net exchange, and transfer rates. Component ranks in the
+identity ledger make main-island versus satellite exchange explicit without a
+system-specific atom-ID or size cutoff.
+
 Required contract fields are `schema_version`, `timestep_fs`,
 `cluster_cutoff_A`, and `cases`. Each case contains `case_id`, `branch_id`,
 `direction`, and `trajectories`. Optional lineage thresholds are

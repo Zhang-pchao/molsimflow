@@ -7,10 +7,14 @@ import pytest
 
 from molsimflow.cli import build_parser
 from molsimflow.postprocess.constant_force_islands import (
+    _exchange_class,
     match_components,
+)
+from molsimflow.postprocess.constant_force_islands import (
     run_contract as run_islands,
 )
-from molsimflow.postprocess.constant_force_layers import nearest_sites, run_contract as run_layers
+from molsimflow.postprocess.constant_force_layers import nearest_sites
+from molsimflow.postprocess.constant_force_layers import run_contract as run_layers
 from molsimflow.postprocess.constant_force_oxygen import connected_components
 
 
@@ -81,6 +85,19 @@ def test_island_tracking_resolves_merge_and_split(tmp_path):
     assert summary["split_events"] == 1
     events = _read_tsv(tmp_path / "islands-output" / "lineage_events.tsv")
     assert {row["event_type"] for row in events} == {"MERGE", "SPLIT"}
+    exchanges = _read_tsv(tmp_path / "islands-output" / "molecule_exchange.tsv")
+    assert len(exchanges) == 4
+    assert {row["exchange_class"] for row in exchanges} == {
+        "MERGE_LINEAGE_REASSIGNMENT", "SPLIT_LINEAGE_REASSIGNMENT",
+    }
+    exchanged_ids = {int(row["oxygen_id"]) for row in exchanges}
+    assert len(exchanged_ids) == 2
+    assert all(sum(int(row["oxygen_id"]) == oxygen_id for row in exchanges) == 2
+               for oxygen_id in exchanged_ids)
+    branch = _read_tsv(tmp_path / "islands-output" / "branch_transport_summary.tsv")
+    assert len(branch) == 1
+    assert int(branch[0]["track_to_track_transfer_count"]) == 4
+    assert int(branch[0]["lineage_reassignment_count"]) == 4
     assert (tmp_path / "islands-output" / "OUTPUT-SHA256SUMS").is_file()
 
 
@@ -94,6 +111,80 @@ def test_component_matching_keeps_large_lineage_during_satellite_merge():
     )
     assert overlaps == {(1, 0): 100, (2, 0): 1}
     assert assignment == {0: 1}
+
+
+def test_island_exchange_tracks_persistent_identity_transfer(tmp_path):
+    trajectory = tmp_path / "oxygen.lammpstrj"
+    _write_dump(
+        trajectory,
+        [
+            (0, [(1, 1.0, 1.0, 1.0, 0, 0, 0), (2, 1.5, 1.0, 1.0, 0, 0, 0),
+                 (3, 7.0, 7.0, 1.0, 0, 0, 0), (4, 7.5, 7.0, 1.0, 0, 0, 0)]),
+            (10, [(1, 1.0, 1.0, 1.0, 0, 0, 0),
+                  (2, 6.5, 7.0, 1.0, 0, 0, 0), (3, 7.0, 7.0, 1.0, 0, 0, 0),
+                  (4, 7.5, 7.0, 1.0, 0, 0, 0)]),
+        ],
+    )
+    contract = tmp_path / "islands.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": 1, "time_origin_step": 0, "timestep_fs": 1000.0,
+                "cluster_cutoff_A": 1.0, "lineage_overlap_fraction": 0.25,
+                "event_overlap_fraction": 0.25, "event_minimum_overlap_count": 1,
+                "write_plots": False,
+                "cases": [{
+                    "case_id": "surface", "branch_id": "fx", "direction": "x",
+                    "trajectories": [str(trajectory)],
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = run_islands(contract, tmp_path / "islands-output")
+    assert summary["molecule_exchange_rows"] == 1
+    exchanges = _read_tsv(tmp_path / "islands-output" / "molecule_exchange.tsv")
+    assert exchanges[0]["exchange_class"] == "PERSISTENT_ISLAND_TRANSFER"
+    assert int(exchanges[0]["oxygen_id"]) == 2
+    tracks = _read_tsv(tmp_path / "islands-output" / "track_summary.tsv")
+    main = max(tracks, key=lambda row: float(row["mean_size"]))
+    assert int(main["net_oxygen_transfer"]) == 1
+
+
+def test_exchange_class_distinguishes_untracked_entry_and_exit():
+    assert _exchange_class(None, 2, {1}, {1, 2}) == "ENTRY_FROM_UNTRACKED"
+    assert _exchange_class(2, None, {1, 2}, {1}) == "EXIT_TO_UNTRACKED"
+
+
+def test_island_center_unwraps_across_periodic_boundary_without_identity_exchange(tmp_path):
+    trajectory = tmp_path / "oxygen.lammpstrj"
+    _write_dump(
+        trajectory,
+        [
+            (0, [(1, 9.8, 1.0, 1.0, 0, 0, 0), (2, 0.2, 1.0, 1.0, 0, 0, 0)]),
+            (10, [(1, 0.2, 1.0, 1.0, 0, 0, 0), (2, 0.6, 1.0, 1.0, 0, 0, 0)]),
+        ],
+    )
+    contract = tmp_path / "islands.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": 1, "time_origin_step": 0, "timestep_fs": 1000.0,
+                "cluster_cutoff_A": 1.0, "write_plots": False,
+                "cases": [{
+                    "case_id": "surface", "branch_id": "fx", "direction": "x",
+                    "trajectories": [str(trajectory)],
+                }],
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = run_islands(contract, tmp_path / "islands-output")
+    assert summary["molecule_exchange_rows"] == 0
+    rows = _read_tsv(tmp_path / "islands-output" / "island_timeseries.tsv")
+    assert [int(row["track_id"]) for row in rows] == [1, 1]
+    assert float(rows[1]["center_x_unwrapped_A"]) - float(rows[0]["center_x_unwrapped_A"]) == pytest.approx(0.4)
+    assert float(rows[1]["vx_mps"]) == pytest.approx(4.0)
 
 
 def _layer_contract(tmp_path: Path) -> Path:
