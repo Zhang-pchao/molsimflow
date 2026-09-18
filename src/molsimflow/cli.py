@@ -2434,6 +2434,20 @@ def _cmd_postprocess_constant_force_layers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_postprocess_constant_force_water_structure(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_water_structure import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"frame_region_rows={summary['frame_region_rows']} "
+        f"persistence_rows={summary['persistence_rows']}"
+    )
+    return 0
+
+
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
@@ -4457,6 +4471,16 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_layers.add_argument("--contract", type=Path, required=True)
     constant_force_layers.add_argument("--output", type=Path, required=True)
     constant_force_layers.set_defaults(func=_cmd_postprocess_constant_force_layers)
+
+    constant_force_water_structure = postprocess_subparsers.add_parser(
+        "constant-force-water-structure",
+        help="Analyze morphology-aware H bonds, water order, turnover, and residence",
+    )
+    constant_force_water_structure.add_argument("--contract", type=Path, required=True)
+    constant_force_water_structure.add_argument("--output", type=Path, required=True)
+    constant_force_water_structure.set_defaults(
+        func=_cmd_postprocess_constant_force_water_structure
+    )
 
     return parser
 
