@@ -9,6 +9,7 @@ import pytest
 from molsimflow.cli import build_parser as build_cli_parser
 from molsimflow.postprocess.constant_force_events import (
     _deduplicate_species_rows,
+    _water_order,
     _write_tsv,
     build_parser,
     merge_event_samples,
@@ -47,6 +48,10 @@ def _atom_rows(
         (30, 2, 8.0, 8.0, 7.0 if step != 10 else 9.0, 0, 0, image_z),
         (31, 1, 8.0, 8.0, 6.1 if step != 10 else 8.1, 0, 0, image_z),
         (32, 1, 8.0, 8.0, 7.9 if step != 10 else 9.9, 0, 0, image_z),
+        (40, 3, 2.0, 8.0, 1.0, 0, 0, 0),
+        (41, 1, 2.9, 8.0, 1.0, 0, 0, 0),
+        (42, 1, 1.55, 8.779, 1.0, 0, 0, 0),
+        (43, 1, 1.55, 7.221, 1.0, 0, 0, 0),
     ]
     if step == 10:
         # Hydrogen 12 moves from O10 to O20 and returns at step 20.
@@ -107,15 +112,15 @@ def _write_contract(tmp_path: Path, *, image_z: int = 0) -> Path:
     _write_motion(motion_b, [(10, 0.0, 0.0, 0.5), (20, 2.0, 3.0, 2.0)])
     _write_species(species)
     contract = {
-        "schema_version": 1,
+        "schema_version": 2,
         "time_origin_step": 0,
         "timestep_fs": 1000.0,
         "window_ps": 20.0,
         "merge_gap_ps": 11.0,
         "high_z_threshold_A": 8.0,
         "wall_clearance_threshold_A": 1.0,
-        "types": {"hydrogen": 1, "oxygen": 2, "silicon": 8},
-        "cutoffs_A": {"oh": 1.35, "si_o": 2.25},
+        "types": {"hydrogen": 1, "oxygen": 2, "silicon": 8, "carbon": 3},
+        "cutoffs_A": {"oh": 1.35, "ch": 1.35, "si_o": 2.25},
         "cases": [
             {
                 "case_id": "synthetic",
@@ -159,6 +164,30 @@ def test_nearest_two_oxygen_is_periodic_only_in_xy():
 
     assert indices.tolist() == [[0, 1]]
     assert distances[0].tolist() == pytest.approx([0.2, 0.4])
+
+
+def test_water_order_requires_four_neighbors_inside_oo_cutoff():
+    oxygen = np.asarray(
+        [
+            [5.0, 5.0, 5.0],
+            [0.5, 0.5, 0.5],
+            [9.5, 0.5, 0.5],
+            [0.5, 9.5, 0.5],
+            [9.5, 9.5, 9.5],
+        ]
+    )
+    bounds = np.asarray([[0.0, 10.0], [0.0, 10.0], [0.0, 10.0]])
+
+    qtet, _lsi, coordination = _water_order(
+        oxygen,
+        bounds,
+        oo_cutoff_A=3.5,
+        lsi_cutoff_A=3.7,
+        lsi_neighbor_cap=24,
+    )
+
+    assert coordination[0] == 0
+    assert np.isnan(qtet[0])
 
 
 def test_merge_event_samples_keeps_long_episode_bounds_and_atom_ids():
@@ -236,6 +265,8 @@ def test_run_contract_tracks_species_return_and_intact_high_z_water(tmp_path):
     frames = _read_tsv(output / "frame_species.tsv")
     assert {row["OH_solution"] for row in frames} == {"0", "1"}
     assert {row["H3O_solution"] for row in frames} == {"0", "1"}
+    assert {row["carbon_owned_H"] for row in frames} == {"3"}
+    assert {row["unassigned_H"] for row in frames} == {"0"}
     motion = _read_tsv(output / "motion_event_summary.tsv")
     assert motion[0]["dx_window_A"] == "3.0"
     assert motion[0]["dy_window_A"] == "5.0"

@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -26,7 +26,10 @@ from molsimflow.postprocess.local_water_order import (
     tetrahedral_order,
     water_hbond_edges,
 )
-from molsimflow.postprocess.species_assignment import assign_hydrogen_to_nearest_oxygen
+from molsimflow.postprocess.species_assignment import (
+    OxygenHydrogenAssignment,
+    assign_hydrogen_to_nearest_oxygen,
+)
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,7 @@ FRAME_FIELDS = (
     "OH4plus_solution",
     "framework_OH",
     "proton_pool",
+    "carbon_owned_H",
     "unassigned_H",
     "max_z_oxygen_id",
     "max_z_A",
@@ -436,13 +440,13 @@ def _water_order(
             if int(neighbor) != oxygen_index and math.isfinite(float(distance))
         )
         ordered_distances = np.asarray([item[0] for item in ordered])
-        if len(ordered) >= 4:
+        coordination[oxygen_index] = int(np.count_nonzero(ordered_distances <= oo_cutoff_A))
+        if coordination[oxygen_index] >= 4:
             nearest = np.asarray([item[1] for item in ordered[:4]], dtype=int)
             vectors = oxygen[nearest] - oxygen[oxygen_index]
             vectors[:, :2] = minimum_image_vectors(vectors[:, :2], lengths[:2])
             qtet[oxygen_index] = tetrahedral_order(vectors)
         lsi[oxygen_index] = local_structure_index(ordered_distances, lsi_cutoff_A)[0]
-        coordination[oxygen_index] = int(np.count_nonzero(ordered_distances <= oo_cutoff_A))
     return qtet, lsi, coordination
 
 
@@ -656,7 +660,9 @@ def _frame_species(
     hydrogen_type: int,
     oxygen_type: int,
     silicon_type: int,
+    carbon_type: Optional[int],
     oh_cutoff_A: float,
+    ch_cutoff_A: Optional[float],
     sio_cutoff_A: float,
     oo_cutoff_A: float,
     hbond_angle_deg: float,
@@ -668,6 +674,11 @@ def _frame_species(
     oxygen_indices = np.flatnonzero(types == oxygen_type)
     hydrogen_indices = np.flatnonzero(types == hydrogen_type)
     silicon_indices = np.flatnonzero(types == silicon_type)
+    carbon_indices = (
+        np.flatnonzero(types == carbon_type)
+        if carbon_type is not None
+        else np.zeros(0, dtype=int)
+    )
     if oxygen_indices.size == 0:
         raise ValueError(f"No oxygen atoms at step {frame.timestep}")
     if silicon_indices.size == 0:
@@ -679,6 +690,37 @@ def _frame_species(
         oh_cutoff=oh_cutoff_A,
         periodic=(True, True, False),
     )
+    carbon_owned = np.zeros(len(hydrogen_indices), dtype=bool)
+    if carbon_type is not None:
+        if ch_cutoff_A is None or not math.isfinite(ch_cutoff_A) or ch_cutoff_A <= 0.0:
+            raise ValueError("ch_cutoff_A must be positive when carbon_type is configured")
+        if carbon_indices.size:
+            carbon_assignment = assign_hydrogen_to_nearest_oxygen(
+                coordinates[carbon_indices],
+                coordinates[hydrogen_indices],
+                frame.bounds,
+                oh_cutoff=ch_cutoff_A,
+                periodic=(True, True, False),
+            )
+            oxygen_valid = assignment.hydrogen_to_oxygen_index >= 0
+            carbon_valid = carbon_assignment.hydrogen_to_oxygen_index >= 0
+            carbon_owned = carbon_valid & (
+                ~oxygen_valid
+                | (carbon_assignment.hydrogen_distance < assignment.hydrogen_distance)
+            )
+            oxygen_owner = assignment.hydrogen_to_oxygen_index.copy()
+            oxygen_distance = assignment.hydrogen_distance.copy()
+            oxygen_owner[carbon_owned] = -1
+            oxygen_distance[carbon_owned] = np.inf
+            assigned_to_oxygen = oxygen_owner >= 0
+            assignment = OxygenHydrogenAssignment(
+                h_count_per_oxygen=np.bincount(
+                    oxygen_owner[assigned_to_oxygen],
+                    minlength=len(oxygen_indices),
+                ).astype(int),
+                hydrogen_to_oxygen_index=oxygen_owner,
+                hydrogen_distance=oxygen_distance,
+            )
     distance_to_si = _minimum_distance(
         coordinates[oxygen_indices], coordinates[silicon_indices], frame.bounds
     )
@@ -824,7 +866,11 @@ def _frame_species(
             "distance_to_si_A": float(distance_to_si[local_o]),
             "image_z": int(frame.atom_rows[global_o][column["iz"]]) if "iz" in column else 0,
         }
-    unassigned = int(np.count_nonzero(assignment.hydrogen_to_oxygen_index < 0))
+    unassigned = int(
+        np.count_nonzero(
+            (assignment.hydrogen_to_oxygen_index < 0) & ~carbon_owned
+        )
+    )
     max_solution_local = int(np.argmax(coordinates[oxygen_indices[solution], 2]))
     solution_global = oxygen_indices[solution]
     max_global = int(solution_global[max_solution_local])
@@ -841,6 +887,7 @@ def _frame_species(
             np.count_nonzero(solution_counts == 3)
             + np.count_nonzero(framework_counts == 1)
         ),
+        "carbon_owned_H": int(np.count_nonzero(carbon_owned)),
         "unassigned_H": unassigned,
         "max_z_oxygen_id": max_id,
         "max_z_A": float(coordinates[max_global, 2]),
@@ -865,7 +912,9 @@ def extract_state_windows(
     hydrogen_type: int,
     oxygen_type: int,
     silicon_type: int,
+    carbon_type: Optional[int],
     oh_cutoff_A: float,
+    ch_cutoff_A: Optional[float],
     sio_cutoff_A: float,
     oo_cutoff_A: float,
     hbond_angle_deg: float,
@@ -895,7 +944,9 @@ def extract_state_windows(
                 hydrogen_type=hydrogen_type,
                 oxygen_type=oxygen_type,
                 silicon_type=silicon_type,
+                carbon_type=carbon_type,
                 oh_cutoff_A=oh_cutoff_A,
+                ch_cutoff_A=ch_cutoff_A,
                 sio_cutoff_A=sio_cutoff_A,
                 oo_cutoff_A=oo_cutoff_A,
                 hbond_angle_deg=hbond_angle_deg,
@@ -1088,8 +1139,14 @@ def summarize_event_outcomes(
 
 
 def _validate_contract(raw: Mapping[str, object]) -> None:
-    if _int(raw.get("schema_version")) != 1:
-        raise ValueError("schema_version must be 1")
+    schema_version = _int(raw.get("schema_version"))
+    if schema_version not in (1, 2):
+        raise ValueError("schema_version must be 1 or 2")
+    if schema_version >= 2:
+        types = dict(raw.get("types", {}))
+        cutoffs = dict(raw.get("cutoffs_A", {}))
+        if "carbon" not in types or "ch" not in cutoffs:
+            raise ValueError("schema_version 2 requires types.carbon and cutoffs_A.ch")
     if not isinstance(raw.get("cases"), list) or not raw["cases"]:
         raise ValueError("contract cases must be a non-empty list")
     if _float(raw.get("window_ps"), 20.0) <= 0.0:
@@ -1170,7 +1227,9 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
     hydrogen_type = _int(types.get("hydrogen"), 1)
     oxygen_type = _int(types.get("oxygen"), 2)
     silicon_type = _int(types.get("silicon"), 8)
+    carbon_type = _int(types.get("carbon")) if "carbon" in types else None
     oh_cutoff_A = _float(cutoffs.get("oh"), 1.35)
+    ch_cutoff_A = _float(cutoffs.get("ch")) if carbon_type is not None else None
     sio_cutoff_A = _float(cutoffs.get("si_o"), 2.25)
     oo_cutoff_A = _float(cutoffs.get("oo"), 3.5)
     hbond_angle_deg = _float(cutoffs.get("hbond_angle_deg"), 30.0)
@@ -1187,6 +1246,15 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
         lsi_neighbor_cap,
     ) <= 0:
         raise ValueError("All geometry cutoffs and lsi_neighbor_cap must be positive")
+    if carbon_type is not None and (
+        ch_cutoff_A is None or not math.isfinite(ch_cutoff_A) or ch_cutoff_A <= 0.0
+    ):
+        raise ValueError("cutoffs_A.ch must be positive when types.carbon is configured")
+    configured_types = [hydrogen_type, oxygen_type, silicon_type]
+    if carbon_type is not None:
+        configured_types.append(carbon_type)
+    if len(configured_types) != len(set(configured_types)):
+        raise ValueError("Configured atom types must be distinct")
     motion_columns = {
         "step": "TimeStep",
         "x": "v_dxrel",
@@ -1266,7 +1334,9 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
             hydrogen_type=hydrogen_type,
             oxygen_type=oxygen_type,
             silicon_type=silicon_type,
+            carbon_type=carbon_type,
             oh_cutoff_A=oh_cutoff_A,
+            ch_cutoff_A=ch_cutoff_A,
             sio_cutoff_A=sio_cutoff_A,
             oo_cutoff_A=oo_cutoff_A,
             hbond_angle_deg=hbond_angle_deg,

@@ -17,7 +17,7 @@ must be unique.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "time_origin_step": 1000000,
   "timestep_fs": 0.5,
   "window_ps": 20.0,
@@ -27,10 +27,12 @@ must be unique.
   "types": {
     "hydrogen": 1,
     "oxygen": 2,
-    "silicon": 8
+    "silicon": 8,
+    "carbon": 3
   },
   "cutoffs_A": {
     "oh": 1.35,
+    "ch": 1.35,
     "si_o": 2.25,
     "oo": 3.5,
     "hbond_angle_deg": 30.0,
@@ -69,6 +71,11 @@ must be unique.
 }
 ```
 
+Schema 2 requires an explicit carbon type and C-H cutoff. Hydrogen atoms are
+assigned to the closest valid oxygen or carbon under periodic X/Y boundaries;
+carbon-owned hydrogen atoms are reported separately and are excluded from
+`unassigned_H`. Schema 1 remains readable for systems without carbon.
+
 Species tables use `step`, `time_ps`, `O_solution`, `OH_solution`,
 `OH4plus_solution`, and `unassigned_H` by default. Override the first two names
 with `species_step_column` and `species_time_column` inside a case entry.
@@ -93,6 +100,8 @@ invalid event times fail closed.
 
 Species and proton-sharing labels are geometric diagnostics. The sharing delta
 is the second-nearest minus nearest O-H distance and requires the second oxygen
-to lie inside the O-H cutoff. Event-aligned association does not by itself
+to lie inside the O-H cutoff. `q_tet` is reported only when at least four oxygen
+neighbors lie inside the configured O-O cutoff. Event-aligned association does
+not by itself
 establish formal charge identity, reaction kinetics, wall causality, or a
 friction coefficient.
