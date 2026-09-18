@@ -43,6 +43,33 @@ def _cmd_extxyz_to_lammps_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_relocate_oxygen_species(args: argparse.Namespace) -> int:
+    from molsimflow.structure.molecular_relocation import relocate_lammps_atomic_data
+
+    periodic = tuple(name in args.periodic_axes for name in "xyz")
+    report = relocate_lammps_atomic_data(
+        args.input,
+        args.output,
+        args.selected_oxygen_ids,
+        mapping_path=args.mapping,
+        report_path=args.report,
+        oxygen_type=args.oxygen_type,
+        hydrogen_type=args.hydrogen_type,
+        oh_cutoff_A=args.oh_cutoff_A,
+        allowed_hydrogen_counts=args.allowed_hydrogen_counts,
+        axis=args.axis,
+        source_anchor=args.source_anchor,
+        stationary_buffer_A=args.stationary_buffer_A,
+        high_boundary_buffer_A=args.high_boundary_buffer_A,
+        periodic=periodic,
+        assignment_chunk_size=args.assignment_chunk_size,
+    )
+    print(report["output"])
+    print(report["mapping"])
+    print(report["report"])
+    return 0
+
+
 def _cmd_equal_volume_radius(args: argparse.Namespace) -> int:
     radius = equal_volume_radius(args.radii)
     print(f"{radius:.6f}")
@@ -2337,6 +2364,19 @@ def _cmd_postprocess_sphere_interface_structure(args: argparse.Namespace) -> int
     return interface_main(workflow_args)
 
 
+def _cmd_postprocess_constant_force_events(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_events import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"events={summary['events']} "
+        f"z_image_crossing_events={summary['z_image_crossing_events']}"
+    )
+    return 0
+
 
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -3180,6 +3220,35 @@ def build_parser() -> argparse.ArgumentParser:
     to_lammps.add_argument("--xyz", type=Path, required=True, help="Input extended XYZ file")
     to_lammps.add_argument("--output", type=Path, required=True, help="Output LAMMPS data file")
     to_lammps.set_defaults(func=_cmd_extxyz_to_lammps_data)
+
+    relocate_species = structure_subparsers.add_parser(
+        "relocate-oxygen-species",
+        help="Move selected O atoms and their nearest PBC-assigned H atoms",
+    )
+    relocate_species.add_argument("--input", type=Path, required=True)
+    relocate_species.add_argument("--output", type=Path, required=True)
+    relocate_species.add_argument("--selected-oxygen-ids", type=Path, required=True)
+    relocate_species.add_argument("--mapping", type=Path)
+    relocate_species.add_argument("--report", type=Path)
+    relocate_species.add_argument("--oxygen-type", type=int, default=2)
+    relocate_species.add_argument("--hydrogen-type", type=int, default=1)
+    relocate_species.add_argument("--oh-cutoff-A", type=float, default=1.3)
+    relocate_species.add_argument(
+        "--allowed-hydrogen-counts", type=int, nargs="+", default=[1, 2, 3]
+    )
+    relocate_species.add_argument("--axis", choices=("x", "y", "z"), default="z")
+    relocate_species.add_argument(
+        "--source-anchor", choices=("lower", "upper"), default="lower"
+    )
+    relocate_species.add_argument("--stationary-buffer-A", type=float, default=4.0)
+    relocate_species.add_argument("--high-boundary-buffer-A", type=float, default=20.0)
+    relocate_species.add_argument("--assignment-chunk-size", type=int, default=256)
+    relocate_species.add_argument(
+        "--periodic-axes",
+        choices=("x", "y", "z", "xy", "xz", "yz", "xyz"),
+        default="xyz",
+    )
+    relocate_species.set_defaults(func=_cmd_relocate_oxygen_species)
 
     equal_radius = structure_subparsers.add_parser(
         "equal-volume-radius",
@@ -4288,6 +4357,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_sphere_interface_structure_postprocess_args(sphere_interface_structure)
     sphere_interface_structure.set_defaults(func=_cmd_postprocess_sphere_interface_structure)
+
+    constant_force_events = postprocess_subparsers.add_parser(
+        "constant-force-events",
+        help="Audit reactive-species, high-z, wall, and motion event windows",
+    )
+    constant_force_events.add_argument("--contract", type=Path, required=True)
+    constant_force_events.add_argument("--output", type=Path, required=True)
+    constant_force_events.set_defaults(func=_cmd_postprocess_constant_force_events)
 
     return parser
 

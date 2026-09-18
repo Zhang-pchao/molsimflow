@@ -67,6 +67,22 @@ molsimflow structure extxyz-to-lammps-data \
   --output model_atomic.data
 ```
 
+Relocate selected oxygen species without breaking O-H connectivity across PBC:
+
+```bash
+molsimflow structure relocate-oxygen-species \
+  --input source.data \
+  --output relocated.data \
+  --selected-oxygen-ids selected_O.ids \
+  --source-anchor lower \
+  --stationary-buffer-A 4 \
+  --high-boundary-buffer-A 20
+```
+
+The atomic-style LAMMPS data writer preserves velocities and all non-coordinate
+sections, moves every H assigned to a selected O within the cutoff, clears image
+flags along the relocation axis, and emits a mapping table plus a JSON gate.
+
 Run generic PLUMED diagnostics for selected collective variables:
 
 ```bash
@@ -144,6 +160,15 @@ molsimflow postprocess tpcl-pinning-slip \
   --font-path Arial.ttf
 ```
 
+Audit reactive-species, high-Z, wall-approach, and lateral-motion event windows
+from restart-segmented constant-force trajectories:
+
+```bash
+molsimflow postprocess constant-force-events \
+  --contract event-audit.json \
+  --output event_audit_results
+```
+
 Every command accepts `--help` and writes only to paths supplied through its
 arguments or configuration.
 
@@ -153,7 +178,7 @@ arguments or configuration.
 | --- | --- | --- |
 | Structure and I/O | extended XYZ, LAMMPS data, double-bubble slabs | [Configuration](docs/configuration.md) |
 | PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
-| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events, TPCL motion | [Post-processing](docs/postprocess_migration.md), [TPCL pinning--slip](docs/tpcl_pinning_slip.md), [surface proton transfer](docs/surface_proton_transfer.md) |
+| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events, TPCL motion | [Post-processing](docs/postprocess_migration.md), [constant-force events](docs/constant_force_events.md), [TPCL pinning--slip](docs/tpcl_pinning_slip.md), [surface proton transfer](docs/surface_proton_transfer.md) |
 | PIMD free energies | three path-bias modes, probability/logmean estimators, fixed/OPES/precomputed weights, 1D/2D core reports | [PIMD quantum-FES reweighting](docs/pimd_reweight.md) |
 | Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
 | Model validation and kinetics | CP2K parsing, force errors, coordinate-neighbor checks, Eyring sensitivity | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
