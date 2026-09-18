@@ -29,6 +29,11 @@ velocities, gross and net exchange, and transfer rates. Component ranks in the
 identity ledger make main-island versus satellite exchange explicit without a
 system-specific atom-ID or size cutoff.
 
+The mechanism aggregate accepts `branch_transport_summary.tsv` as the optional
+source kind `island_exchange_summary`. This joins the identity-resolved island
+metrics to the same branch table as kinematics, morphology, water structure,
+events, and energy bookkeeping.
+
 Required contract fields are `schema_version`, `timestep_fs`,
 `cluster_cutoff_A`, and `cases`. Each case contains `case_id`, `branch_id`,
 `direction`, and `trajectories`. Optional lineage thresholds are

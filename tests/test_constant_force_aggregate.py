@@ -10,7 +10,6 @@ import pytest
 from molsimflow.cli import build_parser as build_cli_parser
 from molsimflow.postprocess.constant_force_aggregate import run_contract
 
-
 CASES = ("droplet", "film")
 BRANCHES = (("f0", "none"), ("fx", "x"), ("fy", "y"))
 
@@ -414,6 +413,27 @@ def _contract(tmp_path: Path) -> Path:
             for branch_id, _ in BRANCHES
         ],
     )
+    _write_tsv(
+        tmp_path / "island_exchange.tsv",
+        [
+            {
+                "case_id": "droplet",
+                "branch_id": branch_id,
+                "direction": direction,
+                "observation_duration_ps": 1000.0,
+                "main_island_mean_vx_mps": 1.0,
+                "main_island_mean_vy_mps": 2.0,
+                "satellite_size_weighted_mean_vx_mps": 3.0,
+                "satellite_size_weighted_mean_vy_mps": 4.0,
+                "track_to_track_transfer_count": 20,
+                "persistent_island_transfer_count": 5,
+                "lineage_reassignment_count": 15,
+                "main_island_net_oxygen_transfer": 1,
+                "track_to_track_transfer_rate_per_ns": 20.0,
+            }
+            for branch_id, direction in BRANCHES
+        ],
+    )
     water = {case_id: _water_results(tmp_path, case_id) for case_id in CASES}
     events = {
         "droplet": _event_results(tmp_path, "droplet", 6),
@@ -444,6 +464,7 @@ def _contract(tmp_path: Path) -> Path:
                 "branch_column": "branch",
             },
             {"kind": "contact_angle", "path": "contact.tsv"},
+            {"kind": "island_exchange_summary", "path": "island_exchange.tsv"},
             *[
                 {
                     "kind": "water_structure",
@@ -501,6 +522,9 @@ def test_aggregate_joins_branches_and_preserves_local_order_support(tmp_path: Pa
     assert droplet_x["event_frame_unassigned_H_max"] == "0"
     assert float(droplet_x["finite_late_tpcl_velocity_mps"]) == pytest.approx(1.1)
     assert float(droplet_x["contact_angle_0p5_deg"]) == pytest.approx(100.0)
+    assert float(droplet_x["island_exchange_track_to_track_transfer_rate_per_ns"]) == pytest.approx(
+        20.0
+    )
     contrasts = _read_tsv(output / "mechanism_contrasts.tsv")
     assert float(contrasts[0]["y_over_x_velocity"]) == pytest.approx(2.0)
     assert float(contrasts[0]["x_velocity_acf_positive_tau_ps"]) == pytest.approx(5.0)
@@ -513,6 +537,7 @@ def test_aggregate_joins_branches_and_preserves_local_order_support(tmp_path: Pa
     assert (output / "layer_residence_summary.tsv").is_file()
     assert (output / "input_manifest.tsv").is_file()
     assert (output / "REPORT.md").is_file()
+    assert "Identity-resolved island exchange" in (output / "REPORT.md").read_text()
 
 
 def test_aggregate_accepts_explicit_carbon_ownership_states(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ REQUIRED_TABLE_KINDS = {"kinematics", "morphology", "energy"}
 OPTIONAL_BRANCH_TABLE_KINDS = {
     "contact_angle": "contact",
     "finite_droplet": "finite",
+    "island_exchange_summary": "island_exchange",
     "island_summary": "island",
     "site_exchange_summary": "site_exchange",
 }
@@ -248,8 +249,8 @@ def _quantile(values: Iterable[float], fraction: float) -> float:
     if not finite:
         return math.nan
     position = max(0.0, min(1.0, fraction)) * (len(finite) - 1)
-    lower = int(math.floor(position))
-    upper = int(math.ceil(position))
+    lower = math.floor(position)
+    upper = math.ceil(position)
     if lower == upper:
         return finite[lower]
     weight = position - lower
@@ -501,7 +502,7 @@ def _aggregate_water_source(
         result.append(aggregate)
         if region == summary_region:
             branch_summary[(case_id, branch_id)] = aggregate
-    if set(key[1] for key in branch_summary) != expected_branches:
+    if {key[1] for key in branch_summary} != expected_branches:
         raise ValueError(f"{results}: missing summary region {summary_region!r}")
     return result, branch_summary
 

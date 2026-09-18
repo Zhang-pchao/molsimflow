@@ -33,6 +33,7 @@ from molsimflow.postprocess.constant_force_aggregate_sources import (
     _write_tsv,
 )
 
+
 def _assemble_branch_rows(
     expected_keys: Sequence[tuple[str, str]],
     kinematics: Mapping[tuple[str, str], Mapping[str, str]],
@@ -122,6 +123,24 @@ def _assemble_branch_rows(
                     "component_count_max",
                     "split_events",
                     "merge_events",
+                ),
+            )
+        )
+        row.update(
+            _optional_prefixed_fields(
+                optional.get("island_exchange_summary", {}).get(key),
+                "island_exchange",
+                (
+                    "observation_duration_ps",
+                    "main_island_mean_vx_mps",
+                    "main_island_mean_vy_mps",
+                    "satellite_size_weighted_mean_vx_mps",
+                    "satellite_size_weighted_mean_vy_mps",
+                    "track_to_track_transfer_count",
+                    "persistent_island_transfer_count",
+                    "lineage_reassignment_count",
+                    "main_island_net_oxygen_transfer",
+                    "track_to_track_transfer_rate_per_ns",
                 ),
             )
         )
@@ -311,6 +330,7 @@ def _write_report(
     output: Path,
     case_order: Sequence[str],
     contrasts: Sequence[dict[str, object]],
+    branch_rows: Sequence[Mapping[str, object]],
     input_count: int,
     wall_summary: Mapping[str, object] | None,
     wall_matched: Sequence[Mapping[str, object]],
@@ -342,9 +362,11 @@ def _write_report(
                 "",
                 "## Wall and high-Z association",
                 "",
-                f"The matched audit contains `{_int(wall_summary.get('events'))}` events, "
-                f"including `{_int(wall_summary.get('wall_associated_events'))}` wall-associated "
-                "events.",
+                (
+                    f"The matched audit contains `{_int(wall_summary.get('events'))}` events, "
+                    f"including `{_int(wall_summary.get('wall_associated_events'))}` "
+                    "wall-associated events."
+                ),
                 "",
                 "| Metric | Matched median difference (m/s) | Bootstrap 95% interval (m/s) |",
                 "|---|---:|---:|",
@@ -356,14 +378,53 @@ def _write_report(
                 f"[{_float(row['bootstrap_median_ci95_low']):.6g}, "
                 f"{_float(row['bootstrap_median_ci95_high']):.6g}] |"
             )
+    island_exchange = [
+        row
+        for row in branch_rows
+        if row.get("island_exchange_track_to_track_transfer_count") not in {"", None}
+    ]
+    if island_exchange:
+        lines.extend(
+            [
+                "",
+                "## Identity-resolved island exchange",
+                "",
+                (
+                    "The island ledger follows oxygen IDs across consecutive frames. Lineage "
+                    "reassignment records split/merge geometry separately from transfer between "
+                    "two persistent tracks."
+                ),
+                "",
+                (
+                    "| Case | Branch | Direction | Main vx (m/s) | Main vy (m/s) | "
+                    "Satellite vx (m/s) | Satellite vy (m/s) | Transfers/ns | "
+                    "Persistent transfers | Lineage reassignments | Main net O |"
+                ),
+                "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for row in island_exchange:
+            lines.append(
+                f"| {row['case_id']} | {row['branch_id']} | {row['direction']} | "
+                f"{_float(row['island_exchange_main_island_mean_vx_mps']):.6g} | "
+                f"{_float(row['island_exchange_main_island_mean_vy_mps']):.6g} | "
+                f"{_float(row['island_exchange_satellite_size_weighted_mean_vx_mps']):.6g} | "
+                f"{_float(row['island_exchange_satellite_size_weighted_mean_vy_mps']):.6g} | "
+                f"{_float(row['island_exchange_track_to_track_transfer_rate_per_ns']):.6g} | "
+                f"{_int(row['island_exchange_persistent_island_transfer_count'])} | "
+                f"{_int(row['island_exchange_lineage_reassignment_count'])} | "
+                f"{_int(row['island_exchange_main_island_net_oxygen_transfer'])} |"
+            )
     if layer_response:
         lines.extend(
             [
                 "",
                 "## Layer-resolved film response",
                 "",
-                "The layer tables preserve excess velocity, surface flux, density modes, "
-                "inter-layer exchange, and residence statistics for the spread-film case.",
+                (
+                    "The layer tables preserve excess velocity, surface flux, density modes, "
+                    "inter-layer exchange, and residence statistics for the spread-film case."
+                ),
                 "",
                 "| Branch | Direction | Layer | Occupied fraction | Excess velocity (m/s) | Excess flux (molecule/A/ps) |",
                 "|---|---|---:|---:|---:|---:|",
@@ -583,6 +644,7 @@ def run_contract(contract_path: Path, output: Path) -> dict[str, object]:
         output,
         case_order,
         contrasts,
+        branch_rows,
         len(input_records),
         wall_summary,
         wall_matched_rows,
