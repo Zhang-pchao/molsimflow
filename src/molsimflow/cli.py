@@ -2392,6 +2392,35 @@ def _cmd_postprocess_constant_force_kinematics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_postprocess_constant_force_islands(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_islands import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"tracks={summary['tracks']} "
+        f"split_events={summary['split_events']} "
+        f"merge_events={summary['merge_events']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_layers(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_layers import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"layers={summary['layers']} "
+        f"layer_exchange_rows={summary['layer_exchange_rows']}"
+    )
+    return 0
+
+
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
@@ -4387,6 +4416,22 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_kinematics.add_argument("--contract", type=Path, required=True)
     constant_force_kinematics.add_argument("--output", type=Path, required=True)
     constant_force_kinematics.set_defaults(func=_cmd_postprocess_constant_force_kinematics)
+
+    constant_force_islands = postprocess_subparsers.add_parser(
+        "constant-force-islands",
+        help="Track water-island identities, exchange, splitting, merging, and velocity",
+    )
+    constant_force_islands.add_argument("--contract", type=Path, required=True)
+    constant_force_islands.add_argument("--output", type=Path, required=True)
+    constant_force_islands.set_defaults(func=_cmd_postprocess_constant_force_islands)
+
+    constant_force_layers = postprocess_subparsers.add_parser(
+        "constant-force-layers",
+        help="Analyze height-layer velocity, flux, exchange, residence, and density modes",
+    )
+    constant_force_layers.add_argument("--contract", type=Path, required=True)
+    constant_force_layers.add_argument("--output", type=Path, required=True)
+    constant_force_layers.set_defaults(func=_cmd_postprocess_constant_force_layers)
 
     return parser
 
