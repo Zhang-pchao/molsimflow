@@ -688,6 +688,19 @@ def _cmd_postprocess_planar_motion(args: argparse.Namespace) -> int:
     return motion_main(workflow_args)
 
 
+def _cmd_postprocess_constant_force_energy(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_energy import main as energy_main
+
+    workflow_args = []
+    for motion in args.motion:
+        workflow_args.extend(["--motion", str(motion)])
+    for thermo in args.thermo:
+        workflow_args.extend(["--thermo", str(thermo)])
+    for name in ("output_dir", "timestep_fs", "block_ns", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return energy_main(workflow_args)
+
+
 def _cmd_postprocess_axisymmetric_contact_angle(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.axisymmetric_contact_angle import main as contact_angle_main
 
@@ -3796,6 +3809,18 @@ def build_parser() -> argparse.ArgumentParser:
     planar_motion.add_argument("--timestep-fs", type=float, default=0.5)
     planar_motion.add_argument("--font-path", type=Path, required=True)
     planar_motion.set_defaults(func=_cmd_postprocess_planar_motion)
+
+    constant_force_energy = postprocess_subparsers.add_parser(
+        "constant-force-energy",
+        help="Analyze drive work, thermostat removal, and pressure for constant-force MD",
+    )
+    constant_force_energy.add_argument("--motion", type=Path, action="append", required=True)
+    constant_force_energy.add_argument("--thermo", type=Path, action="append", required=True)
+    constant_force_energy.add_argument("--output-dir", type=Path, required=True)
+    constant_force_energy.add_argument("--timestep-fs", type=float, default=0.5)
+    constant_force_energy.add_argument("--block-ns", type=float, default=1.0)
+    constant_force_energy.add_argument("--font-path", type=Path, required=True)
+    constant_force_energy.set_defaults(func=_cmd_postprocess_constant_force_energy)
 
     contact_angle = postprocess_subparsers.add_parser(
         "axisymmetric-contact-angle",
