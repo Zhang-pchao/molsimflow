@@ -148,6 +148,19 @@ MOTION_FIELDS = (
     "vy_post_mps",
 )
 
+SPECIES_COMPARISON_FIELDS = (
+    "O_solution",
+    "OH_solution",
+    "H2O_solution",
+    "H3O_solution",
+    "OH4plus_solution",
+    "framework_OH",
+    "framework_OH2plus",
+    "unassigned_H",
+    "detached_C",
+    "solution_charge_proxy",
+)
+
 
 def _float(value: object, default: float = math.nan) -> float:
     try:
@@ -846,13 +859,23 @@ def _deduplicate_species_rows(
     time_column: str,
 ) -> list[dict[str, str]]:
     unique: dict[int, dict[str, str]] = {}
+
+    def signature(row: Mapping[str, str]) -> tuple[tuple[str, float], ...]:
+        values = [(time_column, _float(row.get(time_column)))]
+        values.extend(
+            (key, _float(row.get(key)))
+            for key in SPECIES_COMPARISON_FIELDS
+            if key in row
+        )
+        return tuple(values)
+
     for raw_row in rows:
         row = dict(raw_row)
         step = _int(row.get(step_column))
         time_ps = _float(row.get(time_column))
         if step < 0 or not math.isfinite(time_ps):
             raise ValueError(f"Invalid species row: step={step!r}, time={time_ps!r}")
-        if step in unique and unique[step] != row:
+        if step in unique and signature(unique[step]) != signature(row):
             raise ValueError(f"Conflicting duplicate species row at step {step}")
         unique[step] = row
     return [unique[step] for step in sorted(unique)]

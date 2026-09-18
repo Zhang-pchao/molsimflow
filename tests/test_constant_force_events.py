@@ -186,6 +186,17 @@ def test_conflicting_species_duplicates_fail_closed():
         _deduplicate_species_rows(rows, step_column="step", time_column="time_ps")
 
 
+def test_species_duplicate_ignores_segment_local_frame_index():
+    rows = [
+        {"frame_index": "1000", "step": "10", "time_ps": "1", "OH_solution": "1"},
+        {"frame_index": "0", "step": "10", "time_ps": "1.0", "OH_solution": "1.0"},
+    ]
+
+    result = _deduplicate_species_rows(rows, step_column="step", time_column="time_ps")
+
+    assert len(result) == 1
+
+
 def test_empty_table_has_stable_header(tmp_path):
     path = tmp_path / "empty.tsv"
     _write_tsv(path, [], fieldnames=("event_id", "time_ps"))
