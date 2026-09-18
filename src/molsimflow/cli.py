@@ -2378,6 +2378,20 @@ def _cmd_postprocess_constant_force_events(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_postprocess_constant_force_kinematics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_kinematics import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"cases={summary['cases']} "
+        f"block_rows={summary['block_rows']}"
+    )
+    return 0
+
+
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
@@ -4365,6 +4379,14 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_events.add_argument("--contract", type=Path, required=True)
     constant_force_events.add_argument("--output", type=Path, required=True)
     constant_force_events.set_defaults(func=_cmd_postprocess_constant_force_events)
+
+    constant_force_kinematics = postprocess_subparsers.add_parser(
+        "constant-force-kinematics",
+        help="Analyze block velocities, baseline response, and velocity autocorrelation",
+    )
+    constant_force_kinematics.add_argument("--contract", type=Path, required=True)
+    constant_force_kinematics.add_argument("--output", type=Path, required=True)
+    constant_force_kinematics.set_defaults(func=_cmd_postprocess_constant_force_kinematics)
 
     return parser
 
