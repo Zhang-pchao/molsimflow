@@ -15,7 +15,17 @@ from typing import Optional
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import LammpsDumpFrame, iter_lammps_dump_records
+from molsimflow.io.lammps_dump import (
+    LammpsDumpFrame,
+    box_lengths,
+    iter_lammps_dump_records,
+    minimum_image_vectors,
+)
+from molsimflow.postprocess.local_water_order import (
+    local_structure_index,
+    tetrahedral_order,
+    water_hbond_edges,
+)
 from molsimflow.postprocess.species_assignment import assign_hydrogen_to_nearest_oxygen
 
 
@@ -57,6 +67,12 @@ EVENT_FIELDS = (
     "tracked_frames",
     "tracked_identity_complete",
     "tracked_h_counts",
+    "tracked_shared_hydrogen_frames",
+    "tracked_min_sharing_delta_A",
+    "tracked_mean_q_tet",
+    "tracked_mean_lsi_A2",
+    "tracked_mean_water_hbond_degree",
+    "tracked_mean_surface_hbond_count",
     "tracked_intact_water",
     "tracked_max_z_A",
     "tracked_returned_below_high_z",
@@ -121,6 +137,19 @@ ATOM_FIELDS = (
     "h_count",
     "hydrogen_ids",
     "hydrogen_distances_A",
+    "hydrogen_second_oxygen_ids",
+    "hydrogen_second_distances_A",
+    "hydrogen_sharing_deltas_A",
+    "shared_hydrogen_count",
+    "minimum_sharing_delta_A",
+    "q_tet",
+    "lsi_A2",
+    "oo_coordination",
+    "water_hbond_donor_count",
+    "water_hbond_acceptor_count",
+    "water_hbond_degree",
+    "water_donor_surface_hbond_count",
+    "surface_donor_water_hbond_count",
     "x_A",
     "y_A",
     "z_A",
@@ -332,6 +361,89 @@ def _minimum_distance(
         delta[..., mask] -= lengths[mask] * np.round(delta[..., mask] / lengths[mask])
         result[start:stop] = np.sqrt(np.min(np.einsum("ijk,ijk->ij", delta, delta), axis=1))
     return result
+
+
+def _xy_nonperiodic_z_tree_coordinates(
+    coordinates: np.ndarray,
+    bounds: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Embed periodic X/Y and nonperiodic Z coordinates in a cKDTree box."""
+
+    lengths = box_lengths(bounds)
+    pseudo_z = max(1.0e5, 10.0 * lengths[2])
+    shifted = np.asarray(coordinates, dtype=float).copy()
+    shifted[:, 0] = (shifted[:, 0] - bounds[0, 0]) % lengths[0]
+    shifted[:, 1] = (shifted[:, 1] - bounds[1, 0]) % lengths[1]
+    shifted[:, 2] = shifted[:, 2] - bounds[2, 0] + 0.25 * pseudo_z
+    return shifted, np.asarray([lengths[0], lengths[1], pseudo_z])
+
+
+def nearest_two_oxygen(
+    oxygen: np.ndarray,
+    hydrogen: np.ndarray,
+    bounds: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return two nearest oxygen indices and distances with periodic X/Y only."""
+
+    from scipy.spatial import cKDTree
+
+    if len(oxygen) < 2:
+        raise ValueError("At least two oxygen atoms are required")
+    oxygen_tree, tree_box = _xy_nonperiodic_z_tree_coordinates(oxygen, bounds)
+    hydrogen_tree, _ = _xy_nonperiodic_z_tree_coordinates(hydrogen, bounds)
+    distances, indices = cKDTree(oxygen_tree, boxsize=tree_box).query(hydrogen_tree, k=2)
+    return np.asarray(indices, dtype=int), np.asarray(distances, dtype=float)
+
+
+def _donates(oh_vectors: np.ndarray, donor_acceptor: np.ndarray, angle_deg: float) -> bool:
+    distance = float(np.linalg.norm(donor_acceptor))
+    if distance <= 0.0 or not len(oh_vectors):
+        return False
+    norms = np.linalg.norm(oh_vectors, axis=1)
+    valid = norms > 0.0
+    if not np.any(valid):
+        return False
+    cosine = (oh_vectors[valid] / norms[valid, None]) @ (donor_acceptor / distance)
+    return bool(np.any(cosine >= math.cos(math.radians(angle_deg))))
+
+
+def _water_order(
+    oxygen: np.ndarray,
+    bounds: np.ndarray,
+    *,
+    oo_cutoff_A: float,
+    lsi_cutoff_A: float,
+    lsi_neighbor_cap: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return q_tet, LSI, and O-O coordination for solution oxygen atoms."""
+
+    from scipy.spatial import cKDTree
+
+    shifted, tree_box = _xy_nonperiodic_z_tree_coordinates(oxygen, bounds)
+    k = min(lsi_neighbor_cap + 2, len(oxygen))
+    distances, neighbors = cKDTree(shifted, boxsize=tree_box).query(shifted, k=k)
+    if len(oxygen) == 1:
+        distances = distances.reshape((1, -1))
+        neighbors = neighbors.reshape((1, -1))
+    lengths = box_lengths(bounds)
+    qtet = np.full(len(oxygen), np.nan)
+    lsi = np.full(len(oxygen), np.nan)
+    coordination = np.zeros(len(oxygen), dtype=int)
+    for oxygen_index in range(len(oxygen)):
+        ordered = sorted(
+            (float(distance), int(neighbor))
+            for distance, neighbor in zip(distances[oxygen_index], neighbors[oxygen_index])
+            if int(neighbor) != oxygen_index and math.isfinite(float(distance))
+        )
+        ordered_distances = np.asarray([item[0] for item in ordered])
+        if len(ordered) >= 4:
+            nearest = np.asarray([item[1] for item in ordered[:4]], dtype=int)
+            vectors = oxygen[nearest] - oxygen[oxygen_index]
+            vectors[:, :2] = minimum_image_vectors(vectors[:, :2], lengths[:2])
+            qtet[oxygen_index] = tetrahedral_order(vectors)
+        lsi[oxygen_index] = local_structure_index(ordered_distances, lsi_cutoff_A)[0]
+        coordination[oxygen_index] = int(np.count_nonzero(ordered_distances <= oo_cutoff_A))
+    return qtet, lsi, coordination
 
 
 def _detect_species_samples(
@@ -546,6 +658,11 @@ def _frame_species(
     silicon_type: int,
     oh_cutoff_A: float,
     sio_cutoff_A: float,
+    oo_cutoff_A: float,
+    hbond_angle_deg: float,
+    lsi_cutoff_A: float,
+    lsi_neighbor_cap: int,
+    sharing_delta_threshold_A: float,
 ) -> tuple[dict[str, object], dict[int, dict[str, object]]]:
     ids, types, coordinates, column = _frame_arrays(frame)
     oxygen_indices = np.flatnonzero(types == oxygen_type)
@@ -572,11 +689,98 @@ def _frame_species(
     solution_counts = counts[solution]
     framework_counts = counts[~solution]
     grouped_h = assignment.hydrogen_indices_by_oxygen
+    oxygen_coordinates = coordinates[oxygen_indices]
+    hydrogen_coordinates = coordinates[hydrogen_indices]
+    nearest_two_indices, nearest_two_distances = nearest_two_oxygen(
+        oxygen_coordinates, hydrogen_coordinates, frame.bounds
+    )
+    lengths = box_lengths(frame.bounds)
+    oh_vectors_by_oxygen: list[np.ndarray] = []
+    for local_o, global_o in enumerate(oxygen_indices):
+        local_h = grouped_h.get(local_o, [])
+        vectors = hydrogen_coordinates[local_h] - coordinates[global_o]
+        if len(vectors):
+            vectors[:, :2] = minimum_image_vectors(vectors[:, :2], lengths[:2])
+        oh_vectors_by_oxygen.append(vectors)
+
+    solution_local = np.flatnonzero(solution)
+    framework_local = np.flatnonzero(~solution)
+    water_coordinates = oxygen_coordinates[solution_local]
+    water_oh = [oh_vectors_by_oxygen[int(index)] for index in solution_local]
+    qtet, lsi, coordination = _water_order(
+        water_coordinates,
+        frame.bounds,
+        oo_cutoff_A=oo_cutoff_A,
+        lsi_cutoff_A=lsi_cutoff_A,
+        lsi_neighbor_cap=lsi_neighbor_cap,
+    )
+    water_donor = np.zeros(len(solution_local), dtype=int)
+    water_acceptor = np.zeros(len(solution_local), dtype=int)
+    for donor, acceptor in water_hbond_edges(
+        water_coordinates,
+        water_oh,
+        np.arange(len(solution_local), dtype=int),
+        frame.bounds,
+        oo_cutoff_A=oo_cutoff_A,
+        angle_cutoff_deg=hbond_angle_deg,
+    ):
+        water_donor[donor] += 1
+        water_acceptor[acceptor] += 1
+
+    framework_coordinates = oxygen_coordinates[framework_local]
+    framework_oh = [oh_vectors_by_oxygen[int(index)] for index in framework_local]
+    water_surface_donor = np.zeros(len(solution_local), dtype=int)
+    surface_water_donor = np.zeros(len(solution_local), dtype=int)
+    if len(framework_coordinates):
+        from scipy.spatial import cKDTree
+
+        shifted_surface, tree_box = _xy_nonperiodic_z_tree_coordinates(
+            framework_coordinates, frame.bounds
+        )
+        shifted_water, _ = _xy_nonperiodic_z_tree_coordinates(
+            water_coordinates, frame.bounds
+        )
+        surface_tree = cKDTree(shifted_surface, boxsize=tree_box)
+        for water_index, neighbors in enumerate(
+            surface_tree.query_ball_point(shifted_water, oo_cutoff_A)
+        ):
+            for framework_index in neighbors:
+                vector = framework_coordinates[framework_index] - water_coordinates[water_index]
+                vector[:2] = minimum_image_vectors(vector[:2], lengths[:2])
+                water_surface_donor[water_index] += _donates(
+                    water_oh[water_index], vector, hbond_angle_deg
+                )
+                surface_water_donor[water_index] += _donates(
+                    framework_oh[framework_index], -vector, hbond_angle_deg
+                )
+    water_index_by_oxygen = {
+        int(oxygen_local): water_index
+        for water_index, oxygen_local in enumerate(solution_local)
+    }
     detail: dict[int, dict[str, object]] = {}
     for local_o, global_o in enumerate(oxygen_indices):
         hydrogen_local = grouped_h.get(local_o, [])
         hydrogen_global = [int(hydrogen_indices[index]) for index in hydrogen_local]
+        second_oxygen_ids: list[int] = []
+        second_distances: list[float] = []
+        sharing_deltas: list[float] = []
+        for hydrogen_index in hydrogen_local:
+            nearest = nearest_two_indices[hydrogen_index]
+            distances = nearest_two_distances[hydrogen_index]
+            other_position = 1 if int(nearest[0]) == local_o else 0
+            other_local = int(nearest[other_position])
+            other_distance = float(distances[other_position])
+            second_oxygen_ids.append(int(ids[oxygen_indices[other_local]]))
+            second_distances.append(other_distance)
+            sharing_deltas.append(
+                other_distance - float(assignment.hydrogen_distance[hydrogen_index])
+            )
+        shared_count = sum(
+            distance <= oh_cutoff_A and delta <= sharing_delta_threshold_A
+            for distance, delta in zip(second_distances, sharing_deltas)
+        )
         atom_id = int(ids[global_o])
+        water_index = water_index_by_oxygen.get(local_o)
         detail[atom_id] = {
             "oxygen_id": atom_id,
             "is_solution": bool(solution[local_o]),
@@ -584,6 +788,35 @@ def _frame_species(
             "hydrogen_ids": ",".join(str(int(ids[index])) for index in hydrogen_global),
             "hydrogen_distances_A": ",".join(
                 f"{float(assignment.hydrogen_distance[index]):.8g}" for index in hydrogen_local
+            ),
+            "hydrogen_second_oxygen_ids": ",".join(map(str, second_oxygen_ids)),
+            "hydrogen_second_distances_A": ",".join(
+                f"{distance:.8g}" for distance in second_distances
+            ),
+            "hydrogen_sharing_deltas_A": ",".join(
+                f"{delta:.8g}" for delta in sharing_deltas
+            ),
+            "shared_hydrogen_count": shared_count,
+            "minimum_sharing_delta_A": min(sharing_deltas, default=math.nan),
+            "q_tet": qtet[water_index] if water_index is not None else math.nan,
+            "lsi_A2": lsi[water_index] if water_index is not None else math.nan,
+            "oo_coordination": coordination[water_index] if water_index is not None else -1,
+            "water_hbond_donor_count": (
+                water_donor[water_index] if water_index is not None else 0
+            ),
+            "water_hbond_acceptor_count": (
+                water_acceptor[water_index] if water_index is not None else 0
+            ),
+            "water_hbond_degree": (
+                water_donor[water_index] + water_acceptor[water_index]
+                if water_index is not None
+                else 0
+            ),
+            "water_donor_surface_hbond_count": (
+                water_surface_donor[water_index] if water_index is not None else 0
+            ),
+            "surface_donor_water_hbond_count": (
+                surface_water_donor[water_index] if water_index is not None else 0
             ),
             "x_A": float(coordinates[global_o, 0]),
             "y_A": float(coordinates[global_o, 1]),
@@ -634,6 +867,11 @@ def extract_state_windows(
     silicon_type: int,
     oh_cutoff_A: float,
     sio_cutoff_A: float,
+    oo_cutoff_A: float,
+    hbond_angle_deg: float,
+    lsi_cutoff_A: float,
+    lsi_neighbor_cap: int,
+    sharing_delta_threshold_A: float,
     high_z_threshold_A: float,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     frame_rows: list[dict[str, object]] = []
@@ -659,6 +897,11 @@ def extract_state_windows(
                 silicon_type=silicon_type,
                 oh_cutoff_A=oh_cutoff_A,
                 sio_cutoff_A=sio_cutoff_A,
+                oo_cutoff_A=oo_cutoff_A,
+                hbond_angle_deg=hbond_angle_deg,
+                lsi_cutoff_A=lsi_cutoff_A,
+                lsi_neighbor_cap=lsi_neighbor_cap,
+                sharing_delta_threshold_A=sharing_delta_threshold_A,
             )
             abnormal = {
                 atom_id
@@ -789,6 +1032,20 @@ def summarize_event_outcomes(
         species_returned = bool(frames) and all(
             _int(first.get(key)) == _int(last.get(key)) for key in species_keys
         )
+        sharing_delta = [
+            _float(row.get("minimum_sharing_delta_A"))
+            for row in tracked
+            if math.isfinite(_float(row.get("minimum_sharing_delta_A")))
+        ]
+
+        def tracked_mean(name: str) -> float:
+            values = [
+                _float(row.get(name))
+                for row in tracked
+                if math.isfinite(_float(row.get(name)))
+            ]
+            return float(np.mean(values)) if values else math.nan
+
         results.append(
             {
                 **_event_rows([event])[0],
@@ -805,6 +1062,17 @@ def summarize_event_outcomes(
                 "tracked_h_counts": ",".join(
                     map(str, sorted({_int(row["h_count"]) for row in tracked}))
                 ),
+                "tracked_shared_hydrogen_frames": sum(
+                    _int(row.get("shared_hydrogen_count"), 0) > 0 for row in tracked
+                ),
+                "tracked_min_sharing_delta_A": min(sharing_delta, default=math.nan),
+                "tracked_mean_q_tet": tracked_mean("q_tet"),
+                "tracked_mean_lsi_A2": tracked_mean("lsi_A2"),
+                "tracked_mean_water_hbond_degree": tracked_mean("water_hbond_degree"),
+                "tracked_mean_surface_hbond_count": tracked_mean(
+                    "water_donor_surface_hbond_count"
+                )
+                + tracked_mean("surface_donor_water_hbond_count"),
                 "tracked_intact_water": bool(
                     tracked_complete and all(_int(row["h_count"]) == 2 for row in tracked)
                 ),
@@ -904,6 +1172,21 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
     silicon_type = _int(types.get("silicon"), 8)
     oh_cutoff_A = _float(cutoffs.get("oh"), 1.35)
     sio_cutoff_A = _float(cutoffs.get("si_o"), 2.25)
+    oo_cutoff_A = _float(cutoffs.get("oo"), 3.5)
+    hbond_angle_deg = _float(cutoffs.get("hbond_angle_deg"), 30.0)
+    lsi_cutoff_A = _float(cutoffs.get("lsi"), 3.7)
+    sharing_delta_threshold_A = _float(cutoffs.get("proton_sharing_delta"), 0.2)
+    lsi_neighbor_cap = _int(raw.get("lsi_neighbor_cap"), 24)
+    if min(
+        oh_cutoff_A,
+        sio_cutoff_A,
+        oo_cutoff_A,
+        hbond_angle_deg,
+        lsi_cutoff_A,
+        sharing_delta_threshold_A,
+        lsi_neighbor_cap,
+    ) <= 0:
+        raise ValueError("All geometry cutoffs and lsi_neighbor_cap must be positive")
     motion_columns = {
         "step": "TimeStep",
         "x": "v_dxrel",
@@ -985,6 +1268,11 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
             silicon_type=silicon_type,
             oh_cutoff_A=oh_cutoff_A,
             sio_cutoff_A=sio_cutoff_A,
+            oo_cutoff_A=oo_cutoff_A,
+            hbond_angle_deg=hbond_angle_deg,
+            lsi_cutoff_A=lsi_cutoff_A,
+            lsi_neighbor_cap=lsi_neighbor_cap,
+            sharing_delta_threshold_A=sharing_delta_threshold_A,
             high_z_threshold_A=high_z_threshold_A,
         )
         motion = summarize_motion_events(
@@ -1029,9 +1317,13 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
         "species_returned_events": sum(bool(row["species_returned"]) for row in outcomes),
         "tracked_high_z_events": sum(bool(row["tracked_frames"]) for row in outcomes),
         "tracked_intact_water_events": sum(bool(row["tracked_intact_water"]) for row in outcomes),
+        "tracked_shared_hydrogen_events": sum(
+            _int(row["tracked_shared_hydrogen_frames"], 0) > 0 for row in outcomes
+        ),
         "z_image_crossing_events": sum(_int(row["nonzero_iz_max"], 0) > 0 for row in outcomes),
         "claim_limits": [
             "species labels use geometric O-H and Si-O cutoffs",
+            "proton sharing is a nearest-two-oxygen distance diagnostic, not a formal charge state",
             "event association is descriptive and does not establish causality",
             "wall-window velocities are local regressions, not friction coefficients",
         ],
@@ -1048,8 +1340,9 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
         ),
         "",
         (
-            "The audit tracks atom identities, geometric species, high-z oxygen return, "
-            "Z image flags, and lateral motion around each event window."
+            "The audit tracks atom identities, geometric species and proton sharing, local "
+            "water order and H bonds, high-z oxygen return, Z image flags, and lateral motion "
+            "around each event window."
         ),
         "",
         (

@@ -12,6 +12,7 @@ from molsimflow.postprocess.constant_force_events import (
     _write_tsv,
     build_parser,
     merge_event_samples,
+    nearest_two_oxygen,
     run_contract,
     stitch_motion_tables,
 )
@@ -149,6 +150,17 @@ def test_stitch_motion_tables_offsets_restart_displacements(tmp_path):
     assert values[:, columns.index("v_dyrel")].tolist() == [0.0, 2.0, 5.0]
 
 
+def test_nearest_two_oxygen_is_periodic_only_in_xy():
+    oxygen = np.asarray([[0.2, 1.0, 1.0], [9.6, 1.0, 1.0], [0.0, 1.0, 9.0]])
+    hydrogen = np.asarray([[0.0, 1.0, 1.0]])
+    bounds = np.asarray([[0.0, 10.0], [0.0, 10.0], [0.0, 10.0]])
+
+    indices, distances = nearest_two_oxygen(oxygen, hydrogen, bounds)
+
+    assert indices.tolist() == [[0, 1]]
+    assert distances[0].tolist() == pytest.approx([0.2, 0.4])
+
+
 def test_merge_event_samples_keeps_long_episode_bounds_and_atom_ids():
     samples = [
         {
@@ -219,12 +231,19 @@ def test_run_contract_tracks_species_return_and_intact_high_z_water(tmp_path):
     assert events[0]["tracked_h_counts"] == "2"
     assert events[0]["tracked_intact_water"] == "True"
     assert events[0]["tracked_returned_below_high_z"] == "True"
+    assert "tracked_mean_q_tet" in events[0]
+    assert "tracked_min_sharing_delta_A" in events[0]
     frames = _read_tsv(output / "frame_species.tsv")
     assert {row["OH_solution"] for row in frames} == {"0", "1"}
     assert {row["H3O_solution"] for row in frames} == {"0", "1"}
     motion = _read_tsv(output / "motion_event_summary.tsv")
     assert motion[0]["dx_window_A"] == "3.0"
     assert motion[0]["dy_window_A"] == "5.0"
+    atoms = _read_tsv(output / "atom_identity.tsv")
+    tracked = [row for row in atoms if row["oxygen_id"] == "30"]
+    assert tracked
+    assert all("hydrogen_second_oxygen_ids" in row for row in tracked)
+    assert all("water_hbond_degree" in row for row in tracked)
     manifest = _read_tsv(output / "input_manifest.tsv")
     recorded = {Path(row["path"]).name: row["sha256"] for row in manifest}
     assert recorded[contract.name] == hashlib.sha256(contract.read_bytes()).hexdigest()

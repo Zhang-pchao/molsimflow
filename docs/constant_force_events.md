@@ -31,8 +31,13 @@ must be unique.
   },
   "cutoffs_A": {
     "oh": 1.35,
-    "si_o": 2.25
+    "si_o": 2.25,
+    "oo": 3.5,
+    "hbond_angle_deg": 30.0,
+    "lsi": 3.7,
+    "proton_sharing_delta": 0.2
   },
+  "lsi_neighbor_cap": 24,
   "motion_columns": {
     "step": "TimeStep",
     "x": "v_dxrel",
@@ -70,12 +75,14 @@ with `species_step_column` and `species_time_column` inside a case entry.
 
 ## Outputs
 
-- `events.tsv`: merged episodes, return checks, tracked oxygen identities, and
-  Z image status.
+- `events.tsv`: merged episodes, return checks, tracked oxygen identities,
+  proton-sharing counts, mean local water order, H-bond coordination, and Z
+  image status.
 - `event_sources.tsv`: every raw species, high-Z, Z image, and wall sample.
 - `frame_species.tsv`: geometric species counts for all frames in event windows.
-- `atom_identity.tsv`: O/H identities and O-H distances for tracked or abnormal
-  oxygen atoms.
+- `atom_identity.tsv`: O/H identities, nearest and second-nearest O-H distances,
+  proton-sharing deltas, `q_tet`, LSI, O-O coordination, and water-water or
+  water-surface H-bond counts for tracked or abnormal oxygen atoms.
 - `motion_event_summary.tsv`: local displacement and pre/core/post velocities.
 - `input_manifest.tsv`: size and SHA256 for the contract and all inputs.
 - `summary.json` and `REPORT.md`: machine-readable and review-oriented summaries.
@@ -84,6 +91,8 @@ The output directory must not already exist. Conflicting duplicate species rows,
 missing atom types, missing solution oxygen, non-increasing motion steps, and
 invalid event times fail closed.
 
-Species labels are geometric diagnostics. Event-aligned association does not by
-itself establish formal charge identity, reaction kinetics, wall causality, or a
+Species and proton-sharing labels are geometric diagnostics. The sharing delta
+is the second-nearest minus nearest O-H distance and requires the second oxygen
+to lie inside the O-H cutoff. Event-aligned association does not by itself
+establish formal charge identity, reaction kinetics, wall causality, or a
 friction coefficient.
