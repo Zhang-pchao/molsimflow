@@ -70,7 +70,8 @@ and identical shared OPES diagnostics at every selected time:
     "sampling_label": "Bead-density frame mean",
     "sampling_slug": "bead_density",
     "sampling_colvar": "COLVAR.0",
-    "bead_colvars": ["COLVAR.0", "COLVAR.1", "COLVAR.2", "COLVAR.3"]
+    "bead_colvars": ["COLVAR.0", "COLVAR.1", "COLVAR.2", "COLVAR.3"],
+    "expected_beads": 4
   },
   "reweight": {
     "bias_mode": "bead_density_shared",
@@ -409,3 +410,56 @@ units. A single `--field` also writes the legacy `bead_summary.csv` and
 `reference_comparison.csv` files. `within_sigma` means only that the sampled
 means are not distinguishable at the requested block-error threshold; it is not
 proof of equilibrium or scientific convergence.
+
+
+## Coordinate joins and additional bias energies
+
+The piecewise log-distance helpers validate the join before inversion or
+Jacobian conversion. The archived defaults remain `switch=1`, `offset=0.03`,
+`linear_shift=0.9704412`, `log_scale=1`, `log_reference=1`; the eight-digit
+historical shift has a small rounding discrepancy (accepted up to 5e-8).
+Other joins must satisfy
+`log_scale*log((switch+offset)/log_reference) = switch-linear_shift`.
+Printed-coordinate validation checks both forward and inverse errors against
+the requested tolerance. It rejects an offset change that retains an
+incompatible old shift, even if all sampled points avoid the join.
+
+For the C1 map `1.1*log((x+0.1)/1.1)` below 1 and `x-1` above it, specify
+`offset=0.1`, `linear_shift=1`, `log_scale=1.1`, `log_reference=1.1` explicitly
+in the optional `derived_coordinate` contract. This coordinate differs from
+`log(x+0.1)` with a continuity-only shift. Do not reuse a history under a changed
+coordinate. Direct KDE of a printed distance does not invoke this map.
+For nonlinear maps, transforming the bead mean is not the same operation as
+averaging transformed bead coordinates; do not declare them interchangeable.
+
+By default, reweighting removes only `reweight.bias_column`. To remove a wall
+as well, declare `"extra_bias_columns": ["iwall.bias"]`. Each named energy is
+summed before exponentiation. Centroid and bead-mean modes require complete-path
+energies (for a bead-local wall in bead-mean mode, print its ENSEMBLE mean).
+Shared bead-density mode uses the bead average of the sum of local energies.
+Duplicate columns and combinations with precomputed weights are rejected.
+Summary metadata records the selected columns; the OPES-only diagnostic colors
+continue to use the primary bias. Undeclared biases remain in the target ensemble.
+
+Correct postprocessing weights do not certify online OPES deposition weights or
+time-dependent equilibration. Ordinary WALKERS_MPI uses local walker weights.
+A synchronized shared-path probability estimator needs the same complete-path
+weight on every bead at a deposition frame. Its kernel count is not independent
+frame ESS. Existing local-weight histories must retain their method label.
+
+
+### Complete-path inputs and stable diagnostics
+
+Set `source.expected_beads` to the simulated bead count, as a positive integer.
+The reader checks this against the distinct bead files before processing data;
+this catches a file omitted from a contract or glob. There is no fixed bead
+count. The field is optional for archived contracts, but without it the input
+list itself defines the path size and cannot prove that the path is complete.
+The water-ionization profile also requires one thermo log and one trajectory
+per listed bead. Frame alignment and duplicate-file checks apply separately.
+
+KDE inputs require one finite log weight per frame and finite, positive
+bandwidths. A single weight is not broadcast to multiple frames. OPES plots
+calculate cumulative ESS in log space, so full-trajectory normalization cannot
+turn early finite weights into zero and abort the report. Beads within a frame
+still share one path weight and do not increase the independent frame count.

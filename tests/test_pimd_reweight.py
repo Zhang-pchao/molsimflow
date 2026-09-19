@@ -33,6 +33,7 @@ from molsimflow.postprocess.pimd_reweight import (
     piecewise_derived_coordinate_spec,
     piecewise_logdistance,
     piecewise_logdistance_jacobian,
+    plot_opes,
     portable_artifact_path,
     reconstruction_within_tolerance,
     ring_polymer_spread,
@@ -46,6 +47,8 @@ from molsimflow.postprocess.pimd_reweight import (
     validate_piecewise_logdistance_printed,
     verify_manifest_inputs,
     write_csv,
+    weighted_log_kde_1d,
+    weighted_log_kde_2d,
 )
 from molsimflow.postprocess.pimd_reweight_compare import (
     aligned_surface_difference,
@@ -693,14 +696,18 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
 
 
 @pytest.mark.parametrize("bias_mode", ["centroid_coord", "bead_mean", "bead_density_shared"])
-def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
+@pytest.mark.parametrize("include_wall", [False, True])
+@pytest.mark.parametrize("bead_count", [1, 2, 5])
+def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode, include_wall, bead_count):
     # Unequal axes, bandwidths, and correlated centers expose axis swaps.
     centers = np.array([[-0.7, 0.4], [0.1, -0.5], [0.65, 0.8]])
     counts = np.array([6, 3, 3])
     probabilities = np.array([0.2, 0.3, 0.5])
     samples = np.repeat(centers, counts, axis=0)
     weights = np.repeat(probabilities / counts, counts)
-    offsets = np.array([[-0.12, 0.2], [0.12, -0.2]])
+    displacements = np.zeros(1) if bead_count == 1 else np.linspace(-1.0, 1.0, bead_count)
+    offsets = displacements[:, None] * np.array([0.12, -0.2])
+    bead_names = [f"bead-{bead}.colvar" for bead in range(bead_count)]
     times = np.arange(len(samples), dtype=float)
 
     def write_colvar(name, fields, values):
@@ -718,11 +725,22 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
             f"bead-{bead}.colvar", ["time", "x", "y"],
             np.column_stack([times, samples + offset]),
         )
+    if include_wall:
+        kbt = KB_EV_PER_K * 300.0
+        wall = 0.02 * (times / len(times)) ** 2
+        primary = kbt * np.log(weights) - wall
+        write_colvar("sampling.colvar", ["time", "x", "y", "bias", "wall"],
+                     np.column_stack([times, samples, primary, wall]))
+        for bead, offset in enumerate(offsets):
+            # Unequal bead energies whose mean is the prescribed path bias.
+            delta = displacements[bead] * 0.004
+            write_colvar(f"bead-{bead}.colvar", ["time", "x", "y", "bias", "wall"],
+                         np.column_stack([times, samples + offset, primary + delta, wall]))
     # A real manifest is retained, without asserting entry verification here.
     manifest = tmp_path / "RAW-SHA256SUMS"
     manifest.write_text("".join(
         f"{sha256(tmp_path / name)}  {name}\n"
-        for name in ["sampling.colvar", "bead-0.colvar", "bead-1.colvar"]
+        for name in ["sampling.colvar", *bead_names]
     ), encoding="utf-8")
     temperature = 300.0
     bandwidth = np.array([0.25, 0.4])
@@ -733,7 +751,8 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
             "raw_manifest": manifest.name,
             "raw_manifest_sha256": sha256(manifest),
             "sampling_colvar": "sampling.colvar",
-            "bead_colvars": ["bead-0.colvar", "bead-1.colvar"],
+            "bead_colvars": bead_names,
+            "expected_beads": bead_count,
             "sampling_label": "Sampling coordinates",
             "sampling_slug": "sampling",
         },
@@ -755,6 +774,9 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode):
         },
         "plots": {"cv_labels": {"x": "First coordinate", "y": "Second coordinate"}},
     }
+    if include_wall:
+        contract["reweight"].update(weight_kind="fixed_bias", bias_column="bias",
+                                    extra_bias_columns=["wall"])
     contract_path = tmp_path / "contract.json"
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
     output = tmp_path / "analysis"
@@ -953,3 +975,112 @@ def test_manifest_rejects_invalid_inputs(tmp_path, kind, message):
     manifest.write_text(record)
     with pytest.raises(ValueError, match=message):
         verify_manifest_inputs(manifest, tmp_path, [data])
+
+
+@pytest.mark.parametrize("function", [piecewise_logdistance, inverse_piecewise_logdistance,
+                                     piecewise_logdistance_jacobian])
+def test_logdistance_rejects_offset_with_legacy_shift(function):
+    with pytest.raises(ValueError, match="discontinuous"):
+        function(np.array([0.99, 1.01]), offset=0.1)
+
+
+@pytest.mark.parametrize("switch, offset", [(1.0, 0.1), (0.7, 0.03), (2.0, 0.2)])
+def test_smooth_logdistance_roundtrip_and_finite_difference(switch, offset):
+    options = dict(switch=switch, offset=offset, linear_shift=switch,
+                   log_scale=switch + offset, log_reference=switch + offset)
+    x = np.array([0.0, 0.1, switch - 0.01, switch, switch + 0.01, 7.5, 1000.0])
+    y = piecewise_logdistance(x, **options)
+    np.testing.assert_allclose(inverse_piecewise_logdistance(y, **options), x, atol=1e-14)
+    eps = 1e-6
+    numerical = (piecewise_logdistance(x + eps, **options)
+                 - piecewise_logdistance(x - eps, **options)) / (2 * eps)
+    np.testing.assert_allclose(piecewise_logdistance_jacobian(x, **options), numerical,
+                               rtol=3e-7, atol=1e-7)
+    result = validate_piecewise_logdistance_printed(y, x, tolerance=1e-12, **options)
+    assert result["maximum_absolute_error"] < 1e-12
+    _, jac, fes = transform_piecewise_logdistance_fes(y, np.zeros(len(x)), 0.6, **options)
+    expected = -0.6 * np.log(jac)
+    np.testing.assert_allclose(fes, expected - expected.min())
+
+
+def test_logdistance_validator_checks_inverse_error():
+    # Forward error is below tolerance, but the weak logarithmic derivative
+    # amplifies the inverse error; the old forward-only check accepted this.
+    options = dict(switch=10.0, offset=0.1, linear_shift=10.0 - np.log(10.1))
+    x = np.array([5.0])
+    y = piecewise_logdistance(x, **options) + 5e-7
+    with pytest.raises(ValueError, match="transform mismatch"):
+        validate_piecewise_logdistance_printed(y, x, tolerance=1e-6, **options)
+
+
+@pytest.mark.parametrize("parameter", ["switch", "offset", "linear_shift", "log_scale", "log_reference"])
+def test_logdistance_parameters_must_be_finite(parameter):
+    with pytest.raises(ValueError, match="non-finite"):
+        piecewise_logdistance([0.5], **{parameter: float("nan")})
+
+
+@pytest.mark.parametrize("values", [[1e-300, 1e300, 1e300], [1e300, 1e300, 1e300]])
+def test_cumulative_weight_diagnostics_avoid_overflow(values):
+    with np.errstate(over="raise", invalid="raise", divide="raise"):
+        fraction, maximum = cumulative_weight_diagnostics(values)
+    expected_count = 2 if values[0] < values[1] else 3
+    assert fraction[-1] == pytest.approx(expected_count / 3)
+    assert maximum[-1] == pytest.approx(1 / expected_count)
+    assert fraction[0] == pytest.approx(1)
+
+
+def test_opes_plot_preserves_underflowed_prefix_weights(tmp_path, monkeypatch):
+    raw = np.array([-1000.0, -999.0, 0.0])
+    assert np.exp(normalized_log_weights(raw))[0] == 0.0
+    captured = []
+
+    def capture(fig, stem):
+        captured.append(fig.axes[2].lines[0].get_ydata().copy())
+
+    monkeypatch.setattr("molsimflow.postprocess.pimd_reweight.save_figure", capture)
+    time = np.arange(3, dtype=float)
+    ones = np.ones(3)
+    plot_opes(tmp_path, time, ones, ones, ones, ones, ones, raw,
+              time, ones, ones, weights_are_log=True)
+    prefix_ess = (1.0 + np.e)**2 / (1.0 + np.e**2)
+    np.testing.assert_allclose(captured[0], [1.0, prefix_ess / 2, 1.0 / 3])
+
+
+@pytest.mark.parametrize("dimensions", [1, 2])
+def test_kde_rejects_broadcast_frame_weights(dimensions):
+    grid = np.linspace(-1, 1, 5)
+    with pytest.raises(ValueError, match="frame weight count"):
+        if dimensions == 1:
+            weighted_log_kde_1d(np.array([0.0, 1.0]), np.array([0.0]), grid, 0.2)
+        else:
+            weighted_log_kde_2d(np.zeros((2, 2)), np.array([0.0]), grid, grid, [0.2, 0.3])
+
+
+@pytest.mark.parametrize("dimensions", [1, 2])
+@pytest.mark.parametrize("bandwidth", [float("inf"), float("nan")])
+def test_kde_rejects_nonfinite_bandwidth(dimensions, bandwidth):
+    grid = np.linspace(-1, 1, 5)
+    with pytest.raises(ValueError, match="finite and positive"):
+        if dimensions == 1:
+            weighted_log_kde_1d(np.array([0.0]), np.array([0.0]), grid, bandwidth)
+        else:
+            weighted_log_kde_2d(np.zeros((1, 2)), np.array([0.0]), grid, grid, [bandwidth, 0.3])
+
+
+@pytest.mark.parametrize("expected", [0, -1, 1.5, True, "2", 2])
+def test_analysis_checks_declared_bead_count_before_reading(tmp_path, expected):
+    manifest = tmp_path / "RAW-SHA256SUMS"
+    manifest.write_text("")
+    contract = {
+        "analysis_profile": "core",
+        "source": {
+            "run_root": str(tmp_path), "raw_manifest": manifest.name,
+            "raw_manifest_sha256": sha256(manifest), "sampling_colvar": "sampling",
+            "bead_colvars": ["bead-0"], "expected_beads": expected,
+        },
+        "selection": {}, "reweight": {},
+    }
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="expected_beads"):
+        analyze(path, tmp_path / "analysis")

@@ -207,15 +207,27 @@ def normalized_log_weights(raw: Sequence[float]) -> np.ndarray:
 
 def cumulative_weight_diagnostics(
     weights: Sequence[float] | np.ndarray,
+    *,
+    log_weights: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return cumulative Kish ESS fraction and maximum weight share."""
+    """Return prefix Kish ESS fraction and maximum share without overflow.
+
+    Supply log weights before exponentiation to preserve prefixes whose linear
+    weights would underflow to zero after full-trajectory normalization.
+    """
     values = np.asarray(weights, dtype=float)
     require(values.ndim == 1 and values.size > 0, "empty weights")
-    require(np.isfinite(values).all() and np.all(values > 0.0), "invalid weights")
-    total = np.cumsum(values)
-    ess = total**2 / np.cumsum(values**2)
+    require(np.isfinite(values).all(), "invalid weights")
+    if not log_weights:
+        require(np.all(values > 0.0), "invalid weights")
+        values = np.log(values)
+    values = values - np.max(values)
+    total = np.logaddexp.accumulate(values)
+    squared_total = np.logaddexp.accumulate(2.0 * values)
     count = np.arange(1, values.size + 1, dtype=float)
-    return ess / count, np.maximum.accumulate(values) / total
+    ess_fraction = np.exp(2.0 * total - squared_total) / count
+    maximum_share = np.exp(np.maximum.accumulate(values) - total)
+    return ess_fraction, maximum_share
 
 
 def time_window_mask(
@@ -299,20 +311,37 @@ def reconstruction_within_tolerance(
     return tolerance is None or float(error) <= float(tolerance)
 
 
+def _validate_logdistance_parameters(
+    switch: float, offset: float, linear_shift: float,
+    log_scale: float, log_reference: float,
+) -> None:
+    """Reject noninvertible joins; allow the archived eight-digit shift rounding."""
+    parameters = np.asarray([switch, offset, linear_shift, log_scale, log_reference])
+    require(np.isfinite(parameters).all(), "non-finite piecewise-logdistance parameter")
+    require(switch + offset > 0.0, "invalid piecewise-logdistance domain")
+    require(log_scale > 0.0 and log_reference > 0.0, "invalid logarithm scale/reference")
+    left = log_scale * math.log((switch + offset) / log_reference)
+    right = switch - linear_shift
+    require(abs(left - right) <= 5e-8, "discontinuous piecewise-logdistance join")
+
+
 def piecewise_logdistance(
     iondistance: Sequence[float] | np.ndarray,
     *,
     switch: float = 1.0,
     offset: float = 0.03,
     linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
 ) -> np.ndarray:
     """Evaluate the Reactive Voronoi piecewise log-distance coordinate."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
     values = np.asarray(iondistance, dtype=float)
     require(np.isfinite(values).all(), "non-finite iondistance")
     require(np.all(values + float(offset) > 0.0), "iondistance is outside transform domain")
     return np.where(
         values < float(switch),
-        np.log(values + float(offset)),
+        float(log_scale) * np.log((values + float(offset)) / float(log_reference)),
         values - float(linear_shift),
     )
 
@@ -323,18 +352,19 @@ def inverse_piecewise_logdistance(
     switch: float = 1.0,
     offset: float = 0.03,
     linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
 ) -> np.ndarray:
     """Invert the continuous Reactive Voronoi piecewise log-distance map."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
     values = np.asarray(logdistance, dtype=float)
     require(np.isfinite(values).all(), "non-finite logdistance")
-    boundary = 0.5 * (
-        math.log(float(switch) + float(offset))
-        + float(switch)
-        - float(linear_shift)
-    )
+    # Prefer the exact linear branch at the switch. Archived shifts are rounded
+    # by a few nanounits; midpoint classification misinverts the switch itself.
+    boundary = float(switch) - float(linear_shift)
     return np.where(
         values < boundary,
-        np.exp(values) - float(offset),
+        float(log_reference) * np.exp(np.minimum(values, boundary) / float(log_scale)) - float(offset),
         values + float(linear_shift),
     )
 
@@ -344,12 +374,16 @@ def piecewise_logdistance_jacobian(
     *,
     switch: float = 1.0,
     offset: float = 0.03,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+    linear_shift: float = 0.9704412,
 ) -> np.ndarray:
     """Return the absolute d(logdistance)/d(iondistance) density Jacobian."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
     values = np.asarray(iondistance, dtype=float)
     require(np.isfinite(values).all(), "non-finite iondistance")
     require(np.all(values + float(offset) > 0.0), "iondistance is outside Jacobian domain")
-    return np.where(values < float(switch), 1.0 / (values + float(offset)), 1.0)
+    return np.where(values < float(switch), float(log_scale) / (values + float(offset)), 1.0)
 
 
 def transform_piecewise_logdistance_fes(
@@ -361,6 +395,8 @@ def transform_piecewise_logdistance_fes(
     switch: float = 1.0,
     offset: float = 0.03,
     linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Transform a logdistance FES axis to iondistance with its Jacobian."""
     source_grid = np.asarray(logdistance_grid, dtype=float)
@@ -374,15 +410,18 @@ def transform_piecewise_logdistance_fes(
         "FES/logdistance grid shape mismatch",
     )
     require(np.isfinite(values).all(), "non-finite free energy")
-    require(float(kbt) > 0.0, "kBT must be positive")
+    require(np.isfinite(kbt) and float(kbt) > 0.0, "kBT must be positive")
     iondistance = inverse_piecewise_logdistance(
         source_grid,
         switch=switch,
         offset=offset,
         linear_shift=linear_shift,
+        log_scale=log_scale,
+        log_reference=log_reference,
     )
     jacobian = piecewise_logdistance_jacobian(
-        iondistance, switch=switch, offset=offset
+        iondistance, switch=switch, offset=offset, linear_shift=linear_shift,
+        log_scale=log_scale, log_reference=log_reference
     )
     correction_shape = [1] * values.ndim
     correction_shape[normalized_axis] = source_grid.size
@@ -399,6 +438,8 @@ def validate_piecewise_logdistance_printed(
     switch: float = 1.0,
     offset: float = 0.03,
     linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
 ) -> Dict[str, float]:
     """Fail closed unless printed source and derived coordinates agree."""
     source = np.asarray(logdistance, dtype=float)
@@ -406,7 +447,7 @@ def validate_piecewise_logdistance_printed(
     require(source.shape == printed.shape and source.size > 0, "printed transform shape mismatch")
     require(np.isfinite(source).all(), "non-finite printed logdistance")
     require(np.isfinite(printed).all(), "non-finite printed iondistance")
-    require(float(tolerance) >= 0.0, "negative printed-transform tolerance")
+    require(np.isfinite(tolerance) and float(tolerance) >= 0.0, "invalid printed-transform tolerance")
     forward_error = float(
         np.max(
             np.abs(
@@ -415,6 +456,8 @@ def validate_piecewise_logdistance_printed(
                     switch=switch,
                     offset=offset,
                     linear_shift=linear_shift,
+                    log_scale=log_scale,
+                    log_reference=log_reference,
                 )
                 - source
             )
@@ -428,19 +471,21 @@ def validate_piecewise_logdistance_printed(
                     switch=switch,
                     offset=offset,
                     linear_shift=linear_shift,
+                    log_scale=log_scale,
+                    log_reference=log_reference,
                 )
                 - printed
             )
         )
     )
     require(
-        forward_error <= float(tolerance),
+        max(forward_error, inverse_error) <= float(tolerance),
         "printed logdistance/iondistance transform mismatch",
     )
     return {
         "forward_maximum_absolute_error": forward_error,
         "inverse_maximum_absolute_error": inverse_error,
-        "maximum_absolute_error": forward_error,
+        "maximum_absolute_error": max(forward_error, inverse_error),
     }
 
 
@@ -472,9 +517,12 @@ def piecewise_derived_coordinate_spec(
     switch = float(config.get("switch", 1.0))
     offset = float(config.get("offset", 0.03))
     linear_shift = float(config.get("linear_shift", 0.9704412))
+    log_scale = float(config.get("log_scale", 1.0))
+    log_reference = float(config.get("log_reference", 1.0))
     tolerance = float(config.get("printed_transform_tolerance", 1e-12))
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
     require(switch + offset > 0.0, "invalid piecewise-logdistance domain")
-    require(tolerance >= 0.0, "negative printed-transform tolerance")
+    require(np.isfinite(tolerance) and tolerance >= 0.0, "invalid printed-transform tolerance")
     return {
         "kind": "piecewise_logdistance",
         "source": source,
@@ -485,17 +533,30 @@ def piecewise_derived_coordinate_spec(
         "switch": switch,
         "offset": offset,
         "linear_shift": linear_shift,
+        "log_scale": log_scale,
+        "log_reference": log_reference,
         "printed_transform_tolerance": tolerance,
         "label": str(config.get("label", target)),
     }
 
 
+def _validate_kde_weights(samples: np.ndarray, log_weights: np.ndarray) -> None:
+    require(samples.shape[0] > 0 and np.isfinite(samples).all(), "invalid KDE samples")
+    require(log_weights.shape == (samples.shape[0],), "KDE frame weight count mismatch")
+    require(np.isfinite(log_weights).all(), "non-finite KDE log weights")
+
+
 def weighted_log_kde_1d(
     samples: np.ndarray, log_weights: np.ndarray, grid: np.ndarray, bandwidth: float
 ) -> np.ndarray:
-    require(float(bandwidth) > 0.0, "bandwidth must be positive")
+    samples = np.asarray(samples, dtype=float)
+    log_weights = np.asarray(log_weights, dtype=float)
+    require(samples.ndim == 1, "1D sample shape mismatch")
+    _validate_kde_weights(samples, log_weights)
+    require(np.isfinite(bandwidth) and float(bandwidth) > 0.0,
+            "bandwidth must be finite and positive")
     exponent = log_weights[None, :] - 0.5 * (
-        (grid[:, None] - np.asarray(samples, dtype=float)[None, :]) / float(bandwidth)
+        (grid[:, None] - samples[None, :]) / float(bandwidth)
     ) ** 2
     return np.asarray(logsumexp(exponent, axis=1)) - math.log(
         float(bandwidth) * math.sqrt(2.0 * math.pi)
@@ -512,9 +573,15 @@ def weighted_log_kde_2d(
     chunk_points: int = 128,
 ) -> np.ndarray:
     samples = np.asarray(samples, dtype=float)
+    log_weights = np.asarray(log_weights, dtype=float)
     require(samples.ndim == 2 and samples.shape[1] == 2, "2D sample shape mismatch")
+    _validate_kde_weights(samples, log_weights)
     hx, hy = (float(value) for value in bandwidth)
-    require(hx > 0.0 and hy > 0.0, "bandwidths must be positive")
+    require(np.isfinite([hx, hy]).all() and hx > 0.0 and hy > 0.0,
+            "bandwidths must be finite and positive")
+    require(isinstance(chunk_points, (int, np.integer))
+            and not isinstance(chunk_points, bool) and chunk_points > 0,
+            "chunk_points must be a positive integer")
     xx, yy = np.meshgrid(x_grid, y_grid)
     points = np.column_stack((xx.ravel(), yy.ravel()))
     output = np.empty(points.shape[0], dtype=float)
@@ -1537,6 +1604,8 @@ def plot_opes(
     kernel_time_ps: np.ndarray,
     sigma_x: np.ndarray,
     sigma_y: np.ndarray,
+    *,
+    weights_are_log: bool = False,
 ) -> None:
     plt, _ = _matplotlib()
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 7.6), sharex=False)
@@ -1587,7 +1656,9 @@ def plot_opes(
     )
     axes[0, 1].set_xlabel("Time (ps)")
     axes[0, 1].set_title("Adaptive OPES state")
-    ess_fraction, maximum_share = cumulative_weight_diagnostics(weights)
+    ess_fraction, maximum_share = cumulative_weight_diagnostics(
+        weights, log_weights=weights_are_log
+    )
     axes[1, 0].plot(
         time_ps,
         ess_fraction,
@@ -2083,6 +2154,8 @@ def finalize_core_1d(
         },
         "reweighting": {
             "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
             "formula": (
                 "precomputed log frame weight"
                 if weight_kind == "precomputed"
@@ -2269,6 +2342,8 @@ def finalize_core_2d(
         },
         "reweighting": {
             "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
             "formula": (
                 "precomputed log frame weight"
                 if weight_kind == "precomputed"
@@ -2386,6 +2461,15 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         sampling_colvar = source["centroid_colvar"]
     centroid_path = run_root / str(sampling_colvar)
     bead_paths = [run_root / value for value in source["bead_colvars"]]
+    require(bool(bead_paths), "bead_colvars must contain a complete path")
+    if "expected_beads" in source:
+        expected_beads = source["expected_beads"]
+        require(isinstance(expected_beads, int) and not isinstance(expected_beads, bool)
+                and expected_beads > 0, "expected_beads must be a positive integer")
+        require(len(bead_paths) == expected_beads, "bead input count differs from expected_beads")
+    if profile == "water_ionization_opes":
+        for key in ("thermo_logs", "trajectories"):
+            require(len(source[key]) == len(bead_paths), f"{key} must contain one file per bead")
     # Resolve filesystem identity, including symlinks and hard links, without
     # rejecting distinct files whose bead observations happen to be identical.
     bead_stats = [path.stat() for path in bead_paths]
@@ -2550,6 +2634,8 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "switch": float(derived_spec["switch"]),
             "offset": float(derived_spec["offset"]),
             "linear_shift": float(derived_spec["linear_shift"]),
+            "log_scale": float(derived_spec["log_scale"]),
+            "log_reference": float(derived_spec["log_reference"]),
         }
         centroid_validation = validate_piecewise_logdistance_printed(
             centroid[:, source_component],
@@ -2593,6 +2679,21 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 bias_mode,
                 sampling_bias_energy=field(centroid_data, fields, bias_column)[selected],
             )
+    opes_bias_ev = bias_ev
+    extra_bias_columns = reweight.get("extra_bias_columns", [])
+    require(isinstance(extra_bias_columns, list), "extra_bias_columns must be a list")
+    require(all(isinstance(name, str) and name for name in extra_bias_columns),
+            "invalid extra bias column")
+    require(len(set(extra_bias_columns)) == len(extra_bias_columns), "duplicate extra bias column")
+    require(bias_column not in extra_bias_columns, "primary bias repeated in extra_bias_columns")
+    require(not extra_bias_columns or bias_ev is not None, "extra biases require bias_column")
+    for name in extra_bias_columns:
+        if bias_mode == "bead_density_shared":
+            extra = total_bias_energy(bias_mode, bead_bias_energies=selected_bead_field(name))
+        else:
+            extra = total_bias_energy(
+                bias_mode, sampling_bias_energy=field(centroid_data, fields, name)[selected])
+        bias_ev = bias_ev + extra
     require(
         profile == "core" or bias_ev is not None,
         "water-ionization diagnostics require bias_column",
@@ -2632,6 +2733,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     require(abs(kbt_ev - expected_kbt) <= 1e-12, "kBT/temperature mismatch")
     quasi_static_declared = reweight.get("quasi_static") is True
     if weight_kind == "precomputed":
+        require(not extra_bias_columns, "precomputed weights cannot also use extra bias columns")
         log_weight_column = str(reweight["log_weight_column"])
         raw_log_weights = frame_log_weights(
             weight_kind,
@@ -2811,6 +2913,8 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "switch": float(derived_spec["switch"]),
             "offset": float(derived_spec["offset"]),
             "linear_shift": float(derived_spec["linear_shift"]),
+            "log_scale": float(derived_spec["log_scale"]),
+            "log_reference": float(derived_spec["log_reference"]),
         }
         source_marginals = marginal_tables[source_name]
         derived_curves_kcal: Dict[str, np.ndarray] = {}
@@ -3172,6 +3276,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             filtered_data[selected, tuple(fields).index(column)] = centroid[:, component]
         if bias_column is not None and bias_ev is not None:
             filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
+    if extra_bias_columns:
+        filtered_data = filtered_data.copy()
+        filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
     write_filtered_colvar(filtered_colvar, fields, filtered_data, selected)
 
     if profile == "core":
@@ -3351,7 +3458,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             bias_mode=bias_mode,
         )
     plot_bead_cv_bias(
-        output, selected_time_ps, centroid, beads, bias_ev * EV_TO_KCAL_MOL, cv_labels,
+        output, selected_time_ps, centroid, beads, opes_bias_ev * EV_TO_KCAL_MOL, cv_labels,
         int(contract["plots"].get("scatter_stride", 5)),
         sampling_label=sampling_label,
         sampling_slug=sampling_slug,
@@ -3368,16 +3475,16 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             selected_time_ps,
             diagnostic_sampling,
             diagnostic_beads,
-            bias_ev * EV_TO_KCAL_MOL,
+            opes_bias_ev * EV_TO_KCAL_MOL,
             str(diagnostic_spec["label"]),
             sampling_label,
             int(contract["plots"].get("scatter_stride", 5)),
             protocol_label=sampling_protocol_label(reweight),
         )
     plot_opes(
-        output, selected_time_ps, bias_ev * EV_TO_KCAL_MOL, rct_ev * EV_TO_KCAL_MOL,
-        zed, neff, nker, weights,
-        kernel_time_ps, sigma_x, sigma_y,
+        output, selected_time_ps, opes_bias_ev * EV_TO_KCAL_MOL, rct_ev * EV_TO_KCAL_MOL,
+        zed, neff, nker, raw_log_weights,
+        kernel_time_ps, sigma_x, sigma_y, weights_are_log=True,
     )
     plot_thermo(
         output, selected_time_ps, temperatures, potential, global_values, beads.shape[1],
@@ -3389,7 +3496,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         selected_time_ps,
         centroid[:, ionization_component],
         beads[:, :, ionization_component],
-        bias_ev * EV_TO_KCAL_MOL,
+        opes_bias_ev * EV_TO_KCAL_MOL,
         ionization_thresholds,
         ideal_pair_score,
         sampling_label=sampling_label,
@@ -3467,7 +3574,10 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         },
         "reweighting": {
             "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
             "formula": "normalized exp(total_bias_energy/kBT)",
+            "bias_columns": ([bias_column] if bias_column is not None else []) + extra_bias_columns,
             "total_bias_energy": (
                 "mean_b bead_local_bias_energy"
                 if bias_mode == "bead_density_shared"
