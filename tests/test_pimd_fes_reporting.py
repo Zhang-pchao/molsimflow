@@ -1,4 +1,4 @@
-"""Primary quantum support and diagnostic-only reporting contracts."""
+"""Primary-estimator and pairwise-support reporting contracts."""
 
 import csv
 import json
@@ -9,7 +9,9 @@ import pytest
 from molsimflow.postprocess import pimd_reweight as reweight
 
 
-def _write_contract(root, dimensions=1):
+def _write_contract(
+    root, dimensions=1, *, primary_estimator=None, bead_offsets=(-1.0, 1.0)
+):
     names = ["x", "y"][:dimensions]
     time = np.arange(12, dtype=float)
     sampling = np.column_stack([np.zeros(len(time)), np.tile([-0.1, 0.0, 0.1], 4)])
@@ -19,7 +21,7 @@ def _write_contract(root, dimensions=1):
         np.column_stack([time, sampling[:, :dimensions], np.zeros(len(time))]),
         header="FIELDS time " + " ".join(names) + " logw", comments="#! ",
     )
-    for bead, offset in enumerate((-1.0, 1.0)):
+    for bead, offset in enumerate(bead_offsets):
         values = sampling.copy()
         values[:, 0] = offset
         np.savetxt(
@@ -58,6 +60,8 @@ def _write_contract(root, dimensions=1):
         },
         "plots": {"cv_labels": {name: name for name in names}},
     }
+    if primary_estimator is not None:
+        contract["reweight"]["primary_estimator"] = primary_estimator
     path = root / "contract.json"
     path.write_text(json.dumps(contract), encoding="utf-8")
     return path, contract
@@ -76,9 +80,9 @@ def test_disjoint_bead_support_keeps_primary_report(tmp_path, monkeypatch, dimen
     output = tmp_path / "analysis"
     summary = reweight.analyze(contract_path, output)
     assert summary["status"] == "PASS"
-    assert summary["schema_version"] == 2
+    assert summary["schema_version"] == 3
     assert summary["fes"]["primary_estimator"] == "probability_mean"
-    assert summary["fes"]["target_observable"] == "bead_marginal"
+    assert summary["fes"]["target_observable"] == "bead_density_fes"
     assert summary["fes"]["common_support_points"] == 0
     for name in (
         "probability_free_energy_mean_rmse_common_support_kcal_mol",
@@ -100,11 +104,11 @@ def test_disjoint_bead_support_keeps_primary_report(tmp_path, monkeypatch, dimen
 
     sensitivity = _csv_rows(output / "qc/bandwidth-sensitivity.csv")
     assert all(int(row["comparison_support_points"]) >= 2 for row in sensitivity)
-    assert all(np.isfinite(float(row["probability_mean_rmse_vs_primary_kcal_mol"]))
+    assert all(np.isfinite(float(row["primary_rmse_vs_selected_bandwidth_kcal_mol"]))
                for row in sensitivity)
     blocks = _csv_rows(output / "blocks/block-diagnostics.csv")
     assert all(int(row["comparison_support_points"]) >= 2 for row in blocks)
-    assert all(float(row["probability_mean_rmse_vs_full_kcal_mol"]) < 1e-10
+    assert all(float(row["primary_rmse_vs_full_kcal_mol"]) < 1e-10
                for row in blocks)
     persisted = json.loads((output / "qc/summary.json").read_text(encoding="utf-8"))
     assert persisted == summary
@@ -131,12 +135,76 @@ def test_precomputed_weights_reject_bias_only_reference(tmp_path, profile):
         reweight.analyze(contract_path, tmp_path / "analysis")
 
 
-def test_diagnostic_cannot_be_selected_as_primary(tmp_path):
-    contract_path, contract = _write_contract(tmp_path)
-    contract["reweight"]["primary_estimator"] = "free_energy_mean"
+@pytest.mark.parametrize("dimensions", [1, 2])
+def test_free_energy_mean_can_be_selected_as_primary(
+    tmp_path, monkeypatch, dimensions
+):
+    contract_path, contract = _write_contract(
+        tmp_path,
+        dimensions,
+        primary_estimator="free_energy_mean",
+        bead_offsets=(-0.02, 0.02),
+    )
+    contract["reweight"]["uncertainty"] = {
+        "block_frames": 3,
+        "reference_grid_index": [30] * dimensions,
+    }
     contract_path.write_text(json.dumps(contract), encoding="utf-8")
-    with pytest.raises(ValueError, match="primary_estimator.*probability_mean"):
+    monkeypatch.setattr(reweight, "save_figure", lambda *args: None)
+    output = tmp_path / "analysis"
+    summary = reweight.analyze(contract_path, output)
+    assert summary["schema_version"] == 3
+    assert summary["fes"]["primary_estimator"] == "free_energy_mean"
+    assert summary["fes"]["alternate_estimator"] == "probability_mean"
+    assert summary["fes"]["zero_reference"] == "free_energy_mean_minimum"
+    table_path = output / (
+        "fes1d/x.csv" if dimensions == 1 else "fes2d/primary.csv"
+    )
+    rows = _csv_rows(table_path)
+    supported = [row for row in rows if int(row["primary_support"])]
+    assert len(supported) >= 2
+    assert all(
+        float(row["F_primary_kcal_mol"])
+        == pytest.approx(float(row["F_quantum_free_energy_mean_kcal_mol"]))
+        for row in supported
+    )
+    assert all(
+        float(row["F_quantum_free_energy_mean_kcal_mol"])
+        == pytest.approx(float(row["F_bead_free_energy_mean_diagnostic_kcal_mol"]))
+        for row in rows
+    )
+    sensitivity = _csv_rows(output / "qc/bandwidth-sensitivity.csv")
+    assert {row["primary_estimator"] for row in sensitivity} == {
+        "free_energy_mean"
+    }
+    blocks = _csv_rows(output / "blocks/block-diagnostics.csv")
+    assert {row["primary_estimator"] for row in blocks} == {"free_energy_mean"}
+    uncertainty = json.loads(
+        (output / "blocks/quantum-fes-uncertainty.json").read_text()
+    )
+    assert uncertainty["estimator"] == "free_energy_mean"
+
+
+def test_invalid_primary_estimator_is_rejected(tmp_path):
+    contract_path, contract = _write_contract(tmp_path)
+    contract["reweight"]["primary_estimator"] = "unknown"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported primary estimator"):
         reweight.analyze(contract_path, tmp_path / "analysis")
+
+
+def test_estimator_gap_support_does_not_require_sampling_support():
+    supports = reweight.estimator_support_masks(
+        np.array([0.0, -100.0]),
+        np.array([0.0, -1.0]),
+        np.array([[0.0, -1.0], [0.0, -2.0]]),
+        np.log(1e-6),
+    )
+    assert not supports["centroid"][1]
+    assert supports["probability_mean"][1]
+    assert supports["free_energy_mean"][1]
+    assert supports["estimator_common"][1]
+    assert not supports["all_common"][1]
 
 
 def test_one_dimensional_plot_masks_each_curve_by_its_own_support(tmp_path, monkeypatch):
@@ -192,6 +260,49 @@ def test_two_dimensional_plot_masks_support_and_labels_absent_diagnostic(tmp_pat
     for actual, key in zip(rendered, keys[:2]):
         np.testing.assert_array_equal(np.ma.getmaskarray(actual), ~supports[key])
     assert "Insufficient support" in [text.get_text() for text in figures[0].axes[2].texts]
+
+
+def test_difference_panels_use_their_own_pairwise_support(tmp_path, monkeypatch):
+    from matplotlib.axes import Axes
+
+    rendered = []
+    original = Axes.pcolormesh
+
+    def record_mesh(axis, x, y, values, *args, **kwargs):
+        rendered.append(np.asarray(values).copy())
+        return original(axis, x, y, values, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "pcolormesh", record_mesh)
+    monkeypatch.setattr(reweight, "save_figure", lambda *args: None)
+    grid = np.arange(3, dtype=float)
+    zeros = np.zeros((3, 3))
+    supports = {
+        "sampling_probability_common": np.eye(3, dtype=bool),
+        "sampling_free_energy_common": np.fliplr(np.eye(3, dtype=bool)),
+        "estimator_common": np.ones((3, 3), dtype=bool),
+    }
+    reweight.plot_fes_differences(
+        tmp_path,
+        grid,
+        grid,
+        {
+            "centroid": zeros,
+            "probability_mean": zeros + 1.0,
+            "free_energy_mean": zeros + 2.0,
+        },
+        supports,
+        3.0,
+        ["x", "y"],
+    )
+    for actual, key in zip(
+        rendered,
+        (
+            "sampling_probability_common",
+            "sampling_free_energy_common",
+            "estimator_common",
+        ),
+    ):
+        np.testing.assert_array_equal(np.isfinite(actual), supports[key])
 
 
 @pytest.mark.parametrize("surface_axis", [None, 0, 1])

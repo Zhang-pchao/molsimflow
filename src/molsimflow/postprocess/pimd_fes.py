@@ -10,6 +10,7 @@ import numpy as np
 
 BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared"}
 WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
+FES_ESTIMATORS = {"probability_mean", "free_energy_mean"}
 
 
 def _require(condition: bool, message: str) -> None:
@@ -34,6 +35,14 @@ def validate_bias_mode(value: str) -> str:
     mode = str(value)
     _require(mode in BIAS_MODES, f"unsupported PIMD bias mode: {mode}")
     return mode
+
+
+def validate_primary_estimator(value: str) -> str:
+    """Validate the public estimator names accepted as the primary result."""
+
+    estimator = str(value)
+    _require(estimator in FES_ESTIMATORS, f"unsupported primary estimator: {estimator}")
+    return estimator
 
 
 def total_bias_energy(
@@ -168,8 +177,23 @@ def assemble_bead_frames(
     return np.asarray(ordered_frames), bead_labels, np.asarray(assembled)
 
 
-def _histogram_mass(samples: np.ndarray, weights: np.ndarray, edges: np.ndarray) -> np.ndarray:
-    return np.histogram(samples, bins=edges, weights=weights)[0].astype(float)
+def _histogram_log_mass(
+    samples: np.ndarray, log_weights: np.ndarray, edges: np.ndarray
+) -> np.ndarray:
+    """Accumulate histogram masses per bin without linear-space cancellation."""
+
+    values = np.asarray(samples, dtype=float)
+    logs = np.asarray(log_weights, dtype=float)
+    _require(values.ndim == logs.ndim == 1 and values.shape == logs.shape,
+             "histogram samples and log weights must be matching vectors")
+    bins = np.searchsorted(edges, values, side="right") - 1
+    bins[values == edges[-1]] = len(edges) - 2
+    result = np.full(len(edges) - 1, -np.inf)
+    for index in range(len(result)):
+        selected = logs[bins == index]
+        if selected.size:
+            result[index] = np.logaddexp.reduce(selected)
+    return result
 
 
 def quantum_histogram_masses(
@@ -196,19 +220,26 @@ def quantum_histogram_masses(
     _require(np.isfinite(edges).all() and np.all(np.diff(edges) > 0.0), "invalid bin edges")
     log_weights = normalized_log_weights(log_frame_weights)
     _require(len(log_weights) == values.shape[0], "frame weight count differs from bead frames")
-    weights = np.exp(log_weights)
-    per_bead = np.asarray(
-        [_histogram_mass(values[:, bead], weights, edges) for bead in range(values.shape[1])]
+    log_per_bead = np.asarray(
+        [
+            _histogram_log_mass(values[:, bead], log_weights, edges)
+            for bead in range(values.shape[1])
+        ]
     )
-    direct = np.mean(per_bead, axis=0)
+    log_direct = np.logaddexp.reduce(log_per_bead, axis=0) - math.log(values.shape[1])
+    # Linear masses remain a compatibility representation. They can underflow
+    # for extreme dynamic ranges; FES consumers must use the log fields below.
+    per_bead = np.exp(log_per_bead)
+    direct = np.exp(log_direct)
 
     if conditioning is None and conditioning_edges is None:
+        log_conditional = log_direct.copy()
         conditional = direct.copy()
     else:
         _require(conditioning is not None and conditioning_edges is not None, "incomplete conditioning")
         condition = np.asarray(conditioning, dtype=float)
         condition_edges = np.asarray(conditioning_edges, dtype=float)
-        _require(condition.shape == weights.shape, "conditioning must have one value per frame")
+        _require(condition.shape == log_weights.shape, "conditioning must have one value per frame")
         _require(np.isfinite(condition).all(), "conditioning values must be finite")
         _require(
             condition_edges.ndim == 1
@@ -223,49 +254,54 @@ def quantum_histogram_masses(
         )
         condition_bin = np.searchsorted(condition_edges, condition, side="right") - 1
         condition_bin[condition == condition_edges[-1]] = len(condition_edges) - 2
-        conditional = np.zeros_like(direct)
+        log_conditional = np.full_like(log_direct, -np.inf)
         for index in range(len(condition_edges) - 1):
             mask = condition_bin == index
             if not np.any(mask):
                 continue
-            marginal = float(np.sum(weights[mask]))
-            if marginal == 0.0:
-                continue
-            for bead in range(values.shape[1]):
-                conditional += (
-                    marginal
-                    * _histogram_mass(values[mask, bead], weights[mask] / marginal, edges)
-                    / values.shape[1]
-                )
+            local = np.asarray(
+                [
+                    _histogram_log_mass(values[mask, bead], log_weights[mask], edges)
+                    for bead in range(values.shape[1])
+                ]
+            )
+            contribution = np.logaddexp.reduce(local, axis=0) - math.log(values.shape[1])
+            log_conditional = np.logaddexp(log_conditional, contribution)
+        conditional = np.exp(log_conditional)
 
     return {
         "direct": direct,
         "conditional": conditional,
         "per_bead": per_bead,
+        "log_direct": log_direct,
+        "log_conditional": log_conditional,
+        "log_per_bead": log_per_bead,
         "in_range_mass": float(np.sum(direct)),
+        "log_in_range_mass": float(np.logaddexp.reduce(log_direct)),
     }
 
 
 def bead_density_estimators(
     log_bead_density: Sequence[Sequence[float]] | np.ndarray,
     kbt: float,
+    *,
+    primary_estimator: str = "probability_mean",
 ) -> Dict[str, np.ndarray | float]:
-    """Combine bead densities into a physical FES and a convergence diagnostic.
+    """Combine bead densities using either documented estimator as primary.
 
     The input has shape ``(bead, *grid)``. Each bead density must use the same
     complete-frame weights, normalization, grid measure, and smoothing rule.
     Finite log densities and ``-inf`` (zero density) are accepted.
 
-    ``probability_mean`` is ``-kBT * log(mean_bead(density))``. This estimates
-    the distribution of a bead-defined observable for all supported sampling
-    bias modes. ``free_energy_mean_diagnostic`` instead averages the bead
-    free energies; at finite sampling it is generally a different quantity.
-    Both curves use the minimum of the primary FES as their common zero.
-    Raw values are also returned for callers that use another reference.
+    ``probability_mean`` is ``-kBT * log(mean_bead(density))`` and
+    ``free_energy_mean`` averages the bead free energies. At finite sampling
+    they are generally different quantities. Both curves use the minimum of
+    the explicitly selected primary estimator as their common zero. Raw values
+    are also returned for callers that use another reference.
 
-    A grid point belongs to primary support when at least one bead has
-    positive density. Common support requires positive density for every
-    bead, and is needed only for comparisons with the diagnostic.
+    Probability-mean support requires at least one bead with positive density;
+    free-energy-mean support requires positive density for every bead. Their
+    intersection is used only for comparisons between the two estimators.
     """
 
     logs = np.asarray(log_bead_density, dtype=float)
@@ -275,6 +311,7 @@ def bead_density_estimators(
         "log bead density must be finite or negative infinity",
     )
     _require(np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
+    primary = validate_primary_estimator(primary_estimator)
     # logaddexp keeps narrow or remote KDE tails from underflowing to zero.
     log_probability_mean = np.logaddexp.reduce(logs, axis=0) - math.log(logs.shape[0])
     raw_probability_mean = -float(kbt) * log_probability_mean
@@ -283,14 +320,22 @@ def bead_density_estimators(
     probability_support = np.isfinite(raw_probability_mean)
     common_support = probability_support & np.isfinite(raw_free_energy_mean)
     _require(np.any(probability_support), "no finite probability-mean support")
-    zero = float(np.min(raw_probability_mean[probability_support]))
+    raw_primary = (
+        raw_probability_mean if primary == "probability_mean" else raw_free_energy_mean
+    )
+    primary_support = np.isfinite(raw_primary)
+    _require(np.any(primary_support), f"no finite {primary} support")
+    zero = float(np.min(raw_primary[primary_support]))
     return {
         "log_probability_mean": log_probability_mean,
         "raw_probability_mean": raw_probability_mean,
+        "raw_free_energy_mean": raw_free_energy_mean,
         "raw_free_energy_mean_diagnostic": raw_free_energy_mean,
         "probability_mean": raw_probability_mean - zero,
+        "free_energy_mean": raw_free_energy_mean - zero,
         "free_energy_mean_diagnostic": raw_free_energy_mean - zero,
         "probability_support": probability_support,
+        "free_energy_mean_support": np.isfinite(raw_free_energy_mean),
         "common_support": common_support,
         "zero_reference": zero,
     }
@@ -302,8 +347,9 @@ def quantum_fes_1d(
     bin_edges: Sequence[float] | np.ndarray,
     *,
     kbt: float,
+    primary_estimator: str = "probability_mean",
 ) -> Dict[str, np.ndarray | float]:
-    """Return a bead-probability FES and bead-free-energy-mean diagnostic.
+    """Return both maintained bead-density FES estimators.
 
     Histogram densities account for bin widths. Both estimators share the
     primary FES minimum as their zero. The legacy ``eq8``, ``eq10``,
@@ -313,10 +359,10 @@ def quantum_fes_1d(
 
     edges = np.asarray(bin_edges, dtype=float)
     masses = quantum_histogram_masses(bead_cv, log_frame_weights, edges)
-    bead_density = np.asarray(masses["per_bead"]) / np.diff(edges)[None, :]
-    with np.errstate(divide="ignore"):
-        log_bead_density = np.log(bead_density)
-    result = bead_density_estimators(log_bead_density, kbt)
+    log_bead_density = np.asarray(masses["log_per_bead"]) - np.log(np.diff(edges))[None, :]
+    result = bead_density_estimators(
+        log_bead_density, kbt, primary_estimator=primary_estimator
+    )
     return {
         **result,
         # Compatibility aliases; equation numbers do not define the estimator.
@@ -336,6 +382,7 @@ def quantum_fes_block_jackknife_1d(
     kbt: float,
     block_size: int,
     reference_bin: int,
+    primary_estimator: str = "probability_mean",
 ) -> dict[str, object]:
     """Estimate standard errors of FES differences using contiguous frame blocks.
 
@@ -346,7 +393,10 @@ def quantum_fes_block_jackknife_1d(
     """
     values = np.asarray(bead_cv, dtype=float)
     weights = np.asarray(log_frame_weights, dtype=float)
-    full = quantum_fes_1d(values, weights, bin_edges, kbt=kbt)
+    primary = validate_primary_estimator(primary_estimator)
+    full = quantum_fes_1d(
+        values, weights, bin_edges, kbt=kbt, primary_estimator=primary
+    )
     _require(
         isinstance(block_size, (int, np.integer)) and not isinstance(block_size, bool)
         and block_size > 0, "block_size must be a positive integer",
@@ -356,23 +406,34 @@ def quantum_fes_block_jackknife_1d(
     _require(frames % block_size == 0, "equal blocks must cover all frames")
     blocks = frames // block_size
     _require(blocks >= 2, "jackknife requires at least two blocks")
-    bins = len(full["probability_mean"])
+    bins = len(full[primary])
     _require(
         isinstance(reference_bin, (int, np.integer)) and not isinstance(reference_bin, bool)
         and 0 <= reference_bin < bins, "invalid reference_bin",
     )
-    _require(full["probability_support"][reference_bin], "reference bin has no support")
+    support_key = (
+        "probability_support"
+        if primary == "probability_mean"
+        else "free_energy_mean_support"
+    )
+    _require(full[support_key][reference_bin], "reference bin has no support")
     estimates = []
     for block in range(blocks):
         keep = np.ones(frames, dtype=bool)
         keep[block * block_size : (block + 1) * block_size] = False
         # Normalize afresh so deleting a dominant-weight block remains stable.
-        partial = quantum_fes_1d(values[keep], weights[keep], bin_edges, kbt=kbt)
+        partial = quantum_fes_1d(
+            values[keep],
+            weights[keep],
+            bin_edges,
+            kbt=kbt,
+            primary_estimator=primary,
+        )
         _require(
-            partial["probability_support"][reference_bin],
+            partial[support_key][reference_bin],
             "reference bin loses support after block deletion",
         )
-        curve = partial["probability_mean"]
+        curve = partial[primary]
         estimates.append(curve - curve[reference_bin])
     leave_one_out = np.asarray(estimates)
     support = np.all(np.isfinite(leave_one_out), axis=0)
@@ -382,8 +443,9 @@ def quantum_fes_block_jackknife_1d(
         (blocks - 1) / blocks
         * np.sum((supported - np.mean(supported, axis=0)) ** 2, axis=0)
     )
-    curve = full["probability_mean"]
+    curve = full[primary]
     return {
+        "estimator": primary,
         "free_energy_difference": curve - curve[reference_bin],
         "standard_error": standard_error,
         "support": support,

@@ -109,12 +109,8 @@ def test_all_three_bias_modes_and_total_path_energies_are_explicit():
 def test_estimator_plot_labels_explain_the_estimators_for_all_bias_modes():
     for mode in ("centroid_coord", "bead_mean", "bead_density_shared"):
         labels = estimator_plot_labels(mode)
-        assert labels["probability_mean"] == (
-            "Quantum bead marginal (probability average)"
-        )
-        assert labels["free_energy_mean"] == (
-            "Mean bead free energy (diagnostic only)"
-        )
+        assert labels["probability_mean"] == "Probability-mean bead FES"
+        assert labels["free_energy_mean"] == "Free-energy-mean bead FES"
 
 
 def test_default_cv_labels_include_symbols_and_physical_units():
@@ -642,7 +638,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         assert uncertainty["standard_error_eV"][30] == 0
         assert json.loads((output / "blocks" / "quantum-fes-uncertainty.json").read_text())["blocks"] == 4
         assert summary["fes"]["probability_mean_label"] == (
-            "Quantum bead marginal (probability average)"
+            "Probability-mean bead FES"
         )
         assert summary["reference_crosscheck"] is None
         assert (output / "figures" / "fes1d-coordination.png").is_file()

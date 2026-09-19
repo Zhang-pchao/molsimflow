@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made the PIMD probability-mean and free-energy-mean bead FES estimators
+  explicit selectable primaries, added schema-3 pairwise support and canonical
+  output fields, and stabilized weighted histograms in log space.
 - Added contract-driven centroid, bead-mean, and shared bead-density PIMD
   quantum-FES reweighting; fixed-bias, quasi-static OPES, and precomputed frame
   weights; generic 1D/2D core reports; restart alignment; and

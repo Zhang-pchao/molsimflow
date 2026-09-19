@@ -12,7 +12,7 @@ from molsimflow.postprocess import pimd_reweight_compare as comparison
 COLUMNS = (
     "sampling_support", "F_sampling_kcal_mol",
     "probability_mean_support", "F_quantum_probability_mean_kcal_mol",
-    "free_energy_mean_support", "F_bead_free_energy_mean_diagnostic_kcal_mol",
+    "free_energy_mean_support", "F_quantum_free_energy_mean_kcal_mol",
 )
 LEGACY = dict(zip(COLUMNS, (
     "centroid_support", "F_centroid_kcal_mol", "eq8_support", "F_eq8_kcal_mol",
@@ -20,7 +20,7 @@ LEGACY = dict(zip(COLUMNS, (
 )))
 CORE_LEGACY = {
     "free_energy_mean_support": "logmean_support",
-    "F_bead_free_energy_mean_diagnostic_kcal_mol": "F_bead_logmean_diagnostic_kcal_mol",
+    "F_quantum_free_energy_mean_kcal_mol": "F_bead_logmean_diagnostic_kcal_mol",
 }
 
 
@@ -32,7 +32,7 @@ def _table(schema, size=3, run=0):
         "probability_mean_support": np.ones(size),
         "F_quantum_probability_mean_kcal_mol": values**2 + 2.0 * run,
         "free_energy_mean_support": np.ones(size),
-        "F_bead_free_energy_mean_diagnostic_kcal_mol": values**2 * (1.0 + run),
+        "F_quantum_free_energy_mean_kcal_mol": values**2 * (1.0 + run),
     }
     mapping = LEGACY if schema == "legacy" else CORE_LEGACY if schema == "core_legacy" else {}
     return {mapping.get(key, key): value for key, value in table.items()}
@@ -46,7 +46,7 @@ def _write_table(path, table):
         writer.writerows(zip(*table.values()))
 
 
-def _run(tmp_path, index, schema, dimensions):
+def _run(tmp_path, index, schema, dimensions, primary_estimator=None):
     root = tmp_path / f"run-{index}"
     names = ["coordination"] if dimensions == 1 else ["coordination", "torsion"]
     for name in names:
@@ -67,7 +67,12 @@ def _run(tmp_path, index, schema, dimensions):
         },
         "selection": {"frames": 3},
         "reweighting": {"ess": 3, "ess_fraction": 1, "maximum_normalized_weight": 1/3},
-        "fes": {}, "gates": {},
+        "fes": (
+            {}
+            if primary_estimator is None
+            else {"primary_estimator": primary_estimator}
+        ),
+        "gates": {},
     }
     (root / "qc").mkdir()
     (root / "qc" / "summary.json").write_text(json.dumps(summary))
@@ -166,8 +171,59 @@ def test_custom_primary_bandwidth_name_is_used(tmp_path, monkeypatch):
     metrics = comparison._two_dimensional_figures(
         tmp_path / "output", runs, 50.0, 5.0, "synthetic",
         ["Coordination", "Torsion"], ["coordination", "torsion"],
+        "probability_mean",
     )
     assert metrics["probability_mean"]["shape_rmse_kcal_mol"] == pytest.approx(0)
+
+
+@pytest.mark.parametrize("dimensions", [1, 2])
+def test_comparison_follows_explicit_free_energy_primary(
+    tmp_path, monkeypatch, dimensions
+):
+    monkeypatch.setattr(comparison, "save_figure", lambda *args: None)
+    runs = [
+        _run(
+            tmp_path,
+            index,
+            "canonical",
+            dimensions,
+            primary_estimator="probability_mean" if index == 0 else "free_energy_mean",
+        )
+        for index in range(2)
+    ]
+    contract = {
+        "runs": runs,
+        "primary_estimator": "free_energy_mean",
+        "window_label": "synthetic",
+        "plot_max_kcal_mol": 50,
+        "difference_max_kcal_mol": 5,
+        "comparison_boundary": "Synthetic only",
+    }
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(contract))
+    result = comparison.compare(path, tmp_path / "comparison")
+    assert result["schema_version"] == 3
+    assert result["primary_estimator"] == "free_energy_mean"
+    for metrics in result["one_dimensional"]:
+        assert set(metrics) == {"cv", "free_energy_mean"}
+    if dimensions == 2:
+        assert set(result["two_dimensional"]) == {"free_energy_mean"}
+
+
+def test_comparison_rejects_mismatched_run_primaries_without_override(tmp_path):
+    configs = [
+        _run(
+            tmp_path,
+            index,
+            "canonical",
+            1,
+            primary_estimator="probability_mean" if index == 0 else "free_energy_mean",
+        )
+        for index in range(2)
+    ]
+    runs = [comparison.load_run(config) for config in configs]
+    with pytest.raises(ValueError, match="primary estimators differ"):
+        comparison.comparison_primary_estimator({}, runs)
 
 
 @pytest.mark.parametrize("name", ["../outside", "/absolute", "", ".", ".."])

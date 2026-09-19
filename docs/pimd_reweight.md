@@ -78,9 +78,11 @@ grid and bandwidth settings for the actual inputs:
 and positive. `energy_unit` defaults to `eV`, and currently only `eV` is accepted
 for input energy columns; convert other units before analysis. Precomputed log
 weights are dimensionless. Output FES tables explicitly use `kcal/mol`.
-`primary_estimator` defaults to `probability_mean`; selecting the bead
-free-energy mean as the primary estimator is rejected. The summary records
-`target_observable: bead_marginal`.
+`primary_estimator` accepts `probability_mean` or `free_energy_mean`. It defaults
+to `probability_mean` for compatibility with schema-1/2 analyses; the bias mode
+does not select an estimator automatically. The summary records the selected
+primary and the alternate estimator under `target_observable:
+bead_density_fes`.
 
 For shared bead density, each bead COLVAR must contain the local field value
 and identical shared OPES diagnostics at every selected time:
@@ -193,7 +195,8 @@ centroid and bead-mean readers take their declared columns as complete-path
 energies; the shared-density reader averages bead-local columns once.
 Do not apply `exp(beta*B)` separately to each bead: beads share one path weight.
 
-The common default estimator first averages the weighted bead probabilities:
+The compatibility-default estimator first averages the weighted bead
+probabilities:
 
 ```text
 p_b(q) = sum_n W_n * K(q - q[n,b])
@@ -207,18 +210,21 @@ frame supplies total weight `W_n`. No extra factor of `P` belongs in `beta` or
 in the free-energy conversion. The finite-`P` result approximates the quantum
 bead marginal; bead-number convergence still needs independent assessment.
 
-A separate diagnostic averages the individual bead free energies:
+The second maintained estimator averages the individual bead free energies:
 
 ```text
 F_bead_mean(q) = mean_b [-kBT * log p_b(q)] + C
 ```
 
-The logarithm and probability average do not commute. At finite sampling this
-diagnostic differs from `F_quantum`; with a common additive constant, Jensen's
+The logarithm and probability average do not commute. At finite sampling the
+two estimators generally differ; with a common additive constant, Jensen's
 inequality gives `F_bead_mean >= F_quantum`. Agreement requires matching bead
 marginals and adequate support, and alone does not establish convergence.
-Both curves use the minimum of the probability-mean FES as their common zero;
-independently shifting the diagnostic would hide this difference.
+Both curves use the minimum of the explicitly selected primary estimator as
+their common zero. Independently shifting them would hide their finite-sample
+gap. The literature definitions do not establish that either estimator is
+universally superior for all finite-sampling errors, so estimator choice must
+be explicit and must not be inferred from `bias_mode`.
 
 The sampling-coordinate FES is also exported, with its own minimum zero. It
 characterizes the explicitly labelled sampling coordinate and should not be
@@ -229,18 +235,24 @@ Hamiltonian, temperature, and coordinate measure.
 
 ### Support and diagnostics
 
-The histogram API `quantum_fes_1d` preserves primary probability support even
-when individual bead histograms do not overlap. `probability_support` marks
-finite primary bins and `common_support` marks bins where both bead estimators
-are finite. Zero-count bins remain infinite. KDE outputs have a separate
-relative-density support mask for each estimator; the diagnostic intersection
-must not erase supported primary quantum bins. Each plotted curve uses its own
-mask; pairwise differences use the corresponding intersection.
+The histogram API `quantum_fes_1d` preserves probability-mean support even when
+individual bead histograms do not overlap. `probability_support` marks finite
+probability-mean bins, `free_energy_mean_support` requires every bead density
+to be finite, and `common_support` marks their pairwise intersection. Zero-count
+bins remain infinite. KDE outputs define the same independent masks by a
+relative-density threshold. `common_support` and
+`estimator_common_support` are estimator-pair support; they do not include the
+sampling-coordinate mask. `all_common` is the three-way intersection, while
+`sampling_probability_common` and `sampling_free_energy_common` are the two
+sampling-versus-estimator intersections. Each plotted curve and pairwise
+difference uses its corresponding mask.
 
-Primary support, block-to-full comparisons and bandwidth sensitivity use
-`probability_mean`. Neither a Gaussian KDE's positive tails nor support masks
-prove adequate sampling. Frame-weight ESS, block sensitivity and independent
-replica agreement address different limitations.
+Primary support, block-to-full comparisons, bandwidth sensitivity and optional
+uncertainty follow the explicitly selected estimator. The estimator-gap metric
+always uses estimator-pair support and is not reduced by missing sampling
+support. Neither a Gaussian KDE's positive tails nor support masks prove
+adequate sampling. Frame-weight ESS, block sensitivity and independent replica
+agreement address different limitations.
 
 Log frame weights are normalized after removing their maximum, so changing a
 finite energy zero does not change normalization. A conditioning bin whose
@@ -252,7 +264,7 @@ up to floating-point rounding. This algebraic parity does not establish OPES
 quasi-static behavior.
 
 The weighted log-space 1D/2D KDE, complete-path weights, bead probability mean,
-and bead free-energy-mean diagnostic are implemented inside molsimflow. A
+and bead free-energy mean are implemented inside molsimflow. A
 contract may optionally provide `reference.driver` to run the historical
 `FES_from_Reweighting.py` as a two-dimensional numerical cross-check. That
 external driver is not a runtime dependency and is never the authoritative
@@ -260,16 +272,24 @@ estimator.
 
 ### Output schema and historical migration
 
-New analyses use summary `schema_version: 2`. `fes.primary_estimator` is
-`probability_mean`, `fes.target_observable` is `bead_marginal`, and
-`fes.diagnostic_estimator` is `free_energy_mean`. One- and two-dimensional
-FES CSV tables use the same names:
+New analyses use summary `schema_version: 3`. `fes.primary_estimator` records
+the selected estimator, `fes.alternate_estimator` records the other maintained
+estimator, `fes.zero_reference` names the shared minimum, and
+`fes.target_observable` is `bead_density_fes`. One- and two-dimensional FES CSV
+tables use the same names:
 
 | Meaning | Support column | Free-energy column |
 | --- | --- | --- |
 | Sampling coordinate | `sampling_support` | `F_sampling_kcal_mol` |
 | Quantum bead marginal | `probability_mean_support` | `F_quantum_probability_mean_kcal_mol` |
-| Mean bead free energy, diagnostic | `free_energy_mean_support` | `F_bead_free_energy_mean_diagnostic_kcal_mol` |
+| Free-energy mean | `free_energy_mean_support` | `F_quantum_free_energy_mean_kcal_mol` |
+| Selected primary | `primary_support` | `F_primary_kcal_mol` |
+
+`common_support` and `estimator_common_support` are identical schema-3
+estimator-pair masks. The historical
+`F_bead_free_energy_mean_diagnostic_kcal_mol` column is still emitted as a
+numeric alias of `F_quantum_free_energy_mean_kcal_mol`; it is not the canonical
+schema-3 name.
 
 The comparison command accepts these columns and adapts archived fields at the
 input boundary. Historical `centroid` columns map to `sampling`; `eq8` maps to
@@ -282,14 +302,14 @@ numbers. The library's `quantum_fes_1d` keeps the old `eq8`, `eq10`,
 should use its descriptive keys.
 
 Archived tables remain readable without rewriting their numeric values.
-However, archived reports that promoted the mean bead free energy to the
-primary quantum result must be regenerated to use the probability mean.
-Historical diagnostics may also have been shifted to their own minima. The
-column adapter preserves those values and cannot restore the shared zero;
-recompute from the original inputs before comparing Jensen gaps or diagnostic
-zero conventions. External scripts reading old CSV, summary, block or bandwidth
-fields must migrate to schema 2 even though the comparison reader accepts old
-analysis tables.
+Historical estimator curves may have been shifted to different minima. The
+column adapter preserves those values and cannot restore a shared zero;
+recompute from the original inputs before comparing estimator gaps or zero
+conventions. External scripts reading old CSV, summary, block or bandwidth
+fields must migrate to schema 3 even though the comparison reader accepts old
+analysis tables. If compared runs record different primary estimators, the
+comparison command rejects them unless its contract explicitly selects an
+estimator present in both tables.
 Comparisons read CV names from `contract.cvs` or
 `summary.sampling_representation.logical_cv_names`; no water-specific axes are
 assumed. Matching column names or bias modes do not establish matching CV
@@ -394,9 +414,10 @@ frame. Missing or ambiguous matches are rejected; no interpolation is performed.
 ## Block jackknife for one-dimensional histogram FES
 
 The library API `pimd_fes.quantum_fes_block_jackknife_1d` estimates standard
-errors of probability-mean FES differences relative to an explicitly selected
-`reference_bin`. It accepts the same complete-frame bead CVs, log weights and
-bin edges as `quantum_fes_1d`, plus `block_size` in frames.
+errors of the selected estimator's FES differences relative to an explicitly
+selected `reference_bin`. It accepts the same complete-frame bead CVs, log
+weights and bin edges as `quantum_fes_1d`, plus `block_size` in frames and the
+optional compatibility-default `primary_estimator: probability_mean`.
 
 All beads remain together when a contiguous block is deleted. Blocks must be
 equal-sized and cover every frame; no tail is silently discarded. Each
@@ -442,7 +463,7 @@ Users still need block-length sensitivity and independent-replica comparisons.
 ## Optional KDE sampling uncertainty in analysis reports
 
 Add an `uncertainty` object under `reweight` to enable whole-frame block
-jackknife for the primary probability-mean KDE FES:
+jackknife for the selected primary KDE FES:
 
 ```json
 "uncertainty": {

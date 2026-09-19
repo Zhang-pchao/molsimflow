@@ -22,6 +22,7 @@ from molsimflow.postprocess.pimd_fes import (
     restart_unique_indices,
     total_bias_energy,
     validate_bias_mode,
+    validate_primary_estimator,
 )
 
 
@@ -62,11 +63,97 @@ def analysis_profile(contract: Mapping[str, object]) -> str:
 
 
 def estimator_plot_labels(bias_mode: str) -> Dict[str, str]:
-    """Name the common quantum target separately from the bead consistency diagnostic."""
+    """Name both documented bead estimators without assigning policy priority."""
     validate_bias_mode(bias_mode)
     return {
-        "probability_mean": "Quantum bead marginal (probability average)",
-        "free_energy_mean": "Mean bead free energy (diagnostic only)",
+        "probability_mean": "Probability-mean bead FES",
+        "free_energy_mean": "Free-energy-mean bead FES",
+    }
+
+
+def alternate_estimator(primary_estimator: str) -> str:
+    """Return the estimator reported alongside the selected primary result."""
+
+    primary = validate_primary_estimator(primary_estimator)
+    return "free_energy_mean" if primary == "probability_mean" else "probability_mean"
+
+
+def estimator_support_masks(
+    log_sampling_density: np.ndarray,
+    log_probability_mean: np.ndarray,
+    log_bead_density: np.ndarray,
+    log_relative_threshold: float,
+) -> Dict[str, np.ndarray]:
+    """Build independent and pairwise support masks for all FES comparisons."""
+
+    sampling = np.asarray(log_sampling_density, dtype=float)
+    probability = np.asarray(log_probability_mean, dtype=float)
+    beads = np.asarray(log_bead_density, dtype=float)
+    require(beads.shape[1:] == sampling.shape == probability.shape, "support density shape mismatch")
+    require(np.isfinite(sampling).all() and np.isfinite(probability).all()
+            and np.isfinite(beads).all(), "non-finite KDE density")
+    sampling_support = sampling - np.max(sampling) >= log_relative_threshold
+    probability_support = probability - np.max(probability) >= log_relative_threshold
+    bead_axes = tuple(range(1, beads.ndim))
+    relative_beads = beads - np.max(beads, axis=bead_axes, keepdims=True)
+    free_energy_support = np.all(relative_beads >= log_relative_threshold, axis=0)
+    estimator_common = probability_support & free_energy_support
+    return {
+        "centroid": sampling_support,
+        "probability_mean": probability_support,
+        "free_energy_mean": free_energy_support,
+        # Compatibility name now has the scientifically relevant estimator-pair meaning.
+        "common": estimator_common,
+        "estimator_common": estimator_common,
+        "all_common": sampling_support & estimator_common,
+        "sampling_probability_common": sampling_support & probability_support,
+        "sampling_free_energy_common": sampling_support & free_energy_support,
+    }
+
+
+FES_TABLE_FIELDS = (
+    "sampling_support",
+    "probability_mean_support",
+    "free_energy_mean_support",
+    "common_support",
+    "estimator_common_support",
+    "primary_support",
+    "F_sampling_kcal_mol",
+    "F_quantum_probability_mean_kcal_mol",
+    "F_quantum_free_energy_mean_kcal_mol",
+    "F_primary_kcal_mol",
+    # Historical public name retained as a compatibility alias.
+    "F_bead_free_energy_mean_diagnostic_kcal_mol",
+)
+
+
+def fes_table_columns(
+    surfaces_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    primary_estimator: str,
+    index: int | Tuple[int, ...],
+) -> Dict[str, float | int]:
+    """Return schema-3 FES columns plus the historical diagnostic alias."""
+
+    primary = validate_primary_estimator(primary_estimator)
+    return {
+        "sampling_support": int(supports["centroid"][index]),
+        "probability_mean_support": int(supports["probability_mean"][index]),
+        "free_energy_mean_support": int(supports["free_energy_mean"][index]),
+        "common_support": int(supports["estimator_common"][index]),
+        "estimator_common_support": int(supports["estimator_common"][index]),
+        "primary_support": int(supports[primary][index]),
+        "F_sampling_kcal_mol": float(surfaces_kcal["centroid"][index]),
+        "F_quantum_probability_mean_kcal_mol": float(
+            surfaces_kcal["probability_mean"][index]
+        ),
+        "F_quantum_free_energy_mean_kcal_mol": float(
+            surfaces_kcal["free_energy_mean"][index]
+        ),
+        "F_primary_kcal_mol": float(surfaces_kcal[primary][index]),
+        "F_bead_free_energy_mean_diagnostic_kcal_mol": float(
+            surfaces_kcal["free_energy_mean"][index]
+        ),
     }
 
 
@@ -636,8 +723,9 @@ def quantum_kde_block_jackknife(
     block_frames: int,
     reference_grid_index: Sequence[int],
     relative_density_support: float,
+    primary_estimator: str = "probability_mean",
 ) -> dict[str, object]:
-    """Estimate fixed-bandwidth probability-mean FES errors in one or two CVs.
+    """Estimate fixed-bandwidth primary-estimator errors in one or two CVs.
 
     Grid indices follow CV order; 2D arrays follow the existing (y, x) layout.
     Whole contiguous frame blocks are deleted. Support must survive every
@@ -702,6 +790,7 @@ def quantum_kde_block_jackknife(
     )
     array_index = index if dims == 1 else index[::-1]
     threshold = math.log(relative_density_support)
+    primary = validate_primary_estimator(primary_estimator)
 
     def curve(keep):
         selected = values[keep]
@@ -716,11 +805,20 @@ def quantum_kde_block_jackknife(
                 weighted_log_kde_2d(selected[:, b], logw, axes[0], axes[1], widths)
                 for b in range(values.shape[1])
             ]
-        logp = np.asarray(logsumexp(np.asarray(logs), axis=0)) - math.log(values.shape[1])
-        require(np.isfinite(logp).all(), "non-finite KDE density")
-        support = logp - np.max(logp) >= threshold
+        bead_logs = np.asarray(logs)
+        estimators = bead_density_estimators(
+            bead_logs, kbt, primary_estimator=primary
+        )
+        logp = np.asarray(logsumexp(bead_logs, axis=0)) - math.log(values.shape[1])
+        if primary == "probability_mean":
+            support = logp - np.max(logp) >= threshold
+        else:
+            bead_axes = tuple(range(1, bead_logs.ndim))
+            relative = bead_logs - np.max(bead_logs, axis=bead_axes, keepdims=True)
+            support = np.all(relative >= threshold, axis=0)
         require(support[array_index], "reference grid point loses density support")
-        return -float(kbt) * (logp - logp[array_index]), support
+        curve_values = np.asarray(estimators[primary], dtype=float)
+        return curve_values - curve_values[array_index], support
 
     full, support = curve(np.ones(len(values), dtype=bool))
     estimates = []
@@ -771,6 +869,7 @@ def write_kde_uncertainty(
         block_frames=config["block_frames"],
         reference_grid_index=config["reference_grid_index"],
         relative_density_support=float(reweight["relative_density_support"]),
+        primary_estimator=str(reweight.get("primary_estimator", "probability_mean")),
     )
     points = np.column_stack([axis.ravel() for axis in np.meshgrid(*grids)])
     fields = list(cv_names) + ["delta_F_eV", "standard_error_eV", "support"]
@@ -785,7 +884,7 @@ def write_kde_uncertainty(
         rows.append(row)
     write_csv(output / "blocks" / "quantum-fes-uncertainty.csv", rows, fields)
     metadata = {
-        "estimator": "probability_mean",
+        "estimator": str(reweight.get("primary_estimator", "probability_mean")),
         "method": "delete_one_frame_block_jackknife",
         "blocks": result["blocks"],
         "block_frames": result["block_frames"],
@@ -811,6 +910,7 @@ def compute_surfaces(
     y_grid: np.ndarray,
     bandwidth: Sequence[float],
     kbt_ev: float,
+    primary_estimator: str = "probability_mean",
 ) -> Dict[str, np.ndarray]:
     beads = np.asarray(beads, dtype=float)
     centroid = np.asarray(centroid, dtype=float)
@@ -827,7 +927,9 @@ def compute_surfaces(
     log_centroid = weighted_log_kde_2d(
         centroid, log_weights, x_grid, y_grid, bandwidth
     )
-    estimators = bead_density_estimators(log_beads, kbt_ev)
+    estimators = bead_density_estimators(
+        log_beads, kbt_ev, primary_estimator=primary_estimator
+    )
     raw_sampling = -float(kbt_ev) * log_centroid
     return {
         "log_weights": log_weights,
@@ -837,10 +939,10 @@ def compute_surfaces(
         "log_probability_mean": estimators["log_probability_mean"],
         "raw_centroid": raw_sampling,
         "raw_probability_mean": estimators["raw_probability_mean"],
-        "raw_free_energy_mean": estimators["raw_free_energy_mean_diagnostic"],
+        "raw_free_energy_mean": estimators["raw_free_energy_mean"],
         "centroid": raw_sampling - np.min(raw_sampling),
         "probability_mean": estimators["probability_mean"],
-        "free_energy_mean": estimators["free_energy_mean_diagnostic"],
+        "free_energy_mean": estimators["free_energy_mean"],
     }
 
 
@@ -852,6 +954,7 @@ def compute_marginals(
     bandwidth: float,
     component: int,
     kbt_ev: float,
+    primary_estimator: str = "probability_mean",
 ) -> Dict[str, np.ndarray]:
     log_weights = normalized_log_weights(raw_log_weights)
     log_beads = np.asarray(
@@ -863,12 +966,14 @@ def compute_marginals(
     log_centroid = weighted_log_kde_1d(
         centroid[:, component], log_weights, grid, bandwidth
     )
-    estimators = bead_density_estimators(log_beads, kbt_ev)
+    estimators = bead_density_estimators(
+        log_beads, kbt_ev, primary_estimator=primary_estimator
+    )
     sampling_f = -float(kbt_ev) * log_centroid
     return {
         "centroid": sampling_f - np.min(sampling_f),
         "probability_mean": estimators["probability_mean"],
-        "free_energy_mean": estimators["free_energy_mean_diagnostic"],
+        "free_energy_mean": estimators["free_energy_mean"],
         "log_centroid": log_centroid,
         "log_probability_mean": estimators["log_probability_mean"],
         "log_beads": log_beads,
@@ -1300,7 +1405,7 @@ def plot_fes_differences(
     x_grid: np.ndarray,
     y_grid: np.ndarray,
     surfaces_kcal: Mapping[str, np.ndarray],
-    support: np.ndarray,
+    supports: Mapping[str, np.ndarray],
     max_abs_kcal: float,
     cv_labels: Sequence[str],
     *,
@@ -1317,13 +1422,25 @@ def plot_fes_differences(
     probability_label = estimator_labels["probability_mean"]
     diagnostic_label = estimator_labels["free_energy_mean"]
     panels = (
-        (surfaces_kcal["probability_mean"] - surfaces_kcal["centroid"], f"{probability_label} - {sampling_label}"),
-        (surfaces_kcal["free_energy_mean"] - surfaces_kcal["centroid"], f"{diagnostic_label} - {sampling_label}"),
-        (surfaces_kcal["free_energy_mean"] - surfaces_kcal["probability_mean"], f"{diagnostic_label} - {probability_label}"),
+        (
+            surfaces_kcal["probability_mean"] - surfaces_kcal["centroid"],
+            supports["sampling_probability_common"],
+            f"{probability_label} - {sampling_label}",
+        ),
+        (
+            surfaces_kcal["free_energy_mean"] - surfaces_kcal["centroid"],
+            supports["sampling_free_energy_common"],
+            f"{diagnostic_label} - {sampling_label}",
+        ),
+        (
+            surfaces_kcal["free_energy_mean"] - surfaces_kcal["probability_mean"],
+            supports["estimator_common"],
+            f"{diagnostic_label} - {probability_label}",
+        ),
     )
     image = None
     norm = TwoSlopeNorm(vmin=-max_abs_kcal, vcenter=0.0, vmax=max_abs_kcal)
-    for axis, (values, title) in zip(axes, panels):
+    for axis, (values, support, title) in zip(axes, panels):
         image = axis.pcolormesh(
             x_grid, y_grid, np.where(support, values, np.nan), shading="auto", cmap="coolwarm", norm=norm
         )
@@ -1970,6 +2087,10 @@ def finalize_core_1d(
 ) -> Dict[str, object]:
     """Write the generic one-CV report without OPES or material diagnostics."""
     require("reference" not in contract, "legacy reference cross-check requires two CVs")
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
+    alternate = alternate_estimator(primary_estimator)
     grid = np.linspace(*reweight["grid"][cv_name])
     variants = {
         str(name): tuple(float(value) for value in values)
@@ -1986,61 +2107,74 @@ def finalize_core_1d(
     sensitivity_rows: List[Dict[str, object]] = []
     for variant, bandwidth in variants.items():
         curves = compute_marginals(
-            beads, sampling, raw_log_weights, grid, bandwidth[0], 0, kbt_ev
+            beads,
+            sampling,
+            raw_log_weights,
+            grid,
+            bandwidth[0],
+            0,
+            kbt_ev,
+            primary_estimator=primary_estimator,
         )
-        relative_beads = curves["log_beads"] - np.max(
-            curves["log_beads"], axis=1, keepdims=True
+        supports = estimator_support_masks(
+            curves["log_centroid"],
+            curves["log_probability_mean"],
+            curves["log_beads"],
+            threshold,
         )
-        supports = {
-            "centroid": curves["log_centroid"] - np.max(curves["log_centroid"])
-            >= threshold,
-            "probability_mean": curves["log_probability_mean"] - np.max(curves["log_probability_mean"]) >= threshold,
-            "free_energy_mean": np.all(relative_beads >= threshold, axis=0),
-        }
-        supports["common"] = (supports["centroid"] & supports["probability_mean"]
-                              & supports["free_energy_mean"])
         curves_by_variant[variant] = curves
         supports_by_variant[variant] = supports
         sensitivity_rows.append(
             {
                 "variant": variant,
                 "sigma": bandwidth[0],
+                "primary_estimator": primary_estimator,
+                "primary_support_points": int(np.count_nonzero(supports[primary_estimator])),
                 "probability_mean_support_points": int(np.count_nonzero(supports["probability_mean"])),
+                "free_energy_mean_support_points": int(np.count_nonzero(supports["free_energy_mean"])),
                 "common_support_points": int(np.count_nonzero(supports["common"])),
             }
         )
 
     primary = curves_by_variant[primary_name]
     primary_supports = supports_by_variant[primary_name]
-    primary_support = primary_supports["common"]
-    require(np.count_nonzero(primary_supports["probability_mean"]) >= 2, "empty probability support")
+    primary_support = primary_supports[primary_estimator]
+    estimator_common_support = primary_supports["estimator_common"]
+    require(
+        np.count_nonzero(primary_support) >= 2,
+        f"empty {primary_estimator} support",
+    )
     primary_kcal = {
         key: primary[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")
     }
     for row in sensitivity_rows:
         variant = str(row["variant"])
         comparison_support = (
-            primary_supports["probability_mean"] & supports_by_variant[variant]["probability_mean"]
+            primary_supports[primary_estimator]
+            & supports_by_variant[variant][primary_estimator]
         )
         count, rmse, maximum = optional_surface_difference_metrics(
-            primary_kcal["probability_mean"],
-            curves_by_variant[variant]["probability_mean"] * EV_TO_KCAL_MOL,
+            primary_kcal[primary_estimator],
+            curves_by_variant[variant][primary_estimator] * EV_TO_KCAL_MOL,
             comparison_support,
         )
         row["comparison_support_points"] = count
-        row["probability_mean_rmse_vs_primary_kcal_mol"] = rmse
-        row["probability_mean_max_abs_vs_primary_kcal_mol"] = maximum
+        row["primary_rmse_vs_selected_bandwidth_kcal_mol"] = rmse
+        row["primary_max_abs_vs_selected_bandwidth_kcal_mol"] = maximum
     write_csv(
         output / "qc" / "bandwidth-sensitivity.csv",
         sensitivity_rows,
         [
             "variant",
             "sigma",
+            "primary_estimator",
+            "primary_support_points",
             "probability_mean_support_points",
+            "free_energy_mean_support_points",
             "common_support_points",
             "comparison_support_points",
-            "probability_mean_rmse_vs_primary_kcal_mol",
-            "probability_mean_max_abs_vs_primary_kcal_mol",
+            "primary_rmse_vs_selected_bandwidth_kcal_mol",
+            "primary_max_abs_vs_selected_bandwidth_kcal_mol",
         ],
     )
     write_csv(
@@ -2048,25 +2182,15 @@ def finalize_core_1d(
         (
             {
                 cv_name: value,
-                "sampling_support": int(primary_supports["centroid"][index]),
-                "probability_mean_support": int(primary_supports["probability_mean"][index]),
-                "free_energy_mean_support": int(primary_supports["free_energy_mean"][index]),
-                "common_support": int(primary_support[index]),
-                "F_sampling_kcal_mol": primary_kcal["centroid"][index],
-                "F_quantum_probability_mean_kcal_mol": primary_kcal["probability_mean"][index],
-                "F_bead_free_energy_mean_diagnostic_kcal_mol": primary_kcal["free_energy_mean"][index],
+                **fes_table_columns(
+                    primary_kcal, primary_supports, primary_estimator, index
+                ),
             }
             for index, value in enumerate(grid)
         ),
         [
             cv_name,
-            "sampling_support",
-            "probability_mean_support",
-            "free_energy_mean_support",
-            "common_support",
-            "F_sampling_kcal_mol",
-            "F_quantum_probability_mean_kcal_mol",
-            "F_bead_free_energy_mean_diagnostic_kcal_mol",
+            *FES_TABLE_FIELDS,
         ],
     )
 
@@ -2114,12 +2238,21 @@ def finalize_core_1d(
             variants[primary_name][0],
             0,
             kbt_ev,
+            primary_estimator=primary_estimator,
         )
-        current_relative = current["log_probability_mean"] - np.max(current["log_probability_mean"])
-        comparison_support = primary_supports["probability_mean"] & (current_relative >= threshold)
+        current_supports = estimator_support_masks(
+            current["log_centroid"],
+            current["log_probability_mean"],
+            current["log_beads"],
+            threshold,
+        )
+        comparison_support = (
+            primary_supports[primary_estimator]
+            & current_supports[primary_estimator]
+        )
         count, rmse, maximum = optional_surface_difference_metrics(
-            primary_kcal["probability_mean"],
-            current["probability_mean"] * EV_TO_KCAL_MOL,
+            primary_kcal[primary_estimator],
+            current[primary_estimator] * EV_TO_KCAL_MOL,
             comparison_support,
         )
         block_weights = np.exp(normalized_log_weights(raw_log_weights[indices]))
@@ -2131,9 +2264,10 @@ def finalize_core_1d(
                 "frames": len(indices),
                 "ess": 1.0 / float(np.sum(block_weights**2)),
                 "max_weight": float(np.max(block_weights)),
+                "primary_estimator": primary_estimator,
                 "comparison_support_points": count,
-                "probability_mean_rmse_vs_full_kcal_mol": rmse,
-                "probability_mean_max_abs_vs_full_kcal_mol": maximum,
+                "primary_rmse_vs_full_kcal_mol": rmse,
+                "primary_max_abs_vs_full_kcal_mol": maximum,
             }
         )
     write_csv(
@@ -2165,7 +2299,7 @@ def finalize_core_1d(
     ) * EV_TO_KCAL_MOL
     diagnostic_gap = primary_kcal["free_energy_mean"] - primary_kcal["probability_mean"]
     summary: Dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "PASS",
         "analysis_profile": "core",
         "source_job": source.get("job_id"),
@@ -2218,20 +2352,23 @@ def finalize_core_1d(
             "bead_rows_removed": list(bead_restart_duplicates),
         },
         "fes": {
-            "primary_estimator": "probability_mean",
-            "target_observable": "bead_marginal",
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate,
+            "target_observable": "bead_density_fes",
             "target_observable_id": reweight.get("target_observable_id"),
-            "diagnostic_estimator": "free_energy_mean",
-            "diagnostic_zero": "primary_probability_minimum",
+            "zero_reference": f"{primary_estimator}_minimum",
             "dimensions": 1,
             "unit": "kcal/mol",
-            "primary_support_points": int(np.count_nonzero(primary_supports["probability_mean"])),
+            "primary_support_points": int(np.count_nonzero(primary_support)),
             "primary_bandwidth": list(variants[primary_name]),
             "primary_bandwidth_name": primary_name,
             "probability_mean_label": labels["probability_mean"],
             "free_energy_mean_label": labels["free_energy_mean"],
-            "common_support_points": int(np.count_nonzero(primary_support)),
-            **diagnostic_gap_metrics(diagnostic_gap, primary_support),
+            "common_support_points": int(np.count_nonzero(estimator_common_support)),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(estimator_common_support)
+            ),
+            **diagnostic_gap_metrics(diagnostic_gap, estimator_common_support),
             "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
         },
         "reference_crosscheck": None,
@@ -2257,8 +2394,8 @@ def finalize_core_1d(
         "Analysis profile: `core`",
         f"CV: `{cv_name}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
         f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
-        f"Primary estimator: `{labels['probability_mean']}`",
-        f"Finite-sampling diagnostic: `{labels['free_energy_mean']}`",
+        f"Primary estimator: `{labels[primary_estimator]}`",
+        f"Alternate estimator: `{labels[alternate]}`",
         "",
         "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, water-ionization diagnostics, or an external reference driver.",
         "",
@@ -2290,7 +2427,6 @@ def finalize_core_2d(
     primary_name: str,
     primary: Mapping[str, np.ndarray],
     primary_kcal: Mapping[str, np.ndarray],
-    primary_support: np.ndarray,
     primary_supports: Mapping[str, np.ndarray],
     variants: Mapping[str, Sequence[float]],
     filtered_colvar: Path,
@@ -2298,6 +2434,12 @@ def finalize_core_2d(
     bead_restart_duplicates: Sequence[int],
 ) -> Dict[str, object]:
     """Write a generic two-CV report without material-specific diagnostics."""
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
+    alternate = alternate_estimator(primary_estimator)
+    primary_support = primary_supports[primary_estimator]
+    estimator_common_support = primary_supports["estimator_common"]
     protocol_label = sampling_protocol_label(reweight)
     plot_fes2d(
         output,
@@ -2317,7 +2459,7 @@ def finalize_core_2d(
         np.linspace(*reweight["grid"][cv_names[0]]),
         np.linspace(*reweight["grid"][cv_names[1]]),
         primary_kcal,
-        primary_support,
+        primary_supports,
         float(reweight["difference_max_kcal_mol"]),
         cv_labels,
         sampling_label=sampling_label,
@@ -2361,7 +2503,7 @@ def finalize_core_2d(
     diagnostic_gap = primary_kcal["free_energy_mean"] - primary_kcal["probability_mean"]
     require(float(np.min(raw_gap)) >= -1e-10, "bead density Jensen relation failed")
     summary: Dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "PASS",
         "analysis_profile": "core",
         "source_job": source.get("job_id"),
@@ -2414,20 +2556,23 @@ def finalize_core_2d(
             "bead_rows_removed": list(bead_restart_duplicates),
         },
         "fes": {
-            "primary_estimator": "probability_mean",
-            "target_observable": "bead_marginal",
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate,
+            "target_observable": "bead_density_fes",
             "target_observable_id": reweight.get("target_observable_id"),
-            "diagnostic_estimator": "free_energy_mean",
-            "diagnostic_zero": "primary_probability_minimum",
+            "zero_reference": f"{primary_estimator}_minimum",
             "dimensions": 2,
             "unit": "kcal/mol",
-            "primary_support_points": int(np.count_nonzero(primary_supports["probability_mean"])),
+            "primary_support_points": int(np.count_nonzero(primary_support)),
             "primary_bandwidth": list(variants[primary_name]),
             "primary_bandwidth_name": primary_name,
             "probability_mean_label": labels["probability_mean"],
             "free_energy_mean_label": labels["free_energy_mean"],
-            "common_support_points": int(np.count_nonzero(primary_support)),
-            **diagnostic_gap_metrics(diagnostic_gap, primary_support),
+            "common_support_points": int(np.count_nonzero(estimator_common_support)),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(estimator_common_support)
+            ),
+            **diagnostic_gap_metrics(diagnostic_gap, estimator_common_support),
             "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
         },
         "reference_crosscheck": reference_metrics,
@@ -2457,8 +2602,8 @@ def finalize_core_2d(
         "Analysis profile: `core`",
         f"CVs: `{', '.join(cv_names)}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
         f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
-        f"Primary estimator: `{labels['probability_mean']}`",
-        f"Finite-sampling diagnostic: `{labels['free_energy_mean']}`",
+        f"Primary estimator: `{labels[primary_estimator]}`",
+        f"Alternate estimator: `{labels[alternate]}`",
         reference_line,
         "",
         "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, or water-ionization diagnostics.",
@@ -2482,8 +2627,9 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
-    require(reweight.get("primary_estimator", "probability_mean") == "probability_mean",
-            "primary_estimator must be probability_mean; free_energy_mean is diagnostic only")
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
     require(not (contract.get("reference") is not None
                  and reweight.get("weight_kind") == "precomputed"),
             "legacy reference cross-check requires bias-energy weights")
@@ -2846,25 +2992,26 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     surfaces_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
     supports_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
     sensitivity_rows: List[Dict[str, object]] = []
-    primary_support = None
     for variant, bandwidth in variants.items():
-        surfaces = compute_surfaces(beads, centroid, raw_log_weights, x_grid, y_grid, bandwidth, kbt_ev)
+        surfaces = compute_surfaces(
+            beads,
+            centroid,
+            raw_log_weights,
+            x_grid,
+            y_grid,
+            bandwidth,
+            kbt_ev,
+            primary_estimator=primary_estimator,
+        )
         surfaces_by_variant[variant] = surfaces
         log_threshold = math.log(float(reweight["relative_density_support"]))
-        relative_beads = surfaces["log_beads"] - np.max(
-            surfaces["log_beads"], axis=(1, 2), keepdims=True
+        supports = estimator_support_masks(
+            surfaces["log_centroid"],
+            surfaces["log_probability_mean"],
+            surfaces["log_beads"],
+            log_threshold,
         )
-        supports = {
-            "centroid": surfaces["log_centroid"] - np.max(surfaces["log_centroid"])
-            >= log_threshold,
-            "probability_mean": surfaces["log_probability_mean"] - np.max(surfaces["log_probability_mean"]) >= log_threshold,
-            "free_energy_mean": np.all(relative_beads >= log_threshold, axis=0),
-        }
-        supports["common"] = (supports["centroid"] & supports["probability_mean"]
-                              & supports["free_energy_mean"])
         supports_by_variant[variant] = supports
-        if variant == primary_name:
-            primary_support = supports["common"]
         kcal = {key: surfaces[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")}
         rows = []
         for iy, y_value in enumerate(y_grid):
@@ -2873,71 +3020,84 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                     {
                         cv_names[0]: x_value,
                         cv_names[1]: y_value,
-                        "sampling_support": int(supports["centroid"][iy, ix]),
-                        "probability_mean_support": int(supports["probability_mean"][iy, ix]),
-                        "free_energy_mean_support": int(supports["free_energy_mean"][iy, ix]),
-                        "common_support": int(supports["common"][iy, ix]),
-                        "F_sampling_kcal_mol": kcal["centroid"][iy, ix],
-                        "F_quantum_probability_mean_kcal_mol": kcal["probability_mean"][iy, ix],
-                        "F_bead_free_energy_mean_diagnostic_kcal_mol": kcal["free_energy_mean"][iy, ix],
+                        **fes_table_columns(
+                            kcal, supports, primary_estimator, (iy, ix)
+                        ),
                     }
                 )
         write_csv(
             output / "fes2d" / f"{variant}.csv", rows,
-            [cv_names[0], cv_names[1], "sampling_support", "probability_mean_support", "free_energy_mean_support", "common_support", "F_sampling_kcal_mol", "F_quantum_probability_mean_kcal_mol", "F_bead_free_energy_mean_diagnostic_kcal_mol"],
+            [cv_names[0], cv_names[1], *FES_TABLE_FIELDS],
         )
         sensitivity_rows.append(
             {
                 "variant": variant,
                 "sigma_x": bandwidth[0],
                 "sigma_y": bandwidth[1],
+                "primary_estimator": primary_estimator,
+                "primary_support_points": int(np.count_nonzero(supports[primary_estimator])),
                 "probability_mean_support_points": int(np.count_nonzero(supports["probability_mean"])),
+                "free_energy_mean_support_points": int(np.count_nonzero(supports["free_energy_mean"])),
                 "common_support_points": int(np.count_nonzero(supports["common"])),
             }
         )
-    require(primary_support is not None and np.count_nonzero(
-        supports_by_variant[primary_name]["probability_mean"]) >= 2, "empty probability support")
+    primary_supports = supports_by_variant[primary_name]
+    primary_support = primary_supports[primary_estimator]
+    require(
+        np.count_nonzero(primary_support) >= 2,
+        f"empty {primary_estimator} support",
+    )
     primary = surfaces_by_variant[primary_name]
     primary_kcal = {key: primary[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")}
     for row in sensitivity_rows:
         variant = str(row["variant"])
-        current = surfaces_by_variant[variant]["probability_mean"] * EV_TO_KCAL_MOL
+        current = surfaces_by_variant[variant][primary_estimator] * EV_TO_KCAL_MOL
         comparison_support = (
-            supports_by_variant[primary_name]["probability_mean"] & supports_by_variant[variant]["probability_mean"]
+            primary_supports[primary_estimator]
+            & supports_by_variant[variant][primary_estimator]
         )
         try:
             count, rmse, maximum = optional_surface_difference_metrics(
-                primary_kcal["probability_mean"], current, comparison_support
+                primary_kcal[primary_estimator], current, comparison_support
             )
         except ValueError as exc:
             raise ValueError(f"bandwidth comparison failed for {variant}: {exc}") from exc
         row["comparison_support_points"] = count
-        row["probability_mean_rmse_vs_primary_kcal_mol"] = rmse
-        row["probability_mean_max_abs_vs_primary_kcal_mol"] = maximum
+        row["primary_rmse_vs_selected_bandwidth_kcal_mol"] = rmse
+        row["primary_max_abs_vs_selected_bandwidth_kcal_mol"] = maximum
     write_csv(
         output / "qc" / "bandwidth-sensitivity.csv", sensitivity_rows,
-        ["variant", "sigma_x", "sigma_y", "probability_mean_support_points", "common_support_points", "comparison_support_points", "probability_mean_rmse_vs_primary_kcal_mol", "probability_mean_max_abs_vs_primary_kcal_mol"],
+        [
+            "variant", "sigma_x", "sigma_y", "primary_estimator",
+            "primary_support_points", "probability_mean_support_points",
+            "free_energy_mean_support_points", "common_support_points",
+            "comparison_support_points",
+            "primary_rmse_vs_selected_bandwidth_kcal_mol",
+            "primary_max_abs_vs_selected_bandwidth_kcal_mol",
+        ],
     )
 
     marginal_tables: Dict[str, Dict[str, np.ndarray]] = {}
     for component, name in enumerate(cv_names):
         grid = x_grid if component == 0 else y_grid
         curves = compute_marginals(
-            beads, centroid, raw_log_weights, grid, variants[primary_name][component], component, kbt_ev
+            beads,
+            centroid,
+            raw_log_weights,
+            grid,
+            variants[primary_name][component],
+            component,
+            kbt_ev,
+            primary_estimator=primary_estimator,
         )
         curves_kcal = {key: values * EV_TO_KCAL_MOL for key, values in curves.items()}
         log_threshold = math.log(float(reweight["relative_density_support"]))
-        relative_beads = curves["log_beads"] - np.max(
-            curves["log_beads"], axis=1, keepdims=True
+        supports = estimator_support_masks(
+            curves["log_centroid"],
+            curves["log_probability_mean"],
+            curves["log_beads"],
+            log_threshold,
         )
-        supports = {
-            "centroid": curves["log_centroid"] - np.max(curves["log_centroid"])
-            >= log_threshold,
-            "probability_mean": curves["log_probability_mean"] - np.max(curves["log_probability_mean"]) >= log_threshold,
-            "free_energy_mean": np.all(relative_beads >= log_threshold, axis=0),
-        }
-        supports["common"] = (supports["centroid"] & supports["probability_mean"]
-                              & supports["free_energy_mean"])
         marginal_tables[name] = {
             **{key: curves_kcal[key] for key in ("centroid", "probability_mean", "free_energy_mean")},
             **{f"{key}_support": value for key, value in supports.items()},
@@ -2947,17 +3107,13 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             (
                 {
                     name: value,
-                    "sampling_support": int(supports["centroid"][index]),
-                    "probability_mean_support": int(supports["probability_mean"][index]),
-                    "free_energy_mean_support": int(supports["free_energy_mean"][index]),
-                    "common_support": int(supports["common"][index]),
-                    "F_sampling_kcal_mol": curves_kcal["centroid"][index],
-                    "F_quantum_probability_mean_kcal_mol": curves_kcal["probability_mean"][index],
-                    "F_bead_free_energy_mean_diagnostic_kcal_mol": curves_kcal["free_energy_mean"][index],
+                    **fes_table_columns(
+                        curves_kcal, supports, primary_estimator, index
+                    ),
                 }
                 for index, value in enumerate(grid)
             ),
-            [name, "sampling_support", "probability_mean_support", "free_energy_mean_support", "common_support", "F_sampling_kcal_mol", "F_quantum_probability_mean_kcal_mol", "F_bead_free_energy_mean_diagnostic_kcal_mol"],
+            [name, *FES_TABLE_FIELDS],
         )
         plot_fes1d(
             output, name, grid, curves_kcal, supports,
@@ -2966,7 +3122,6 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             bias_mode=bias_mode,
         )
 
-    primary_supports = supports_by_variant[primary_name]
     derived_coordinate_summary = None
     if derived_spec is not None:
         require(derived_validation is not None, "derived-coordinate validation absent")
@@ -3006,14 +3161,27 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 )
             derived_curves_kcal[key] = current_curve
         require(target_grid is not None and density_jacobian is not None, "derived grid absent")
-        primary_zero = np.min(derived_curves_kcal["probability_mean"][source_marginals["probability_mean_support"]])
+        primary_zero = np.min(
+            derived_curves_kcal[primary_estimator][
+                source_marginals[f"{primary_estimator}_support"]
+            ]
+        )
         for key in ("probability_mean", "free_energy_mean"):
             derived_curves_kcal[key] -= primary_zero
         derived_curves_kcal["centroid"] -= np.min(
             derived_curves_kcal["centroid"][source_marginals["centroid_support"]])
         derived_marginal_supports = {
             key: np.asarray(source_marginals[f"{key}_support"], dtype=bool).copy()
-            for key in ("centroid", "probability_mean", "free_energy_mean", "common")
+            for key in (
+                "centroid",
+                "probability_mean",
+                "free_energy_mean",
+                "common",
+                "estimator_common",
+                "all_common",
+                "sampling_probability_common",
+                "sampling_free_energy_common",
+            )
         }
         require(
             all(
@@ -3033,13 +3201,12 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                     target_name: target_grid[index],
                     source_name: source_grid[index],
                     jacobian_name: density_jacobian[index],
-                    "sampling_support": int(derived_marginal_supports["centroid"][index]),
-                    "probability_mean_support": int(derived_marginal_supports["probability_mean"][index]),
-                    "free_energy_mean_support": int(derived_marginal_supports["free_energy_mean"][index]),
-                    "common_support": int(derived_marginal_supports["common"][index]),
-                    "F_sampling_kcal_mol": derived_curves_kcal["centroid"][index],
-                    "F_quantum_probability_mean_kcal_mol": derived_curves_kcal["probability_mean"][index],
-                    "F_bead_free_energy_mean_diagnostic_kcal_mol": derived_curves_kcal["free_energy_mean"][index],
+                    **fes_table_columns(
+                        derived_curves_kcal,
+                        derived_marginal_supports,
+                        primary_estimator,
+                        index,
+                    ),
                 }
                 for index in range(len(target_grid))
             ),
@@ -3047,13 +3214,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 target_name,
                 source_name,
                 jacobian_name,
-                "sampling_support",
-                "probability_mean_support",
-                "free_energy_mean_support",
-                "common_support",
-                "F_sampling_kcal_mol",
-                "F_quantum_probability_mean_kcal_mol",
-                "F_bead_free_energy_mean_diagnostic_kcal_mol",
+                *FES_TABLE_FIELDS,
             ],
         )
         plot_fes1d(
@@ -3087,14 +3248,27 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 "derived 1D/2D Jacobians differ",
             )
             derived_surfaces_kcal[key] = current_surface
-        primary_zero = np.min(derived_surfaces_kcal["probability_mean"][primary_supports["probability_mean"]])
+        primary_zero = np.min(
+            derived_surfaces_kcal[primary_estimator][
+                primary_supports[primary_estimator]
+            ]
+        )
         for key in ("probability_mean", "free_energy_mean"):
             derived_surfaces_kcal[key] -= primary_zero
         derived_surfaces_kcal["centroid"] -= np.min(
             derived_surfaces_kcal["centroid"][primary_supports["centroid"]])
         derived_supports = {
             key: np.asarray(primary_supports[key], dtype=bool).copy()
-            for key in ("centroid", "probability_mean", "free_energy_mean", "common")
+            for key in (
+                "centroid",
+                "probability_mean",
+                "free_energy_mean",
+                "common",
+                "estimator_common",
+                "all_common",
+                "sampling_probability_common",
+                "sampling_free_energy_common",
+            )
         }
         require(
             all(
@@ -3119,13 +3293,12 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                         derived_names[1]: y_value,
                         source_name: source_grid[source_index],
                         jacobian_name: density_jacobian[source_index],
-                        "sampling_support": int(derived_supports["centroid"][iy, ix]),
-                        "probability_mean_support": int(derived_supports["probability_mean"][iy, ix]),
-                        "free_energy_mean_support": int(derived_supports["free_energy_mean"][iy, ix]),
-                        "common_support": int(derived_supports["common"][iy, ix]),
-                        "F_sampling_kcal_mol": derived_surfaces_kcal["centroid"][iy, ix],
-                        "F_quantum_probability_mean_kcal_mol": derived_surfaces_kcal["probability_mean"][iy, ix],
-                        "F_bead_free_energy_mean_diagnostic_kcal_mol": derived_surfaces_kcal["free_energy_mean"][iy, ix],
+                        **fes_table_columns(
+                            derived_surfaces_kcal,
+                            derived_supports,
+                            primary_estimator,
+                            (iy, ix),
+                        ),
                     }
                 )
         derived_surface_name = f"{primary_name}-{'-'.join(derived_names)}"
@@ -3137,13 +3310,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 derived_names[1],
                 source_name,
                 jacobian_name,
-                "sampling_support",
-                "probability_mean_support",
-                "free_energy_mean_support",
-                "common_support",
-                "F_sampling_kcal_mol",
-                "F_quantum_probability_mean_kcal_mol",
-                "F_bead_free_energy_mean_diagnostic_kcal_mol",
+                *FES_TABLE_FIELDS,
             ],
         )
         plot_fes2d(
@@ -3211,15 +3378,22 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     for block, indices in enumerate(np.array_split(np.arange(len(selected)), int(reweight["blocks"]))):
         block_surface = compute_surfaces(
             beads[indices], centroid[indices], raw_log_weights[indices], x_grid, y_grid,
-            variants[primary_name], kbt_ev,
+            variants[primary_name], kbt_ev, primary_estimator=primary_estimator,
         )
         block_weights = block_surface["weights"]
-        block_relative = block_surface["log_probability_mean"] - np.max(block_surface["log_probability_mean"])
-        block_support = block_relative >= math.log(float(reweight["relative_density_support"]))
-        block_comparison_support = supports_by_variant[primary_name]["probability_mean"] & block_support
+        block_supports = estimator_support_masks(
+            block_surface["log_centroid"],
+            block_surface["log_probability_mean"],
+            block_surface["log_beads"],
+            math.log(float(reweight["relative_density_support"])),
+        )
+        block_comparison_support = (
+            primary_supports[primary_estimator]
+            & block_supports[primary_estimator]
+        )
         comparison_count, block_rmse, block_maximum = optional_surface_difference_metrics(
-            primary["probability_mean"] * EV_TO_KCAL_MOL,
-            block_surface["probability_mean"] * EV_TO_KCAL_MOL,
+            primary[primary_estimator] * EV_TO_KCAL_MOL,
+            block_surface[primary_estimator] * EV_TO_KCAL_MOL,
             block_comparison_support,
         )
         block_rows.append(
@@ -3230,14 +3404,20 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
                 "frames": len(indices),
                 "ess": 1.0 / float(np.sum(block_weights**2)),
                 "max_weight": float(np.max(block_weights)),
+                "primary_estimator": primary_estimator,
                 "comparison_support_points": comparison_count,
-                "probability_mean_rmse_vs_full_kcal_mol": block_rmse,
-                "probability_mean_max_abs_vs_full_kcal_mol": block_maximum,
+                "primary_rmse_vs_full_kcal_mol": block_rmse,
+                "primary_max_abs_vs_full_kcal_mol": block_maximum,
             }
         )
     write_csv(
         output / "blocks" / "block-diagnostics.csv", block_rows,
-        ["block", "first_time_ps", "last_time_ps", "frames", "ess", "max_weight", "comparison_support_points", "probability_mean_rmse_vs_full_kcal_mol", "probability_mean_max_abs_vs_full_kcal_mol"],
+        [
+            "block", "first_time_ps", "last_time_ps", "frames", "ess",
+            "max_weight", "primary_estimator", "comparison_support_points",
+            "primary_rmse_vs_full_kcal_mol",
+            "primary_max_abs_vs_full_kcal_mol",
+        ],
     )
 
     frame_rows = []
@@ -3371,7 +3551,6 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             primary_name=primary_name,
             primary=primary,
             primary_kcal=primary_kcal,
-            primary_support=primary_support,
             primary_supports=primary_supports,
             variants=variants,
             filtered_colvar=filtered_colvar,
@@ -3504,7 +3683,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         x_grid,
         y_grid,
         primary_kcal,
-        primary_support,
+        primary_supports,
         float(reweight["difference_max_kcal_mol"]),
         cv_labels,
         sampling_label=sampling_label,
@@ -3521,7 +3700,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             bead_count=beads.shape[1],
         )
         plot_fes_differences(
-            output, x_grid, y_grid, primary_kcal, primary_support,
+            output, x_grid, y_grid, primary_kcal, primary_supports,
             float(reweight["difference_max_kcal_mol"]), cv_labels, zoom=zoom, suffix="-sampled-region",
             sampling_label=sampling_label,
             bias_mode=bias_mode,
@@ -3617,7 +3796,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         default=0.0,
     )
     summary: Dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "PASS",
         "source_job": source["job_id"],
         "analysis_profile": profile,
@@ -3679,24 +3858,31 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
             "bead_rows_removed": bead_restart_duplicates,
         },
         "fes": {
-            "primary_estimator": "probability_mean",
-            "target_observable": "bead_marginal",
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate_estimator(primary_estimator),
+            "target_observable": "bead_density_fes",
             "target_observable_id": reweight.get("target_observable_id"),
-            "diagnostic_estimator": "free_energy_mean",
-            "diagnostic_zero": "primary_probability_minimum",
+            "zero_reference": f"{primary_estimator}_minimum",
             "unit": "kcal/mol",
-            "primary_support_points": int(np.count_nonzero(primary_supports["probability_mean"])),
+            "primary_support_points": int(np.count_nonzero(primary_support)),
             "probability_mean_label": estimator_plot_labels(bias_mode)[
                 "probability_mean"
             ],
             "free_energy_mean_label": estimator_plot_labels(bias_mode)["free_energy_mean"],
             "primary_bandwidth": list(variants[primary_name]),
             "primary_bandwidth_name": primary_name,
-            "common_support_points": int(np.count_nonzero(primary_support)),
+            "common_support_points": int(
+                np.count_nonzero(primary_supports["estimator_common"])
+            ),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(primary_supports["estimator_common"])
+            ),
             "sampling_support_points": int(np.count_nonzero(primary_supports["centroid"])),
             "probability_mean_support_points": int(np.count_nonzero(primary_supports["probability_mean"])),
             "free_energy_mean_support_points": int(np.count_nonzero(primary_supports["free_energy_mean"])),
-            **diagnostic_gap_metrics(diagnostic_gap, primary_support),
+            **diagnostic_gap_metrics(
+                diagnostic_gap, primary_supports["estimator_common"]
+            ),
             "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
         },
         "pimd": {

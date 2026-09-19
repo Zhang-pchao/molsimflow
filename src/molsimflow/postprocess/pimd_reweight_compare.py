@@ -1,8 +1,8 @@
-"""Compare completed PIMD analyses using the quantum bead marginal.
+"""Compare completed PIMD analyses using an explicitly selected estimator.
 
-Historical equation-number CSV fields are accepted only at the input boundary.
-The mean of bead free energies is retained as a diagnostic, never as the
-primary quantum estimator.
+Historical equation-number and diagnostic-named CSV fields are accepted only
+at the input boundary. Both maintained bead estimators remain visible, while
+cross-run metrics follow the selected primary estimator.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import numpy as np
 
 from molsimflow.postprocess.pimd_reweight import (
     _matplotlib, artifact_basename, require, save_figure, sha256,
+    validate_primary_estimator,
 )
 
 
@@ -73,7 +74,7 @@ _ESTIMATOR_COLUMNS = {
         "probability_mean_support", "F_quantum_probability_mean_kcal_mol"
     ),
     "free_energy_mean": (
-        "free_energy_mean_support", "F_bead_free_energy_mean_diagnostic_kcal_mol"
+        "free_energy_mean_support", "F_quantum_free_energy_mean_kcal_mol"
     ),
 }
 _LEGACY_COLUMNS = {
@@ -82,14 +83,16 @@ _LEGACY_COLUMNS = {
     "probability_mean_support": ("eq8_support",),
     "F_quantum_probability_mean_kcal_mol": ("F_eq8_kcal_mol",),
     "free_energy_mean_support": ("logmean_support", "eq10_support"),
-    "F_bead_free_energy_mean_diagnostic_kcal_mol": (
-        "F_bead_logmean_diagnostic_kcal_mol", "F_eq10_kcal_mol"
+    "F_quantum_free_energy_mean_kcal_mol": (
+        "F_bead_free_energy_mean_diagnostic_kcal_mol",
+        "F_bead_logmean_diagnostic_kcal_mol",
+        "F_eq10_kcal_mol",
     ),
 }
 _ESTIMATOR_LABELS = {
     "sampling": "Sampling coordinate",
-    "probability_mean": "Quantum bead marginal",
-    "free_energy_mean": "Mean bead free energy (diagnostic)",
+    "probability_mean": "Probability-mean bead FES",
+    "free_energy_mean": "Free-energy-mean bead FES",
 }
 
 
@@ -165,10 +168,30 @@ def coordinate_definition_gate(runs: Sequence[Mapping[str, object]]) -> str:
     return "NOT_VERIFIED"
 
 
-def _comparison_estimators(runs: Sequence[Mapping[str, object]]) -> Tuple[str, ...]:
+def comparison_primary_estimator(
+    contract: Mapping[str, object], runs: Sequence[Mapping[str, object]]
+) -> str:
+    """Resolve one comparison estimator from the contract or run metadata."""
+
+    recorded = [
+        validate_primary_estimator(
+            str(run["summary"].get("fes", {}).get("primary_estimator", "probability_mean"))
+        )
+        for run in runs
+    ]
+    configured = contract.get("primary_estimator")
+    if configured is None:
+        require(len(set(recorded)) == 1, "run primary estimators differ")
+        return recorded[0]
+    return validate_primary_estimator(str(configured))
+
+
+def _comparison_estimators(
+    runs: Sequence[Mapping[str, object]], primary_estimator: str
+) -> Tuple[str, ...]:
     if sampling_observables_match(runs):
-        return ("sampling", "probability_mean")
-    return ("probability_mean",)
+        return ("sampling", primary_estimator)
+    return (primary_estimator,)
 
 
 def _sampling_label(run: Mapping[str, object]) -> str:
@@ -190,6 +213,7 @@ def _one_dimensional_figure(
     cv_label: str,
     max_kcal: float,
     window_label: str,
+    primary_estimator: str,
 ) -> Dict[str, object]:
     plt, _ = _matplotlib()
     tables = [canonical_fes_table(read_numeric_csv(Path(run["root"]) / "fes1d" / f"{cv}.csv")) for run in runs]
@@ -219,7 +243,7 @@ def _one_dimensional_figure(
     axes[0].legend(frameon=False, fontsize=8)
 
     overlay_metrics = {}
-    for key in _comparison_estimators(runs):
+    for key in _comparison_estimators(runs, primary_estimator):
         estimator = _ESTIMATOR_LABELS[key]
         linestyle = "-" if key == "sampling" else "--"
         support = np.logical_and.reduce(
@@ -276,6 +300,7 @@ def _two_dimensional_figures(
     window_label: str,
     cv_labels: Sequence[str],
     cv_names: Sequence[str],
+    primary_estimator: str,
     zoom: Sequence[Sequence[float]] | None = None,
 ) -> Dict[str, object]:
     plt, TwoSlopeNorm = _matplotlib()
@@ -296,10 +321,12 @@ def _two_dimensional_figures(
     if zoom is not None:
         views.append((zoom, "-sampled-region"))
     for view, suffix in views:
-        fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.0), sharex=True, sharey=True, constrained_layout=True)
+        fig, axes = plt.subplots(2, 3, figsize=(15.0, 8.0), sharex=True, sharey=True, constrained_layout=True)
         image = None
         for row, (run, table) in enumerate(zip(runs, tables)):
-            for column, key in enumerate(("sampling", "probability_mean")):
+            for column, key in enumerate(
+                ("sampling", "probability_mean", "free_energy_mean")
+            ):
                 values = table[_ESTIMATOR_COLUMNS[key][1]].reshape(shape)
                 support = table[_ESTIMATOR_COLUMNS[key][0]].reshape(shape).astype(bool)
                 image = axes[row, column].pcolormesh(x, y, np.where(support, values, np.nan), shading="auto", cmap="viridis", vmin=0.0, vmax=max_kcal)
@@ -318,7 +345,7 @@ def _two_dimensional_figures(
     norm = TwoSlopeNorm(vmin=-difference_max_kcal, vcenter=0.0, vmax=difference_max_kcal)
     metrics: Dict[str, object] = {}
     for view, suffix in views:
-        estimators = _comparison_estimators(runs)
+        estimators = _comparison_estimators(runs, primary_estimator)
         fig, axes = plt.subplots(1, len(estimators), figsize=(5.25 * len(estimators), 4.2), sharex=True, sharey=True, constrained_layout=True, squeeze=False)
         image = None
         for axis, key in zip(axes.ravel(), estimators):
@@ -356,6 +383,7 @@ def compare(contract_path: Path, output: Path) -> Dict[str, object]:
     (output / "provenance").mkdir()
     runs = [load_run(config) for config in contract["runs"]]
     require(len(runs) == 2, "comparison requires exactly two analyses")
+    primary_estimator = comparison_primary_estimator(contract, runs)
     coordinate_gate = coordinate_definition_gate(runs)
     window_label = str(contract["window_label"])
     cv_labels = contract.get("cv_labels", {})
@@ -364,6 +392,7 @@ def compare(contract_path: Path, output: Path) -> Dict[str, object]:
         _one_dimensional_figure(
             output, runs, cv, str(cv_labels.get(cv, cv)),
             float(contract["plot_max_kcal_mol"]), window_label,
+            primary_estimator,
         )
         for cv in cv_names
     ]
@@ -375,6 +404,7 @@ def compare(contract_path: Path, output: Path) -> Dict[str, object]:
         window_label,
         tuple(str(cv_labels.get(cv, cv)) for cv in cv_names),
         cv_names,
+        primary_estimator,
         contract.get("fes_zoom"),
     ) if len(cv_names) == 2 else {}
 
@@ -425,8 +455,8 @@ def compare(contract_path: Path, output: Path) -> Dict[str, object]:
         writer.writerows(metric_rows)
 
     result = {
-        "schema_version": 2,
-        "primary_estimator": "probability_mean",
+        "schema_version": 3,
+        "primary_estimator": primary_estimator,
         "sampling_observables_match": sampling_observables_match(runs),
         "coordinate_definition_gate": coordinate_gate,
         "cv_names": list(cv_names),
@@ -466,8 +496,8 @@ def compare(contract_path: Path, output: Path) -> Dict[str, object]:
         )
     lines.extend(
         [
-            "Primary quantum estimator: probability mean (quantum bead marginal).",
-            "Mean bead free energy is a diagnostic; it is not the quantum FES.",
+            f"Primary quantum estimator: {primary_estimator}.",
+            "Both bead estimators are retained in each run panel; cross-run metrics follow the selected primary estimator.",
             "Sampling-coordinate surfaces are compared only when explicit observable identities match.",
             f"Bead-coordinate definition compatibility: `{coordinate_gate}` (declaration, not numerical verification).",
             "Cross-run FES differences are descriptive shape comparisons after removal of an arbitrary free-energy offset.",

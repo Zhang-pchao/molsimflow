@@ -1,4 +1,4 @@
-"""Analytical contracts for the bead-probability free-energy estimator."""
+"""Analytical contracts for the maintained bead-density FES estimators."""
 
 from itertools import product
 
@@ -11,6 +11,7 @@ from molsimflow.postprocess.pimd_fes import (
     frame_log_weights,
     total_bias_energy,
     quantum_fes_1d,
+    quantum_histogram_masses,
 )
 
 
@@ -25,6 +26,25 @@ def test_symmetric_beads_recover_uniform_probability_and_nonzero_diagnostic():
     assert result["zero_reference"] == pytest.approx(2 * np.log(2))
 
 
+def test_free_energy_mean_primary_changes_only_the_shared_zero_reference():
+    logs = np.log([[0.9, 0.1], [0.1, 0.9]])
+    probability_primary = bead_density_estimators(logs, kbt=2.0)
+    free_energy_primary = bead_density_estimators(
+        logs, kbt=2.0, primary_estimator="free_energy_mean"
+    )
+    assert np.min(free_energy_primary["free_energy_mean"]) == pytest.approx(0.0)
+    assert not np.allclose(
+        free_energy_primary["probability_mean"],
+        free_energy_primary["free_energy_mean"],
+    )
+    np.testing.assert_allclose(
+        free_energy_primary["free_energy_mean"]
+        - free_energy_primary["probability_mean"],
+        probability_primary["free_energy_mean"]
+        - probability_primary["probability_mean"],
+    )
+
+
 def test_weighted_histogram_has_one_path_weight_and_accounts_for_bin_widths():
     result = quantum_fes_1d(
         [[0.25, 0.25, 2.5], [0.25, 2.5, 2.5], [2.5, 2.5, 2.5], [0.25, 0.25, 0.25]],
@@ -35,6 +55,48 @@ def test_weighted_histogram_has_one_path_weight_and_accounts_for_bin_widths():
     # Weighted counts are 16 and 14 out of 30; the second bin is 3 times wider.
     np.testing.assert_allclose(result["raw_probability_mean"], -np.log([16 / 30, 14 / 90]))
     np.testing.assert_allclose(result["probability_mean"], [0, np.log(24 / 7)])
+
+
+@pytest.mark.parametrize("delta", [50.0, 1000.0])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_histogram_log_accumulation_preserves_rare_supported_bins(delta, reverse):
+    samples = np.array([[0.25], [1.25]])
+    log_weights = np.array([0.0, -delta])
+    if reverse:
+        samples = samples[::-1]
+        log_weights = log_weights[::-1]
+    result = quantum_fes_1d(samples, log_weights, [0.0, 1.0, 2.0], kbt=1.0)
+    np.testing.assert_array_equal(result["probability_support"], [True, True])
+    np.testing.assert_allclose(result["probability_mean"], [0.0, delta])
+
+
+def test_histogram_log_accumulation_keeps_empty_bins_unsupported():
+    result = quantum_fes_1d(
+        [[0.25], [2.25]], [0.0, -1000.0], [0.0, 1.0, 2.0, 4.0], kbt=1.0
+    )
+    np.testing.assert_array_equal(
+        result["probability_support"], [True, False, True]
+    )
+    assert np.isposinf(result["probability_mean"][1])
+
+
+def test_histogram_log_accumulation_handles_unequal_bin_widths_at_extreme_range():
+    result = quantum_fes_1d(
+        [[0.25], [2.5]], [0.0, -50.0], [0.0, 1.0, 4.0], kbt=1.0
+    )
+    np.testing.assert_allclose(result["probability_mean"], [0.0, 50.0 + np.log(3.0)])
+
+
+def test_histogram_conditional_and_direct_log_masses_match_at_extreme_range():
+    samples = np.array([[0.25], [1.25], [0.25], [1.25]])
+    result = quantum_histogram_masses(
+        samples,
+        [0.0, -50.0, -1000.0, -1050.0],
+        [0.0, 1.0, 2.0],
+        conditioning=[0.0, 1.0, 0.0, 1.0],
+        conditioning_edges=[-0.5, 0.5, 1.5],
+    )
+    np.testing.assert_allclose(result["log_direct"], result["log_conditional"])
 
 
 @pytest.mark.parametrize("beads", [1, 3, 7, 32])
@@ -51,8 +113,11 @@ def test_bead_permutation_and_replication_leave_estimators_unchanged(beads):
         np.testing.assert_allclose(repeated[key], reference[key], atol=1e-14)
 
 
-def test_single_bead_matches_ordinary_free_energy():
-    result = bead_density_estimators(np.log([[0.2, 0.8]]), kbt=0.5)
+@pytest.mark.parametrize("primary", ["probability_mean", "free_energy_mean"])
+def test_single_bead_matches_ordinary_free_energy(primary):
+    result = bead_density_estimators(
+        np.log([[0.2, 0.8]]), kbt=0.5, primary_estimator=primary
+    )
     np.testing.assert_allclose(result["probability_mean"], [0.5 * np.log(4), 0])
     np.testing.assert_allclose(result["free_energy_mean_diagnostic"], result["probability_mean"])
 
