@@ -248,6 +248,26 @@ def _extract_identity_track(
     return output
 
 
+def _add_event_post_minus_pre_deltas(result: dict[str, object]) -> None:
+    """Add consistently named event deltas to a mixed275 event row."""
+
+    result["main_axis_velocity_post_minus_pre_mps"] = _float(
+        result["main_axis_velocity_post_mps"]
+    ) - _float(result["main_axis_velocity_pre_mps"])
+    for field in (
+        "local_surface_hbond",
+        "local_water_hbond_degree",
+        "local_q_tet",
+        "local_lsi_A2",
+        "identity_CH_A",
+        "identity_OH_A",
+    ):
+        result[f"{field}_post_minus_pre"] = _float(result[f"{field}_post"]) - _float(
+            result[f"{field}_pre"]
+        )
+
+
+
 def _mixed275_analysis(
     config: Mapping[str, object],
     base: Path,
@@ -440,18 +460,7 @@ def _mixed275_analysis(
                 for left, right in zip(event_trace, event_trace[1:])
             ),
         }
-        for field in (
-            "main_axis_velocity",
-            "local_surface_hbond",
-            "local_water_hbond_degree",
-            "local_q_tet",
-            "local_lsi_A2",
-            "identity_CH_A",
-            "identity_OH_A",
-        ):
-            result[f"{field}_post_minus_pre"] = _float(result[f"{field}_post"]) - _float(
-                result[f"{field}_pre"]
-            )
+        _add_event_post_minus_pre_deltas(result)
         event_output.append(result)
     return block_rows, event_output, identity_track
 
@@ -1164,7 +1173,7 @@ def _plot(
     figure, axes = plt.subplots(1, 3, figsize=(13.0, 3.8))
     axes[0].scatter(
         [_float(row["persistent_transfer_count_pm20ps"]) for row in mixed_events],
-        [_float(row["main_axis_velocity_post_minus_pre"]) for row in mixed_events],
+        [_float(row["main_axis_velocity_post_minus_pre_mps"]) for row in mixed_events],
         c=[_float(row["proton_pool_change"]) for row in mixed_events],
         cmap="coolwarm",
     )

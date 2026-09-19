@@ -7,6 +7,7 @@ import pytest
 
 from molsimflow.cli import build_parser
 from molsimflow.postprocess.constant_force_stage_a import (
+    _add_event_post_minus_pre_deltas,
     _block_index,
     _extract_identity_track,
     _read_rows,
@@ -96,3 +97,27 @@ def test_read_rows_supports_gzip_csv(tmp_path: Path) -> None:
     with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
         handle.write("step,value\n1,2.5\n")
     assert _read_rows(path) == [{"step": "1", "value": "2.5"}]
+
+
+def test_event_delta_uses_unit_qualified_velocity_keys() -> None:
+    row = {
+        "main_axis_velocity_pre_mps": -0.5,
+        "main_axis_velocity_post_mps": 1.25,
+        "local_surface_hbond_pre": 0.1,
+        "local_surface_hbond_post": 0.3,
+        "local_water_hbond_degree_pre": 2.0,
+        "local_water_hbond_degree_post": 2.5,
+        "local_q_tet_pre": 0.4,
+        "local_q_tet_post": 0.45,
+        "local_lsi_A2_pre": 0.07,
+        "local_lsi_A2_post": 0.08,
+        "identity_CH_A_pre": 1.1,
+        "identity_CH_A_post": 1.2,
+        "identity_OH_A_pre": 2.0,
+        "identity_OH_A_post": 1.0,
+    }
+    _add_event_post_minus_pre_deltas(row)
+    assert row["main_axis_velocity_post_minus_pre_mps"] == pytest.approx(1.75)
+    assert row["local_surface_hbond_post_minus_pre"] == pytest.approx(0.2)
+    assert row["identity_OH_A_post_minus_pre"] == pytest.approx(-1.0)
+    assert "main_axis_velocity_post_minus_pre" not in row
