@@ -110,10 +110,10 @@ def test_estimator_plot_labels_explain_the_estimators_for_all_bias_modes():
     for mode in ("centroid_coord", "bead_mean", "bead_density_shared"):
         labels = estimator_plot_labels(mode)
         assert labels["probability_mean"] == (
-            "Quantum FES: probability-averaged beads (Eq. 8)"
+            "Quantum bead marginal (probability average)"
         )
-        assert labels["logmean"] == (
-            "Quantum FES: free-energy-averaged beads (Eq. 10)"
+        assert labels["free_energy_mean"] == (
+            "Mean bead free energy (diagnostic only)"
         )
 
 
@@ -184,7 +184,7 @@ def test_direct_and_conditional_histograms_match_for_all_bias_modes():
         assert np.allclose(result["direct"], result["conditional"], atol=1e-15)
 
 
-def test_p1_eq8_and_eq10_are_identical():
+def test_p1_probability_mean_and_free_energy_mean_are_identical():
     bead_cv = np.array([[-0.75], [-0.25], [0.25], [0.75]])
     result = quantum_fes_1d(
         bead_cv,
@@ -192,9 +192,8 @@ def test_p1_eq8_and_eq10_are_identical():
         np.linspace(-1.0, 1.0, 5),
         kbt=0.6,
     )
-    assert np.allclose(result["eq8"][result["support"]], result["eq10"][result["support"]])
-    assert np.array_equal(result["probability_mean"], result["eq8"])
-    assert np.array_equal(result["logmean_diagnostic"], result["eq10"])
+    assert np.allclose(result["probability_mean"][result["support"]], result["free_energy_mean_diagnostic"][result["support"]])
+    assert np.array_equal(result["logmean_diagnostic"], result["free_energy_mean_diagnostic"])
 
 
 def test_long_bead_table_rejects_a_missing_bead():
@@ -253,7 +252,7 @@ def test_cumulative_weight_diagnostics_are_scale_invariant():
     assert np.allclose(scaled[1], maximum_share)
 
 
-def test_identical_beads_make_eq8_and_eq10_identical():
+def test_identical_beads_make_probability_mean_and_free_energy_mean_identical():
     centroid = np.array(
         [
             [-1.0, 0.1],
@@ -273,9 +272,9 @@ def test_identical_beads_make_eq8_and_eq10_identical():
         (0.2, 0.1),
         0.025852,
     )
-    assert np.allclose(surfaces["eq8"], surfaces["eq10"], atol=1e-12)
-    assert np.allclose(surfaces["centroid"], surfaces["eq10"], atol=1e-12)
-    assert np.min(surfaces["raw_eq10"] - surfaces["raw_eq8"]) >= -1e-12
+    assert np.allclose(surfaces["probability_mean"], surfaces["free_energy_mean"], atol=1e-12)
+    assert np.allclose(surfaces["centroid"], surfaces["free_energy_mean"], atol=1e-12)
+    assert np.min(surfaces["raw_free_energy_mean"] - surfaces["raw_probability_mean"]) >= -1e-12
 
 
 def test_reference_grid_patch_is_minimal_and_explicit():
@@ -643,7 +642,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         assert uncertainty["standard_error_eV"][30] == 0
         assert json.loads((output / "blocks" / "quantum-fes-uncertainty.json").read_text())["blocks"] == 4
         assert summary["fes"]["probability_mean_label"] == (
-            "Quantum FES: probability-averaged beads (Eq. 8)"
+            "Quantum bead marginal (probability average)"
         )
         assert summary["reference_crosscheck"] is None
         assert (output / "figures" / "fes1d-coordination.png").is_file()
@@ -675,13 +674,14 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             "F_quantum_probability_mean_kcal_mol": (
                 -rt_kcal_mol * np.log(np.mean(bead_densities, axis=0))
             ),
-            "F_bead_logmean_diagnostic_kcal_mol": (
+            "F_bead_free_energy_mean_diagnostic_kcal_mol": (
                 -rt_kcal_mol * np.mean(np.log(bead_densities), axis=0)
             ),
         }
         for column, free_energy in expected.items():
+            zero = np.min(expected["F_quantum_probability_mean_kcal_mol"] if "diagnostic" in column else free_energy)
             np.testing.assert_allclose(
-                table[column], free_energy - np.min(free_energy),
+                table[column], free_energy - zero,
                 rtol=1e-9, atol=1e-9,
             )
         frames = np.genfromtxt(
@@ -830,13 +830,14 @@ def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode, in
     bead_densities = np.array([density(offset) for offset in offsets])
     rt = 8.31446261815324 * temperature / 4184.0
     expected = {
-        "F_centroid_kcal_mol": -rt * np.log(density(np.zeros(2))),
-        "F_eq8_kcal_mol": -rt * np.log(np.mean(bead_densities, axis=0)),
-        "F_eq10_kcal_mol": -rt * np.mean(np.log(bead_densities), axis=0),
+        "F_sampling_kcal_mol": -rt * np.log(density(np.zeros(2))),
+        "F_quantum_probability_mean_kcal_mol": -rt * np.log(np.mean(bead_densities, axis=0)),
+        "F_bead_free_energy_mean_diagnostic_kcal_mol": -rt * np.mean(np.log(bead_densities), axis=0),
     }
     for column, free_energy in expected.items():
+        zero = np.min(expected["F_quantum_probability_mean_kcal_mol"] if "diagnostic" in column else free_energy)
         np.testing.assert_allclose(
-            table[column], free_energy - np.min(free_energy), rtol=1e-9, atol=1e-9
+            table[column], free_energy - zero, rtol=1e-9, atol=1e-9
         )
     assert summary["reweighting"]["ess"] == pytest.approx(1.0 / sum(weights**2))
     assert summary["reweighting"]["ess_fraction"] == pytest.approx(

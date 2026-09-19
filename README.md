@@ -188,7 +188,7 @@ arguments or configuration.
 | Structure and I/O | extended XYZ, LAMMPS data, double-bubble slabs | [Configuration](docs/configuration.md) |
 | PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
 | Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events, TPCL motion | [Post-processing](docs/postprocess_migration.md), [constant-force events](docs/constant_force_events.md), [constant-force water structure](docs/constant_force_water_structure.md), [TPCL pinning--slip](docs/tpcl_pinning_slip.md), [surface proton transfer](docs/surface_proton_transfer.md) |
-| PIMD free energies | three path-bias modes, probability/logmean estimators, fixed/OPES/precomputed weights, 1D/2D core reports | [PIMD quantum-FES reweighting](docs/pimd_reweight.md) |
+| PIMD free energies | three path-bias modes, probability-mean quantum FES and bead-free-energy diagnostic, fixed/OPES/precomputed weights, 1D/2D core reports | [PIMD quantum-FES reweighting](docs/pimd_reweight.md) |
 | Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
 | Model validation and kinetics | CP2K parsing, force errors, coordinate-neighbor checks, Eyring sensitivity | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
 | Trajectory and media preparation | dump selection, Z unwrapping, reference-layer alignment, image-sequence video | [Validation and media utilities](docs/model_validation_trajectory_media.md) |

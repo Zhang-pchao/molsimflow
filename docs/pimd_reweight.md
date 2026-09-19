@@ -9,9 +9,17 @@ explicit path-CV bias modes:
 - `bead_density_shared`: one shared field is evaluated on every bead and the
   complete-path bias energy is `mean_b B(q_b)`.
 
-The target observable is the bead distribution, not the sampled path CV.  For
-frame `n`, every bead uses the same normalized frame weight `W_n`, and each bead
-contributes `W_n / P` to the target distribution.
+All three modes use the same default quantum target: the bead marginal of the
+requested coordinate. For frame `n`, every bead uses the same normalized frame
+weight `W_n`, and each of its `P` beads contributes `W_n / P` to that marginal.
+The bias representation changes how the complete-path energy is assembled; it
+does not change the physical observable being reconstructed. No fixed bead count
+or particular molecular system is assumed.
+
+This operation requires all bead coordinates or bead CVs. A CV of the centroid
+cannot be converted into the quantum bead marginal by rescaling its free energy.
+For a nonlinear CV, `Q(mean_b R_b)`, `mean_b Q(R_b)`, and the distribution of
+`Q(R_b)` are distinct observables.
 
 ## Command
 
@@ -38,7 +46,9 @@ Set `analysis_profile` explicitly:
 
 All paths and system-specific column names belong in the JSON contract.  The
 reusable code contains no cluster or case paths.  The representation and weight
-semantics should be declared explicitly:
+semantics should be declared explicitly. The following contract excerpt shows
+the recommended estimator defaults; add the source paths, manifest, selection,
+grid and bandwidth settings for the actual inputs:
 
 ```json
 {
@@ -50,15 +60,27 @@ semantics should be declared explicitly:
   },
   "reweight": {
     "bias_mode": "bead_mean",
+    "primary_estimator": "probability_mean",
+    "temperature_K": 300.0,
+    "energy_unit": "eV",
     "weight_kind": "quasi_static_opes",
     "quasi_static": true,
     "bias_column": "opes.bias",
-    "rct_column": "opes.rct",
+    "extra_bias_columns": [],
+    "cv_names": ["cv1", "cv2"],
     "sampling_cv_names": ["mean.cv1", "mean.cv2"],
     "bead_cv_names": ["cv1", "cv2"]
   }
 }
 ```
+
+`temperature_K` is the physical temperature, not `P * T`. It must be finite
+and positive. `energy_unit` defaults to `eV`, and currently only `eV` is accepted
+for input energy columns; convert other units before analysis. Precomputed log
+weights are dimensionless. Output FES tables explicitly use `kcal/mol`.
+`primary_estimator` defaults to `probability_mean`; selecting the bead
+free-energy mean as the primary estimator is rejected. The summary records
+`target_observable: bead_marginal`.
 
 For shared bead density, each bead COLVAR must contain the local field value
 and identical shared OPES diagnostics at every selected time:
@@ -91,9 +113,12 @@ coordinate; the quantum target remains the weighted bead distribution.
 The JSON boolean `quasi_static: true` is required for `quasi_static_opes`.
 Missing values, `false`, strings, and numbers are rejected; legacy contracts
 must explicitly declare this assumption before analysis. This declaration does
-not prove that an adaptive OPES trajectory has reached that regime.  The OPES log weight is
-`+opes.bias / kBT`.  `opes.rct` is retained only as a diagnostic and is never
-subtracted from the weight.
+not prove that an adaptive OPES trajectory has reached that regime. With only
+the primary bias declared, the OPES log weight is `+opes.bias / kBT`.
+`opes.rct` is retained only as a diagnostic and is never subtracted from the
+weight. The implemented quasi-static provider is not a general reconstruction
+of an arbitrarily time-dependent bias history; establish a suitable analysis
+window or provide separately audited frame weights for another protocol.
 
 Raw time columns are converted explicitly before frame selection or alignment.
 The conversion is data-source metadata, not an engine name heuristic:
@@ -141,53 +166,149 @@ formula:
 the scientific contract and must already include any method-specific offsets,
 additional biases, or normalization terms.
 
-## Estimators
+## Complete-path weights and quantum estimator
 
-For bead CV values `q[n, b]`, the primary probability-mean estimator is:
+Let `R[n,b]` be bead coordinates, `q[n,b] = Q(R[n,b])`, and
+`beta = 1/(kB*T)` at the physical temperature. In the physical-temperature
+ring-polymer convention used here, a shared bead-local bias contributes its
+bead **average** to the complete-path energy. The energy to remove is:
 
-```text
-p(q) = sum_n W_n * mean_b K(q - q[n, b])
-F_q(q) = -kBT log p(q) + C
-```
+| Bias mode | Sampling coordinate | Complete-path bias energy |
+| --- | --- | --- |
+| `centroid_coord` | `Q(mean_b R[n,b])` | `B(Q(mean_b R[n,b]))` |
+| `bead_mean` | `mean_b q[n,b]` | `B(mean_b q[n,b])` |
+| `bead_density_shared` | Each `q[n,b]` in one shared field | `mean_b B(q[n,b])` |
 
-The second output averages the individual bead free energies and is reported as
-a same-zero bead-logmean finite-sampling diagnostic.  It is not a replacement
-for convergence or overlap checks.  These two bead aggregations are available
-after valid full-path reweighting for all three bias modes.  Plot labels use
-`Quantum FES` and `Bead-logmean diagnostic`; only `centroid_coord` appends the
-literature identifiers `(Lamaire Eq. 8)` and `(Lamaire Eq. 10)`.
-
-The complete-path energy, not the final bead aggregation, distinguishes the
-three modes:
+For fixed bias, or an explicitly selected quasi-static OPES window,
 
 ```text
-centroid_coord:       U = B(Q(R_centroid))
-bead_mean:            U = B(mean_b q_b)
-bead_density_shared:  U = mean_b B(q_b)
+ell_n = beta * U_remove[n]
+W_n = exp(ell_n - logsumexp_m ell_m)
 ```
+
+`U_remove` includes every declared energy term to remove. A bead-local wall
+contributes its path average in this convention. A complete-path energy already
+printed as an ENSEMBLE mean must not be divided by `P` a second time. The
+centroid and bead-mean readers take their declared columns as complete-path
+energies; the shared-density reader averages bead-local columns once.
+Do not apply `exp(beta*B)` separately to each bead: beads share one path weight.
+
+The common default estimator first averages the weighted bead probabilities:
+
+```text
+p_b(q) = sum_n W_n * K(q - q[n,b])
+p(q) = mean_b p_b(q)
+F_quantum(q) = -kBT * log p(q) + C
+```
+
+`q` can be one- or two-dimensional. `K` is the configured normalized KDE kernel;
+histograms divide probability mass by bin width. In both cases each complete
+frame supplies total weight `W_n`. No extra factor of `P` belongs in `beta` or
+in the free-energy conversion. The finite-`P` result approximates the quantum
+bead marginal; bead-number convergence still needs independent assessment.
+
+A separate diagnostic averages the individual bead free energies:
+
+```text
+F_bead_mean(q) = mean_b [-kBT * log p_b(q)] + C
+```
+
+The logarithm and probability average do not commute. At finite sampling this
+diagnostic differs from `F_quantum`; with a common additive constant, Jensen's
+inequality gives `F_bead_mean >= F_quantum`. Agreement requires matching bead
+marginals and adequate support, and alone does not establish convergence.
+Both curves use the minimum of the probability-mean FES as their common zero;
+independently shifting the diagnostic would hide this difference.
+
+The sampling-coordinate FES is also exported, with its own minimum zero. It
+characterizes the explicitly labelled sampling coordinate and should not be
+identified with the quantum bead marginal. Cross-run sampling-coordinate
+comparisons require matching observable identities. Quantum comparisons across
+the three modes remain meaningful only for the same bead CV, physical
+Hamiltonian, temperature, and coordinate measure.
+
+### Support and diagnostics
 
 The histogram API `quantum_fes_1d` preserves primary probability support even
-when individual bead histograms do not overlap. Its `probability_support` mask
-marks finite primary bins; the backward-compatible `support` mask marks bins
-where both estimators are finite. Zero-count bins stay infinite, and both
-curves use the primary minimum as their common zero. An empty primary support
-is rejected. KDE plots have their own density-support masks.
+when individual bead histograms do not overlap. `probability_support` marks
+finite primary bins and `common_support` marks bins where both bead estimators
+are finite. Zero-count bins remain infinite. KDE outputs have a separate
+relative-density support mask for each estimator; the diagnostic intersection
+must not erase supported primary quantum bins. Each plotted curve uses its own
+mask; pairwise differences use the corresponding intersection.
+
+Primary support, block-to-full comparisons and bandwidth sensitivity use
+`probability_mean`. Neither a Gaussian KDE's positive tails nor support masks
+prove adequate sampling. Frame-weight ESS, block sensitivity and independent
+replica agreement address different limitations.
 
 Log frame weights are normalized after removing their maximum, so changing a
 finite energy zero does not change normalization. A conditioning bin whose
 normalized mass underflows to zero contributes zero to the decomposition.
 
 The core API provides a weighted conditional decomposition as an independent
-finite-sample regression.  Its histogram mass must agree with the direct route
-up to floating-point rounding.  This algebraic parity does not establish OPES
+finite-sample regression. Its histogram mass must agree with the direct route
+up to floating-point rounding. This algebraic parity does not establish OPES
 quasi-static behavior.
 
-The weighted log-space 1D/2D KDE, full-path weights, bead probability mean, and
-bead-logmean diagnostic are implemented inside molsimflow.  A contract may
-optionally provide `reference.driver` to run the historical
-`FES_from_Reweighting.py` as a two-dimensional numerical cross-check.  That
+The weighted log-space 1D/2D KDE, complete-path weights, bead probability mean,
+and bead free-energy-mean diagnostic are implemented inside molsimflow. A
+contract may optionally provide `reference.driver` to run the historical
+`FES_from_Reweighting.py` as a two-dimensional numerical cross-check. That
 external driver is not a runtime dependency and is never the authoritative
 estimator.
+
+### Output schema and historical migration
+
+New analyses use summary `schema_version: 2`. `fes.primary_estimator` is
+`probability_mean`, `fes.target_observable` is `bead_marginal`, and
+`fes.diagnostic_estimator` is `free_energy_mean`. One- and two-dimensional
+FES CSV tables use the same names:
+
+| Meaning | Support column | Free-energy column |
+| --- | --- | --- |
+| Sampling coordinate | `sampling_support` | `F_sampling_kcal_mol` |
+| Quantum bead marginal | `probability_mean_support` | `F_quantum_probability_mean_kcal_mol` |
+| Mean bead free energy, diagnostic | `free_energy_mean_support` | `F_bead_free_energy_mean_diagnostic_kcal_mol` |
+
+The comparison command accepts these columns and adapts archived fields at the
+input boundary. Historical `centroid` columns map to `sampling`; `eq8` maps to
+`probability_mean`; `eq10` maps to `free_energy_mean`. The older core writer's
+`logmean_support` and `F_bead_logmean_diagnostic_kcal_mol` also map to the last
+row. Conflicting canonical and historical columns are rejected. New report
+labels and summaries use estimator meanings rather than literature equation
+numbers. The library's `quantum_fes_1d` keeps the old `eq8`, `eq10`,
+`logmean_diagnostic` and `support` keys as compatibility aliases; new consumers
+should use its descriptive keys.
+
+Archived tables remain readable without rewriting their numeric values.
+However, archived reports that promoted the mean bead free energy to the
+primary quantum result must be regenerated to use the probability mean.
+Historical diagnostics may also have been shifted to their own minima. The
+column adapter preserves those values and cannot restore the shared zero;
+recompute from the original inputs before comparing Jensen gaps or diagnostic
+zero conventions. External scripts reading old CSV, summary, block or bandwidth
+fields must migrate to schema 2 even though the comparison reader accepts old
+analysis tables.
+Comparisons read CV names from `contract.cvs` or
+`summary.sampling_representation.logical_cv_names`; no water-specific axes are
+assumed. Matching column names or bias modes do not establish matching CV
+definitions: parameters, transformations and units may differ. Cross-run
+sampling surface differences require explicit matching
+`config.sampling_observable_id` values, or their recorded equivalents in
+`summary.sampling_representation.sampling_observable_id`. Without matching
+identities these differences are omitted. Analysis contracts can record this
+identity as `source.sampling_observable_id`.
+
+For the bead CV, comparison configs may declare `target_observable_id`;
+analysis contracts can record `reweight.target_observable_id`, which is exported
+as `summary.fes.target_observable_id`. Explicit matching values produce
+`coordinate_definition_gate: DECLARED_COMPATIBLE`; missing identities produce
+`NOT_VERIFIED`, and conflicting known identities are rejected. These IDs must
+identify the coordinate definitions, parameter values, transformations, units
+and target-measure conventions. They are user declarations, not numerical proof
+of equivalence. Use consistent target Hamiltonians and temperatures separately.
+No identity is inferred from a molecular-system label or a familiar CV name.
 
 
 ## Input integrity
@@ -231,7 +352,7 @@ The implementation rejects:
 - duplicate restart frames when the policy is `error`;
 - non-finite CVs, energies, or weights;
 - an undeclared adaptive OPES weight;
-- unsupported bias modes;
+- unsupported bias modes, primary estimators, or energy units;
 - inconsistent shared `rct`, `zed`, `neff`, or `nker` values across beads.
 
 With `restart_duplicate_policy: keep_first`, the predecessor endpoint is kept
@@ -439,7 +560,13 @@ energies (for a bead-local wall in bead-mean mode, print its ENSEMBLE mean).
 Shared bead-density mode uses the bead average of the sum of local energies.
 Duplicate columns and combinations with precomputed weights are rejected.
 Summary metadata records the selected columns; the OPES-only diagnostic colors
-continue to use the primary bias. Undeclared biases remain in the target ensemble.
+continue to use the primary bias. A restraint intentionally retained defines
+part of the target Hamiltonian and must not be included in `U_remove`.
+Conversely, obtaining a wall-free target requires declaring the wall energy in
+addition to the enhanced-sampling bias. Removing a wall by reweighting cannot
+recover regions the restrained simulation never visited. Undeclared biases
+remain in the target ensemble; this choice must be consistent across compared
+methods.
 
 Correct postprocessing weights do not certify online OPES deposition weights or
 time-dependent equilibration. Ordinary WALKERS_MPI uses local walker weights.

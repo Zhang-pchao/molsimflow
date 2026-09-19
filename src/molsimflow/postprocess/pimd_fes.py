@@ -137,7 +137,12 @@ def assemble_bead_frames(
     _require(frames.size == beads.size == data.shape[0], "long-table row counts differ")
     _require(frames.size > 0, "invalid bead value table")
     _require(np.isfinite(data).all(), "bead values must be finite")
-    _require(int(expected_beads) > 0, "expected_beads must be positive")
+    _require(
+        isinstance(expected_beads, (int, np.integer))
+        and not isinstance(expected_beads, (bool, np.bool_))
+        and expected_beads > 0,
+        "expected_beads must be a positive integer",
+    )
 
     ordered_frames = []
     groups: Dict[object, list[int]] = {}
@@ -241,45 +246,84 @@ def quantum_histogram_masses(
     }
 
 
+def bead_density_estimators(
+    log_bead_density: Sequence[Sequence[float]] | np.ndarray,
+    kbt: float,
+) -> Dict[str, np.ndarray | float]:
+    """Combine bead densities into a physical FES and a convergence diagnostic.
+
+    The input has shape ``(bead, *grid)``. Each bead density must use the same
+    complete-frame weights, normalization, grid measure, and smoothing rule.
+    Finite log densities and ``-inf`` (zero density) are accepted.
+
+    ``probability_mean`` is ``-kBT * log(mean_bead(density))``. This estimates
+    the distribution of a bead-defined observable for all supported sampling
+    bias modes. ``free_energy_mean_diagnostic`` instead averages the bead
+    free energies; at finite sampling it is generally a different quantity.
+    Both curves use the minimum of the primary FES as their common zero.
+    Raw values are also returned for callers that use another reference.
+
+    A grid point belongs to primary support when at least one bead has
+    positive density. Common support requires positive density for every
+    bead, and is needed only for comparisons with the diagnostic.
+    """
+
+    logs = np.asarray(log_bead_density, dtype=float)
+    _require(logs.ndim >= 2 and min(logs.shape) > 0, "log bead density must be bead x grid")
+    _require(
+        np.all(np.isfinite(logs) | np.isneginf(logs)),
+        "log bead density must be finite or negative infinity",
+    )
+    _require(np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
+    # logaddexp keeps narrow or remote KDE tails from underflowing to zero.
+    log_probability_mean = np.logaddexp.reduce(logs, axis=0) - math.log(logs.shape[0])
+    raw_probability_mean = -float(kbt) * log_probability_mean
+    # Divide before summing to avoid overflow for large finite log densities.
+    raw_free_energy_mean = -float(kbt) * np.sum(logs / logs.shape[0], axis=0)
+    probability_support = np.isfinite(raw_probability_mean)
+    common_support = probability_support & np.isfinite(raw_free_energy_mean)
+    _require(np.any(probability_support), "no finite probability-mean support")
+    zero = float(np.min(raw_probability_mean[probability_support]))
+    return {
+        "log_probability_mean": log_probability_mean,
+        "raw_probability_mean": raw_probability_mean,
+        "raw_free_energy_mean_diagnostic": raw_free_energy_mean,
+        "probability_mean": raw_probability_mean - zero,
+        "free_energy_mean_diagnostic": raw_free_energy_mean - zero,
+        "probability_support": probability_support,
+        "common_support": common_support,
+        "zero_reference": zero,
+    }
+
+
 def quantum_fes_1d(
     bead_cv: Sequence[Sequence[float]] | np.ndarray,
     log_frame_weights: Sequence[float] | np.ndarray,
     bin_edges: Sequence[float] | np.ndarray,
     *,
     kbt: float,
-) -> Dict[str, np.ndarray]:
-    """Return probability-mean and same-zero bead-logmean free energies.
+) -> Dict[str, np.ndarray | float]:
+    """Return a bead-probability FES and bead-free-energy-mean diagnostic.
 
-    The primary FES uses all bins with positive bead-averaged probability.
-    The logmean diagnostic is infinite wherever any bead has zero mass.
-    Both use the primary FES minimum as their common zero.  The legacy
-    support key denotes common support for comparing the two estimators;
-    probability_support describes the primary result independently.
+    Histogram densities account for bin widths. Both estimators share the
+    primary FES minimum as their zero. The legacy ``eq8``, ``eq10``,
+    ``logmean_diagnostic``, and ``support`` keys are retained as aliases;
+    new consumers should use the descriptive estimator and support keys.
     """
 
-    _require(np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
     edges = np.asarray(bin_edges, dtype=float)
-    result = quantum_histogram_masses(bead_cv, log_frame_weights, edges)
-    widths = np.diff(edges)
-    direct_density = np.asarray(result["direct"]) / widths
-    bead_density = np.asarray(result["per_bead"]) / widths[None, :]
+    masses = quantum_histogram_masses(bead_cv, log_frame_weights, edges)
+    bead_density = np.asarray(masses["per_bead"]) / np.diff(edges)[None, :]
     with np.errstate(divide="ignore"):
-        raw_eq8 = -float(kbt) * np.log(direct_density)
-        raw_eq10 = np.mean(-float(kbt) * np.log(bead_density), axis=0)
-    probability_support = np.isfinite(raw_eq8)
-    common = probability_support & np.isfinite(raw_eq10)
-    _require(np.any(probability_support), "no finite probability-mean support")
-    zero = float(np.min(raw_eq8[probability_support]))
-    probability_mean = raw_eq8 - zero
-    logmean_diagnostic = raw_eq10 - zero
+        log_bead_density = np.log(bead_density)
+    result = bead_density_estimators(log_bead_density, kbt)
     return {
-        "probability_mean": probability_mean,
-        "logmean_diagnostic": logmean_diagnostic,
-        # Backward-compatible literature keys for existing centroid workflows.
-        "eq8": probability_mean,
-        "eq10": logmean_diagnostic,
-        "support": common,
-        "probability_support": probability_support,
+        **result,
+        # Compatibility aliases; equation numbers do not define the estimator.
+        "eq8": result["probability_mean"],
+        "eq10": result["free_energy_mean_diagnostic"],
+        "logmean_diagnostic": result["free_energy_mean_diagnostic"],
+        "support": result["common_support"],
         "centers": 0.5 * (edges[:-1] + edges[1:]),
     }
 
