@@ -210,10 +210,15 @@ def _plot(
     figure.savefig(output / "film_total_response_blocks.png", dpi=240)
     plt.close(figure)
 
+    primary_layers = {
+        (str(row["branch_id"]), int(row["layer_index"]))
+        for row in summaries
+        if row["direction"] != "none" and float(row["mean_count"]) >= 1.0
+    }
     driven_layer_blocks = [
         row
         for row in layer_blocks
-        if row["direction"] != "none" and float(row["mean_count"]) >= 1.0
+        if (str(row["branch_id"]), int(row["layer_index"])) in primary_layers
     ]
     branches = sorted({str(row["branch_id"]) for row in driven_layer_blocks})
     figure, axes = plt.subplots(
