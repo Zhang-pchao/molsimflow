@@ -388,6 +388,77 @@ def _maximum_consecutive_support(
     return maximum, len(persistent)
 
 
+def surface_site_residence_rows(
+    case_id: str,
+    branch_id: str,
+    direction: str,
+    frame_sets: Mapping[int, set[tuple[int, int]]],
+    surface_sites: Sequence[Mapping[str, str]],
+    *,
+    timestep_fs: float,
+) -> list[dict[str, object]]:
+    """Summarize intermittent site occupancy at the available snapshot interval."""
+
+    steps = sorted(frame_sets)
+    if len(steps) < 2:
+        raise ValueError(f"{case_id}/{branch_id}: fewer than two anchor frames")
+    interval_ps = _mean(
+        (right - left) * timestep_fs / 1000.0 for left, right in zip(steps, steps[1:])
+    )
+    site_waters: dict[int, set[int]] = defaultdict(set)
+    site_observations: dict[int, int] = defaultdict(int)
+    site_presence: dict[int, list[bool]] = defaultdict(list)
+    for step in steps:
+        by_site: dict[int, set[int]] = defaultdict(set)
+        for water_id, site_id in frame_sets[step]:
+            by_site[site_id].add(water_id)
+        for row in surface_sites:
+            site_id = int(row["atom_id"])
+            waters = by_site.get(site_id, set())
+            site_presence[site_id].append(bool(waters))
+            site_waters[site_id].update(waters)
+            site_observations[site_id] += len(waters)
+
+    output = []
+    for row in surface_sites:
+        site_id = int(row["atom_id"])
+        present = site_presence[site_id]
+        maximum = 0
+        active = 0
+        spell_count = 0
+        for occupied in present:
+            if occupied:
+                if active == 0:
+                    spell_count += 1
+                active += 1
+                maximum = max(maximum, active)
+            else:
+                active = 0
+        occupied_count = sum(present)
+        output.append(
+            {
+                "case_id": case_id,
+                "branch_id": branch_id,
+                "direction": direction,
+                "site_id": site_id,
+                "site_type": row["site_type"],
+                "x_A": _float(row["x_A"]),
+                "y_A": _float(row["y_A"]),
+                "frame_count": len(steps),
+                "occupied_snapshot_count": occupied_count,
+                "occupied_snapshot_fraction": occupied_count / len(steps),
+                "occupancy_spell_count": spell_count,
+                "anchor_pair_observation_count": site_observations[site_id],
+                "unique_anchor_water_count": len(site_waters[site_id]),
+                "maximum_consecutive_snapshot_support": maximum,
+                "maximum_supported_residence_ps": max(0, maximum - 1) * interval_ps,
+                "sampling_interval_ps": interval_ps,
+                "evidence_limit": "intermittent_snapshot_residence_not_continuous_lifetime",
+            }
+        )
+    return output
+
+
 def summarize_anchor_branch(
     case_id: str,
     branch_id: str,
@@ -442,6 +513,98 @@ def _event_definitions(case_dir: Path) -> list[dict[str, object]]:
             "event_score": _float(row["event_score"]),
         }
     return [events[key] for key in sorted(events)]
+
+
+def matched_control_definitions(
+    events: Sequence[Mapping[str, object]],
+    available_times_ps: Sequence[float],
+    *,
+    half_window_ps: float,
+) -> list[dict[str, object]]:
+    """Choose equal-width, temporally nearest windows that do not overlap an event."""
+
+    times = sorted({_float(value) for value in available_times_ps})
+    if not times:
+        raise ValueError("No available times for matched controls")
+    event_centers = [_float(event["event_center_ps"]) for event in events]
+    candidates = [
+        time
+        for time in times
+        if time - half_window_ps >= times[0]
+        and time + half_window_ps <= times[-1]
+        and all(abs(time - center) > 2.0 * half_window_ps for center in event_centers)
+    ]
+    selected: set[float] = set()
+    output = []
+    for event in events:
+        center = _float(event["event_center_ps"])
+        remaining = [time for time in candidates if time not in selected]
+        if not remaining:
+            raise ValueError(f"No matched control remains for {event['event_id']}")
+        control_center = min(remaining, key=lambda time: (abs(time - center), time))
+        selected.add(control_center)
+        output.append(
+            {
+                **event,
+                "control_center_ps": control_center,
+                "event_to_control_time_distance_ps": abs(control_center - center),
+                "control_definition": "nearest_time_nonoverlapping_equal_window",
+            }
+        )
+    return output
+
+
+def matched_response_rows(
+    event_rows: Sequence[Mapping[str, object]],
+    control_rows: Sequence[Mapping[str, object]],
+    controls: Sequence[Mapping[str, object]],
+    *,
+    extra_keys: Sequence[str] = (),
+) -> list[dict[str, object]]:
+    """Pair event and no-event deltas and report their difference in differences."""
+
+    control_by_event = {str(row["event_id"]): row for row in controls}
+    key_names = ("event_id", *extra_keys)
+    indexed = {tuple(str(row[key]) for key in key_names): row for row in control_rows}
+    output = []
+    for event_row in event_rows:
+        key = tuple(str(event_row[name]) for name in key_names)
+        control_row = indexed[key]
+        definition = control_by_event[str(event_row["event_id"])]
+        item: dict[str, object] = {
+            name: event_row[name]
+            for name in (
+                "case_id",
+                "branch_id",
+                "direction",
+                "event_id",
+                "event_class",
+                "mechanism_label",
+                *extra_keys,
+            )
+        }
+        item.update(
+            {
+                "event_center_ps": event_row["event_center_ps"],
+                "control_center_ps": definition["control_center_ps"],
+                "event_to_control_time_distance_ps": definition[
+                    "event_to_control_time_distance_ps"
+                ],
+                "half_window_ps": event_row["half_window_ps"],
+                "control_definition": definition["control_definition"],
+            }
+        )
+        for name in event_row:
+            if not name.startswith("delta_"):
+                continue
+            metric = name.removeprefix("delta_")
+            event_delta = _float(event_row[name])
+            control_delta = _float(control_row[name])
+            item[f"event_delta_{metric}"] = event_delta
+            item[f"control_delta_{metric}"] = control_delta
+            item[f"event_minus_control_delta_{metric}"] = event_delta - control_delta
+        output.append(item)
+    return output
 
 
 def _window_mean(
@@ -697,8 +860,11 @@ def run_contract(
     all_region_frames: list[dict[str, object]] = []
     all_anchor_intervals: list[dict[str, object]] = []
     anchor_summaries: list[dict[str, object]] = []
+    site_residence: list[dict[str, object]] = []
     event_regions: list[dict[str, object]] = []
     event_network: list[dict[str, object]] = []
+    matched_event_regions: list[dict[str, object]] = []
+    matched_event_network: list[dict[str, object]] = []
     input_paths: set[Path] = {
         contract_path,
         stage_a / "OUTPUT-SHA256SUMS",
@@ -759,6 +925,17 @@ def run_contract(
                 intervals,
             )
         )
+        surface_sites = _read_table(case_dir / "surface_site" / "surface_sites.csv")
+        site_residence.extend(
+            surface_site_residence_rows(
+                case_id,
+                branch_id,
+                direction,
+                frame_sets,
+                surface_sites,
+                timestep_fs=timestep_fs,
+            )
+        )
         first_step = min(frame_sets)
         anchor_frames = [
             {
@@ -770,17 +947,52 @@ def run_contract(
         ]
         if direction != "none":
             events = _event_definitions(case_dir)
+            controls = matched_control_definitions(
+                events,
+                [row["time_ps"] for row in anchor_frames],
+                half_window_ps=half_window_ps,
+            )
+            control_events = [
+                {
+                    key: value
+                    for key, value in control.items()
+                    if key
+                    not in {
+                        "event_center_ps",
+                        "control_center_ps",
+                        "event_to_control_time_distance_ps",
+                        "control_definition",
+                    }
+                }
+                | {"event_center_ps": control["control_center_ps"]}
+                for control in controls
+            ]
             current_region_rows = [
                 row for row in branch_region_rows if row["analysis_axis"] == direction
             ]
-            event_regions.extend(
-                event_region_responses(
-                    case_id,
-                    branch_id,
-                    direction,
-                    events,
-                    current_region_rows,
-                    half_window_ps=half_window_ps,
+            branch_event_regions = event_region_responses(
+                case_id,
+                branch_id,
+                direction,
+                events,
+                current_region_rows,
+                half_window_ps=half_window_ps,
+            )
+            branch_control_regions = event_region_responses(
+                case_id,
+                branch_id,
+                direction,
+                control_events,
+                current_region_rows,
+                half_window_ps=half_window_ps,
+            )
+            event_regions.extend(branch_event_regions)
+            matched_event_regions.extend(
+                matched_response_rows(
+                    branch_event_regions,
+                    branch_control_regions,
+                    controls,
+                    extra_keys=("region",),
                 )
             )
             water_intervals = _read_table(
@@ -791,17 +1003,35 @@ def run_contract(
                 row["mid_time_ps"] = 0.5 * (
                     _float(row["left_time_ps"]) + _float(row["right_time_ps"])
                 )
-            event_network.extend(
-                event_network_responses(
-                    case_id,
-                    branch_id,
-                    direction,
-                    events,
-                    _load_water_network_frames(case_dir, timestep_fs),
-                    anchor_frames,
-                    intervals,
-                    water_intervals,
-                    half_window_ps=half_window_ps,
+            water_frames = _load_water_network_frames(case_dir, timestep_fs)
+            branch_event_network = event_network_responses(
+                case_id,
+                branch_id,
+                direction,
+                events,
+                water_frames,
+                anchor_frames,
+                intervals,
+                water_intervals,
+                half_window_ps=half_window_ps,
+            )
+            branch_control_network = event_network_responses(
+                case_id,
+                branch_id,
+                direction,
+                control_events,
+                water_frames,
+                anchor_frames,
+                intervals,
+                water_intervals,
+                half_window_ps=half_window_ps,
+            )
+            event_network.extend(branch_event_network)
+            matched_event_network.extend(
+                matched_response_rows(
+                    branch_event_network,
+                    branch_control_network,
+                    controls,
                 )
             )
         input_paths.update(
@@ -855,6 +1085,11 @@ def run_contract(
         tuple(anchor_summaries[0]),
     )
     write_tsv(
+        output / "surface_site_residence.tsv",
+        site_residence,
+        tuple(site_residence[0]),
+    )
+    write_tsv(
         output / "event_region_response.tsv",
         event_regions,
         tuple(event_regions[0]),
@@ -863,6 +1098,16 @@ def run_contract(
         output / "event_network_response.tsv",
         event_network,
         tuple(event_network[0]),
+    )
+    write_tsv(
+        output / "event_matched_region_response.tsv",
+        matched_event_regions,
+        tuple(matched_event_regions[0]),
+    )
+    write_tsv(
+        output / "event_matched_anchor_response.tsv",
+        matched_event_network,
+        tuple(matched_event_network[0]),
     )
     input_rows = [
         {"path": str(path), "size_bytes": path.stat().st_size, "sha256": sha256(path)}
@@ -901,8 +1146,11 @@ def run_contract(
         "region_summary_rows": len(region_summary),
         "anchor_interval_rows": len(all_anchor_intervals),
         "anchor_branch_rows": len(anchor_summaries),
+        "surface_site_residence_rows": len(site_residence),
         "event_region_rows": len(event_regions),
         "event_network_rows": len(event_network),
+        "event_matched_region_rows": len(matched_event_regions),
+        "event_matched_anchor_rows": len(matched_event_network),
         "snapshot_interval_ps": _mean(row["sampling_interval_ps"] for row in all_anchor_intervals),
         "surface_anchor_identity_available": True,
         "hbond_lifetime_resolved": False,
@@ -923,6 +1171,9 @@ def run_contract(
         "Surface-water anchor identity and water-water network identity are separated. "
         "Retention is measured only between 10 ps snapshots and is not an H-bond lifetime, "
         "sub-picosecond rate, friction coefficient, or independent-replica uncertainty.\n\n"
+        "Each kinematically selected event is paired with the temporally nearest equal-width "
+        "window that does not overlap any selected event. Event-minus-control deltas are "
+        "descriptive matched contrasts, not causal effects or replicate statistics.\n\n"
         "The single-TPCL analysis applies to ch3_only and mixed291 finite droplets. "
         "mixed275 has multiple water islands and oh_only is a periodic spread film; their "
         "morphology-specific analyses remain separate.\n",

@@ -2,9 +2,12 @@ import math
 
 from molsimflow.postprocess.constant_force_stage_b_tpcl import (
     anchor_interval_rows,
+    matched_control_definitions,
+    matched_response_rows,
     morphology_applicability,
     summarize_anchor_branch,
     summarize_region_frames,
+    surface_site_residence_rows,
 )
 
 
@@ -96,3 +99,85 @@ def test_anchor_summary_reports_cross_snapshot_support_not_lifetime():
     assert summary["maximum_consecutive_snapshot_support"] == 2
     assert summary["anchor_pairs_with_at_least_two_consecutive_snapshots"] == 2
     assert summary["evidence_limit"] == "10_ps_snapshot_persistence_not_hbond_lifetime"
+
+
+def test_surface_site_residence_counts_intermittent_snapshot_support():
+    rows = surface_site_residence_rows(
+        "case",
+        "fx",
+        "x",
+        {
+            0: {(10, 1)},
+            20: {(10, 1), (20, 2)},
+            40: {(30, 1)},
+            60: set(),
+            80: {(10, 1)},
+        },
+        [
+            {"atom_id": "1", "site_type": "SiOH", "x_A": "1", "y_A": "2"},
+            {"atom_id": "2", "site_type": "SiOH", "x_A": "3", "y_A": "4"},
+        ],
+        timestep_fs=0.5,
+    )
+    first, second = rows
+    assert first["occupied_snapshot_count"] == 4
+    assert first["occupancy_spell_count"] == 2
+    assert first["unique_anchor_water_count"] == 2
+    assert first["maximum_consecutive_snapshot_support"] == 3
+    assert first["maximum_supported_residence_ps"] == 0.02
+    assert second["occupied_snapshot_fraction"] == 0.2
+
+
+def test_matched_controls_are_equal_width_and_do_not_overlap_events():
+    events = [
+        {
+            "event_id": "slow",
+            "event_class": "slow",
+            "mechanism_label": "DWELL_CANDIDATE",
+            "event_center_ps": 300.0,
+            "event_score": -1.0,
+        },
+        {
+            "event_id": "fast",
+            "event_class": "fast",
+            "mechanism_label": "ADVANCE_CANDIDATE",
+            "event_center_ps": 700.0,
+            "event_score": 1.0,
+        },
+    ]
+    controls = matched_control_definitions(
+        events,
+        list(range(0, 2001, 50)),
+        half_window_ps=100.0,
+    )
+    centers = [row["control_center_ps"] for row in controls]
+    assert len(set(centers)) == 2
+    assert all(100.0 <= center <= 1900.0 for center in centers)
+    assert all(
+        abs(center - event_center) > 200.0 for center in centers for event_center in (300, 700)
+    )
+
+
+def test_matched_response_reports_difference_in_differences():
+    common = {
+        "case_id": "case",
+        "branch_id": "fx",
+        "direction": "x",
+        "event_id": "event",
+        "event_class": "fast",
+        "mechanism_label": "ADVANCE_CANDIDATE",
+        "half_window_ps": 100.0,
+    }
+    result = matched_response_rows(
+        [{**common, "event_center_ps": 300.0, "delta_anchor": 2.5}],
+        [{**common, "event_center_ps": 800.0, "delta_anchor": 0.5}],
+        [
+            {
+                "event_id": "event",
+                "control_center_ps": 800.0,
+                "event_to_control_time_distance_ps": 500.0,
+                "control_definition": "nearest_time_nonoverlapping_equal_window",
+            }
+        ],
+    )[0]
+    assert result["event_minus_control_delta_anchor"] == 2.0
