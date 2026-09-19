@@ -9,6 +9,7 @@ from molsimflow.postprocess.tpcl_hbond_edges import (
     analyze_hbond_frame,
     iter_tpcl_node_frames,
     load_event_steps,
+    load_surface_sioh_ids,
 )
 
 
@@ -114,3 +115,62 @@ def test_load_event_steps_and_stream_selected_sample_frames(tmp_path):
     assert len(groups) == 1
     assert groups[0][0] == 20
     assert set(groups[0][1]) == {20}
+
+
+def test_analyze_hbond_frame_emits_surface_anchor_identity():
+    frame = SelectedFrame(
+        step=2000000,
+        bounds=np.asarray([[0.0, 20.0], [0.0, 20.0], [0.0, 20.0]]),
+        surface=np.asarray([[0.0, 2.8, 0.0]]),
+        water_oxygen_ids=np.asarray([10, 20]),
+        water_oxygen=np.asarray([[0.0, 0.0, 0.0], [2.8, 0.0, 0.0]]),
+        candidate_oxygen_ids=np.asarray([1, 10, 20]),
+        candidate_oxygen=np.asarray([[0.0, 2.8, 0.0], [0.0, 0.0, 0.0], [2.8, 0.0, 0.0]]),
+        hydrogen=np.asarray(
+            [
+                [0.0, 1.8, 0.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [1.8, 0.0, 0.0],
+                [2.8, 1.0, 0.0],
+            ]
+        ),
+    )
+    rows, summary = analyze_hbond_frame(
+        frame,
+        {10: _node(10, 0, 1), 20: _node(20, 1, 0)},
+        oh_cutoff_A=1.25,
+        oo_cutoff_A=3.5,
+        hbond_angle_deg=30.0,
+        surface_sioh_ids={1},
+    )
+    anchors = [row for row in rows if row["edge_scope"] == "surface_anchor_tpcl"]
+    assert {(row["donor_id"], row["acceptor_id"], row["donor_species"]) for row in anchors} == {
+        (10, 1, "h2o"),
+        (1, 10, "sioh"),
+    }
+    assert summary["surface_anchor_directed_hbond_count"] == 2
+    assert summary["surface_anchor_unique_pair_count"] == 1
+    assert summary["surface_anchor_water_count"] == 1
+    assert summary["surface_anchor_site_count"] == 1
+
+
+def test_load_surface_sioh_ids(tmp_path):
+    sites = tmp_path / "surface_sites.csv"
+    with sites.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["atom_id", "site_type"])
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"atom_id": 2, "site_type": "CH3"},
+                {"atom_id": 3, "site_type": "SiOH"},
+            ]
+        )
+    assert load_surface_sioh_ids(sites) == {3}
+
+    empty = tmp_path / "ch3_sites.csv"
+    with empty.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["atom_id", "site_type"])
+        writer.writeheader()
+        writer.writerow({"atom_id": 2, "site_type": "CH3"})
+    assert load_surface_sioh_ids(empty) == set()

@@ -20,7 +20,15 @@ from typing import TextIO
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import iter_lammps_dump_records
+from molsimflow.io.lammps_dump import (
+    box_lengths,
+    iter_lammps_dump_records,
+    minimum_image_vectors,
+)
+from molsimflow.postprocess.interfacial_water_hbond import donor_points_to
+from molsimflow.postprocess.interfacial_water_orientation import (
+    assign_hydrogen_neighbors,
+)
 from molsimflow.postprocess.local_water_order import (
     SelectedFrame,
     assigned_water_oh_vectors,
@@ -30,7 +38,7 @@ from molsimflow.postprocess.local_water_order import (
 )
 
 SCIENTIFIC_STATUS = (
-    "EXPLICIT_EVENT_WINDOW_TPCL_HBOND_EDGES_FROM_EXISTING_TRAJECTORY_"
+    "EXPLICIT_TPCL_HBOND_EDGE_IDENTITY_FROM_EXISTING_TRAJECTORY_SNAPSHOTS_"
     "NOT_CAUSAL_FREE_ENERGY_OR_PHYSICAL_RATE_EVIDENCE"
 )
 SAMPLE_FIELDS = {
@@ -76,6 +84,10 @@ FRAME_FIELDS = (
     "incident_undirected_edge_count",
     "induced_undirected_edge_count",
     "directed_hbond_count",
+    "surface_anchor_directed_hbond_count",
+    "surface_anchor_unique_pair_count",
+    "surface_anchor_water_count",
+    "surface_anchor_site_count",
     "zero_induced_edges",
     "sample_metric_parity_pass",
 )
@@ -130,6 +142,23 @@ def load_event_steps(path: Path) -> set[int]:
     return steps
 
 
+def load_surface_sioh_ids(path: Path) -> set[int]:
+    """Load unique SiOH oxygen IDs from a frozen surface-site table."""
+
+    with _open_csv_text(path) as handle:
+        reader = csv.DictReader(handle)
+        required = {"atom_id", "site_type"}
+        missing = required.difference(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path}: missing columns {sorted(missing)}")
+        identifiers = {
+            _integer(row["atom_id"], "surface atom_id")
+            for row in reader
+            if str(row["site_type"]).strip().lower() == "sioh"
+        }
+    return identifiers
+
+
 def iter_tpcl_node_frames(
     path: Path,
     selected_steps: set[int] | None = None,
@@ -168,21 +197,11 @@ def iter_tpcl_node_frames(
                 time_ns=_finite(row["time_ns"], "time_ns"),
                 arc_index=_integer(row["arc_index"], "arc_index"),
                 theta_deg=_finite(row["theta_deg"], "theta_deg"),
-                normal_distance_A=_finite(
-                    row["normal_distance_A"], "normal_distance_A"
-                ),
-                tangential_offset_A=_finite(
-                    row["tangential_offset_A"], "tangential_offset_A"
-                ),
-                surface_distance_A=_finite(
-                    row["surface_distance_A"], "surface_distance_A"
-                ),
-                hbond_donor_count=_integer(
-                    row["hbond_donor_count"], "hbond_donor_count"
-                ),
-                hbond_acceptor_count=_integer(
-                    row["hbond_acceptor_count"], "hbond_acceptor_count"
-                ),
+                normal_distance_A=_finite(row["normal_distance_A"], "normal_distance_A"),
+                tangential_offset_A=_finite(row["tangential_offset_A"], "tangential_offset_A"),
+                surface_distance_A=_finite(row["surface_distance_A"], "surface_distance_A"),
+                hbond_donor_count=_integer(row["hbond_donor_count"], "hbond_donor_count"),
+                hbond_acceptor_count=_integer(row["hbond_acceptor_count"], "hbond_acceptor_count"),
                 hbond_degree=_integer(row["hbond_degree"], "hbond_degree"),
                 hbond_internal_tpcl_degree=_integer(
                     row["hbond_internal_tpcl_degree"],
@@ -203,6 +222,83 @@ def _node_value(node: TpclNode | None, name: str) -> object:
     return getattr(node, name) if node is not None else ""
 
 
+def _surface_anchor_edges(
+    frame: SelectedFrame,
+    nodes: Mapping[int, TpclNode],
+    surface_sioh_ids: set[int],
+    *,
+    oh_cutoff_A: float,
+    oo_cutoff_A: float,
+    hbond_angle_deg: float,
+) -> list[tuple[int, int, str, str]]:
+    """Return directed SiOH--water H bonds incident to frozen TPCL waters."""
+
+    from scipy.spatial import cKDTree
+
+    lengths = box_lengths(frame.bounds)
+    candidate_index = {
+        int(atom_id): index for index, atom_id in enumerate(frame.candidate_oxygen_ids)
+    }
+    water_index = {int(atom_id): index for index, atom_id in enumerate(frame.water_oxygen_ids)}
+    missing_water = set(nodes).difference(water_index)
+    if missing_water:
+        raise ValueError(
+            f"step {frame.step}: TPCL water IDs absent from trajectory {sorted(missing_water)[:10]}"
+        )
+    assigned = assign_hydrogen_neighbors(
+        frame.candidate_oxygen,
+        frame.hydrogen,
+        frame.bounds,
+        oh_cutoff_A,
+    )
+    surface_ids = sorted(surface_sioh_ids.intersection(candidate_index))
+    surface_candidate_indices = [candidate_index[atom_id] for atom_id in surface_ids]
+    protonated = [
+        (atom_id, index)
+        for atom_id, index in zip(surface_ids, surface_candidate_indices)
+        if len(assigned[index]) == 1
+    ]
+    if not protonated:
+        return []
+    surface_coords = np.asarray([frame.candidate_oxygen[index] for _, index in protonated])
+    tree = cKDTree(
+        (surface_coords - frame.bounds[:, 0]) % lengths,
+        boxsize=lengths,
+    )
+    edges: list[tuple[int, int, str, str]] = []
+    for water_id in sorted(nodes):
+        water_candidate_index = candidate_index[water_id]
+        water_atom_index = water_index[water_id]
+        water_hydrogens = assigned[water_candidate_index]
+        if len(water_hydrogens) != 2:
+            continue
+        water_coordinate = frame.water_oxygen[water_atom_index]
+        water_oh = minimum_image_vectors(
+            frame.hydrogen[water_hydrogens] - water_coordinate,
+            lengths,
+        )
+        neighbors = tree.query_ball_point(
+            (water_coordinate - frame.bounds[:, 0]) % lengths,
+            oo_cutoff_A,
+        )
+        for surface_offset in sorted(neighbors):
+            surface_id, surface_candidate_index = protonated[int(surface_offset)]
+            surface_coordinate = frame.candidate_oxygen[surface_candidate_index]
+            vector = minimum_image_vectors(
+                surface_coordinate - water_coordinate,
+                lengths,
+            )
+            surface_oh = minimum_image_vectors(
+                frame.hydrogen[assigned[surface_candidate_index]] - surface_coordinate,
+                lengths,
+            )
+            if donor_points_to(water_oh, vector, hbond_angle_deg):
+                edges.append((water_id, surface_id, "h2o", "sioh"))
+            if donor_points_to(surface_oh, -vector, hbond_angle_deg):
+                edges.append((surface_id, water_id, "sioh", "h2o"))
+    return edges
+
+
 def analyze_hbond_frame(
     frame: SelectedFrame,
     nodes: Mapping[int, TpclNode],
@@ -210,13 +306,11 @@ def analyze_hbond_frame(
     oh_cutoff_A: float,
     oo_cutoff_A: float,
     hbond_angle_deg: float,
+    surface_sioh_ids: set[int] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Extract edges and verify exact parity with frozen per-node metrics."""
 
-    oxygen_index = {
-        int(oxygen_id): index
-        for index, oxygen_id in enumerate(frame.water_oxygen_ids)
-    }
+    oxygen_index = {int(oxygen_id): index for index, oxygen_id in enumerate(frame.water_oxygen_ids)}
     missing = set(nodes).difference(oxygen_index)
     if missing:
         raise ValueError(f"step {frame.step}: selected oxygen IDs absent from trajectory")
@@ -266,31 +360,57 @@ def analyze_hbond_frame(
                 "acceptor_arc_index": _node_value(acceptor_node, "arc_index"),
                 "donor_theta_deg": _node_value(donor_node, "theta_deg"),
                 "acceptor_theta_deg": _node_value(acceptor_node, "theta_deg"),
-                "donor_normal_distance_A": _node_value(
-                    donor_node, "normal_distance_A"
-                ),
-                "acceptor_normal_distance_A": _node_value(
-                    acceptor_node, "normal_distance_A"
-                ),
-                "donor_tangential_offset_A": _node_value(
-                    donor_node, "tangential_offset_A"
-                ),
-                "acceptor_tangential_offset_A": _node_value(
-                    acceptor_node, "tangential_offset_A"
-                ),
-                "donor_surface_distance_A": _node_value(
-                    donor_node, "surface_distance_A"
-                ),
-                "acceptor_surface_distance_A": _node_value(
-                    acceptor_node, "surface_distance_A"
-                ),
+                "donor_normal_distance_A": _node_value(donor_node, "normal_distance_A"),
+                "acceptor_normal_distance_A": _node_value(acceptor_node, "normal_distance_A"),
+                "donor_tangential_offset_A": _node_value(donor_node, "tangential_offset_A"),
+                "acceptor_tangential_offset_A": _node_value(acceptor_node, "tangential_offset_A"),
+                "donor_surface_distance_A": _node_value(donor_node, "surface_distance_A"),
+                "acceptor_surface_distance_A": _node_value(acceptor_node, "surface_distance_A"),
+            }
+        )
+
+    surface_edges = (
+        _surface_anchor_edges(
+            frame,
+            nodes,
+            surface_sioh_ids,
+            oh_cutoff_A=oh_cutoff_A,
+            oo_cutoff_A=oo_cutoff_A,
+            hbond_angle_deg=hbond_angle_deg,
+        )
+        if surface_sioh_ids
+        else []
+    )
+    for donor_id, acceptor_id, donor_species, acceptor_species in surface_edges:
+        donor_node = nodes.get(donor_id)
+        acceptor_node = nodes.get(acceptor_id)
+        rows.append(
+            {
+                "step": frame.step,
+                "time_ns": next(iter(nodes.values())).time_ns,
+                "donor_id": donor_id,
+                "acceptor_id": acceptor_id,
+                "hbond_type": "surface_water",
+                "donor_species": donor_species,
+                "acceptor_species": acceptor_species,
+                "edge_scope": "surface_anchor_tpcl",
+                "donor_in_tpcl": donor_node is not None,
+                "acceptor_in_tpcl": acceptor_node is not None,
+                "donor_arc_index": _node_value(donor_node, "arc_index"),
+                "acceptor_arc_index": _node_value(acceptor_node, "arc_index"),
+                "donor_theta_deg": _node_value(donor_node, "theta_deg"),
+                "acceptor_theta_deg": _node_value(acceptor_node, "theta_deg"),
+                "donor_normal_distance_A": _node_value(donor_node, "normal_distance_A"),
+                "acceptor_normal_distance_A": _node_value(acceptor_node, "normal_distance_A"),
+                "donor_tangential_offset_A": _node_value(donor_node, "tangential_offset_A"),
+                "acceptor_tangential_offset_A": _node_value(acceptor_node, "tangential_offset_A"),
+                "donor_surface_distance_A": _node_value(donor_node, "surface_distance_A"),
+                "acceptor_surface_distance_A": _node_value(acceptor_node, "surface_distance_A"),
             }
         )
 
     induced_pairs = {
-        pair
-        for pair in incident_pairs
-        if pair[0] in selected_ids and pair[1] in selected_ids
+        pair for pair in incident_pairs if pair[0] in selected_ids and pair[1] in selected_ids
     }
     degrees = {oxygen_id: 0 for oxygen_id in nodes}
     internal_degrees = {oxygen_id: 0 for oxygen_id in nodes}
@@ -331,6 +451,26 @@ def analyze_hbond_frame(
         "incident_undirected_edge_count": len(incident_pairs),
         "induced_undirected_edge_count": len(induced_pairs),
         "directed_hbond_count": len(directed_edges),
+        "surface_anchor_directed_hbond_count": len(surface_edges),
+        "surface_anchor_unique_pair_count": len(
+            {tuple(sorted((left, right))) for left, right, _, _ in surface_edges}
+        ),
+        "surface_anchor_water_count": len(
+            {
+                atom_id
+                for left, right, left_species, right_species in surface_edges
+                for atom_id, species in ((left, left_species), (right, right_species))
+                if species == "h2o"
+            }
+        ),
+        "surface_anchor_site_count": len(
+            {
+                atom_id
+                for left, right, left_species, right_species in surface_edges
+                for atom_id, species in ((left, left_species), (right, right_species))
+                if species == "sioh"
+            }
+        ),
         "zero_induced_edges": not induced_pairs,
         "sample_metric_parity_pass": True,
     }
@@ -341,6 +481,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
     if len(args.trajectory) != len(args.trajectory_end_step):
         raise ValueError("each trajectory requires one declared end step")
     selected_steps = load_event_steps(args.event_windows) if args.event_windows else None
+    surface_sioh_ids = load_surface_sioh_ids(args.surface_sites) if args.surface_sites else set()
     node_frames = iter_tpcl_node_frames(args.water_samples, selected_steps)
     next_group: tuple[int, dict[int, TpclNode]] | None = next(node_frames)
     output = Path(args.output_dir)
@@ -349,11 +490,12 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
     edge_count = 0
     frame_rows: list[dict[str, object]] = []
     stop = False
-    with gzip.open(
-        output / "tpcl_hbond_edges.csv.gz", "wt", newline="", encoding="utf-8"
-    ) as edge_handle, (output / "tpcl_hbond_frames.csv").open(
-        "w", newline="", encoding="utf-8"
-    ) as frame_handle:
+    with (
+        gzip.open(
+            output / "tpcl_hbond_edges.csv.gz", "wt", newline="", encoding="utf-8"
+        ) as edge_handle,
+        (output / "tpcl_hbond_frames.csv").open("w", newline="", encoding="utf-8") as frame_handle,
+    ):
         edge_writer = csv.DictWriter(edge_handle, fieldnames=list(EDGE_FIELDS))
         frame_writer = csv.DictWriter(frame_handle, fieldnames=list(FRAME_FIELDS))
         edge_writer.writeheader()
@@ -391,6 +533,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
                         oh_cutoff_A=args.oh_cutoff_A,
                         oo_cutoff_A=args.oo_cutoff_A,
                         hbond_angle_deg=args.hbond_angle_deg,
+                        surface_sioh_ids=surface_sioh_ids,
                     )
                     edge_writer.writerows(edge_rows)
                     frame_writer.writerow(frame_row)
@@ -417,11 +560,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
     if args.max_frames is None and next_group is not None:
         missing_step, _ = next_group
         raise ValueError(f"trajectory omitted selected sample step {missing_step}")
-    if (
-        args.max_frames is None
-        and selected_steps is not None
-        and processed != selected_steps
-    ):
+    if args.max_frames is None and selected_steps is not None and processed != selected_steps:
         raise ValueError("processed frame support differs from event-window support")
 
     summary: dict[str, object] = {
@@ -432,6 +571,14 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
         "last_step": int(frame_rows[-1]["step"]),
         "tpcl_node_frame_rows": sum(int(row["tpcl_node_count"]) for row in frame_rows),
         "directed_hbond_rows": edge_count,
+        "total_directed_hbond_rows": edge_count,
+        "water_water_directed_hbond_rows": sum(
+            int(row["directed_hbond_count"]) for row in frame_rows
+        ),
+        "surface_anchor_directed_hbond_rows": sum(
+            int(row["surface_anchor_directed_hbond_count"]) for row in frame_rows
+        ),
+        "surface_sioh_site_count": len(surface_sioh_ids),
         "frames_with_zero_induced_edges": sum(
             bool(row["zero_induced_edges"]) for row in frame_rows
         ),
@@ -445,6 +592,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
         "trajectories": [str(Path(path).resolve()) for path in args.trajectory],
         "trajectory_end_steps": args.trajectory_end_step,
         "water_samples": str(args.water_samples.resolve()),
+        "surface_sites": (str(args.surface_sites.resolve()) if args.surface_sites else None),
         "event_windows": str(args.event_windows.resolve()) if args.event_windows else None,
         "surface_atom_range": list(args.surface_range),
         "water_atom_range": list(args.water_range),
@@ -453,7 +601,12 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
         "oh_assignment_cutoff_A": args.oh_cutoff_A,
         "hbond_oo_cutoff_A": args.oo_cutoff_A,
         "hbond_angle_cutoff_deg": args.hbond_angle_deg,
-        "edge_scope": "all_directed_water_water_edges_incident_to_frozen_tpcl_nodes",
+        "edge_scope": (
+            "all_directed_water_water_edges_incident_to_frozen_tpcl_nodes_plus_"
+            "surface_sioh_water_edges_incident_to_frozen_tpcl_nodes"
+            if surface_sioh_ids
+            else "all_directed_water_water_edges_incident_to_frozen_tpcl_nodes"
+        ),
         "node_membership_source": "frozen_local_water_order_sample_table",
         "restart_policy": "later_segment_replaces_duplicate_boundary_step",
         "max_frames": args.max_frames,
@@ -471,8 +624,12 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
                 "# Explicit TPCL H-bond edges",
                 "",
                 f"- Case: {args.case_id}",
-                f"- Analyzed event-window frames: {summary['analyzed_frames']}",
-                f"- Directed H-bond rows: {summary['directed_hbond_rows']}",
+                f"- Analyzed trajectory snapshot frames: {summary['analyzed_frames']}",
+                f"- Total directed H-bond rows: {summary['directed_hbond_rows']}",
+                (
+                    "- Directed surface-anchor H-bond rows: "
+                    f"{summary['surface_anchor_directed_hbond_rows']}"
+                ),
                 "- Frozen sample-metric parity: PASS",
                 "",
                 (
@@ -493,6 +650,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trajectory", type=Path, action="append", required=True)
     parser.add_argument("--trajectory-end-step", type=int, action="append", required=True)
     parser.add_argument("--water-samples", type=Path, required=True)
+    parser.add_argument("--surface-sites", type=Path)
     parser.add_argument("--event-windows", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--surface-range", type=parse_range, required=True)
