@@ -139,7 +139,7 @@ def classify_tpcl(
         [_float(row["mean_anchor_pair_retained_fraction"]) for row in mixed],
         dtype=float,
     )
-    field = "event_minus_control_delta_anchor_pair_retained_fraction"
+    field = "event_minus_control_delta_anchor_anchor_pair_retained_fraction"
     contrasts = [
         _float(row[field])
         for row in matched_rows

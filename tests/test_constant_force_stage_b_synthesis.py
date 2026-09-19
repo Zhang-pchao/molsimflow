@@ -1,6 +1,7 @@
 from molsimflow.postprocess.constant_force_stage_b_synthesis import (
     classify_exchange,
     classify_layer_response,
+    classify_tpcl,
 )
 
 
@@ -60,3 +61,32 @@ def test_layer_classification_finds_persistent_opposite_pair():
     decision, detail = classify_layer_response(rows)
     assert decision == "TIME_DEPENDENT_LAYER_OPPOSED_Y_CANDIDATE"
     assert "layers 1 and 2" in detail
+
+
+def test_tpcl_classification_uses_matched_anchor_retention_column():
+    anchor_summary = [
+        {
+            "case_id": "mixed291",
+            "mean_anchor_pair_retained_fraction": "0.6",
+        },
+        {
+            "case_id": "mixed291",
+            "mean_anchor_pair_retained_fraction": "0.7",
+        },
+    ]
+    matched_rows = [
+        {
+            "case_id": "mixed291",
+            "event_minus_control_delta_anchor_anchor_pair_retained_fraction": "0.1",
+        },
+        {
+            "case_id": "mixed291",
+            "event_minus_control_delta_anchor_anchor_pair_retained_fraction": "-0.2",
+        },
+        {
+            "case_id": "ch3_only",
+            "event_minus_control_delta_anchor_anchor_pair_retained_fraction": "nan",
+        },
+    ]
+    decision, detail = classify_tpcl(anchor_summary, matched_rows)
+    assert decision == "DYNAMIC_ANCHOR_ASSOCIATION_ONLY"
