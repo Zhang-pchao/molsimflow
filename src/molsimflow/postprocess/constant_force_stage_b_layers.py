@@ -117,9 +117,61 @@ def _summarize_layers(
     return output
 
 
+def _summarize_layer_blocks(
+    rows: Sequence[Mapping[str, object]],
+    baseline: Mapping[tuple[int, int], Mapping[str, object]],
+    block_ps: float,
+) -> list[dict[str, object]]:
+    """Return occupancy-weighted layer velocities in fixed time blocks."""
+
+    grouped: dict[tuple[str, str, str, int, int], list[Mapping[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[
+            (
+                str(row["case_id"]),
+                str(row["branch_id"]),
+                str(row["direction"]),
+                int(row["layer_index"]),
+                _block_id(float(row["time_ps"]), block_ps),
+            )
+        ].append(row)
+    output: list[dict[str, object]] = []
+    for (case_id, branch_id, direction, layer, block), selected in sorted(grouped.items()):
+        axis = "x" if direction in {"none", "x"} else "y"
+        count = np.asarray([float(row["count"]) for row in selected])
+        velocity = np.asarray([float(row[f"mean_v{axis}_mps"]) for row in selected])
+        reference = [baseline[(int(row["step"]), layer)] for row in selected]
+        baseline_count = np.asarray([float(row["count"]) for row in reference])
+        baseline_velocity = np.asarray(
+            [float(row[f"mean_v{axis}_mps"]) for row in reference]
+        )
+        raw_weighted = occupancy_weighted_velocity(count, velocity)
+        baseline_weighted = occupancy_weighted_velocity(baseline_count, baseline_velocity)
+        output.append(
+            {
+                "case_id": case_id,
+                "branch_id": branch_id,
+                "direction": direction,
+                "layer_index": layer,
+                "block_index": block,
+                "start_ps": block * block_ps,
+                "end_ps": (block + 1) * block_ps,
+                "samples": len(selected),
+                "occupied_samples": int(np.sum(count > 0.0)),
+                "mean_count": float(np.mean(count)),
+                "molecule_samples": float(np.sum(count)),
+                "raw_axis_velocity_mps": raw_weighted,
+                "baseline_axis_velocity_mps": baseline_weighted,
+                "excess_axis_velocity_mps": raw_weighted - baseline_weighted,
+            }
+        )
+    return output
+
+
 def _plot(
     summaries: Sequence[Mapping[str, object]],
     blocks: Sequence[Mapping[str, object]],
+    layer_blocks: Sequence[Mapping[str, object]],
     output: Path,
 ) -> None:
     import matplotlib
@@ -156,6 +208,45 @@ def _plot(
     axis.legend(frameon=False)
     figure.tight_layout()
     figure.savefig(output / "film_total_response_blocks.png", dpi=240)
+    plt.close(figure)
+
+    driven_layer_blocks = [
+        row
+        for row in layer_blocks
+        if row["direction"] != "none" and float(row["mean_count"]) >= 1.0
+    ]
+    branches = sorted({str(row["branch_id"]) for row in driven_layer_blocks})
+    figure, axes = plt.subplots(
+        len(branches), 2, figsize=(11.0, 3.8 * len(branches)), squeeze=False, sharex=True
+    )
+    for branch_index, branch in enumerate(branches):
+        branch_rows = [row for row in driven_layer_blocks if row["branch_id"] == branch]
+        for layer in sorted({int(row["layer_index"]) for row in branch_rows}):
+            selected = [row for row in branch_rows if int(row["layer_index"]) == layer]
+            time = [
+                0.001 * (float(row["start_ps"]) + float(row["end_ps"])) / 2.0
+                for row in selected
+            ]
+            axes[branch_index, 0].plot(
+                time,
+                [row["raw_axis_velocity_mps"] for row in selected],
+                label=f"layer {layer}",
+            )
+            axes[branch_index, 1].plot(
+                time,
+                [row["excess_axis_velocity_mps"] for row in selected],
+                label=f"layer {layer}",
+            )
+        axes[branch_index, 0].set_title(f"{branch}: raw")
+        axes[branch_index, 1].set_title(f"{branch}: driven minus F0")
+        axes[branch_index, 0].set_ylabel("Velocity (m/s)")
+        for axis in axes[branch_index]:
+            axis.axhline(0.0, color="black", lw=0.7)
+            axis.legend(frameon=False, ncol=3)
+    for axis in axes[-1]:
+        axis.set_xlabel("Time (ns)")
+    figure.tight_layout()
+    figure.savefig(output / "layer_response_blocks.png", dpi=240)
     plt.close(figure)
 
 
@@ -229,6 +320,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         if (int(row["step"]), int(row["layer_index"])) not in baseline:
             raise ValueError("Layer rows are not aligned with the zero-force branch")
     summaries = _summarize_layers(selected_rows, baseline)
+    layer_blocks = _summarize_layer_blocks(selected_rows, baseline, block_ps)
 
     frame_groups: dict[tuple[str, str, str, int, float], list[dict[str, object]]] = defaultdict(list)
     for row in selected_rows:
@@ -314,17 +406,19 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         )
 
     write_tsv(output / "layer_weighted_summary.tsv", summaries, tuple(summaries[0]))
+    write_tsv(output / "layer_response_blocks_50ps.tsv", layer_blocks, tuple(layer_blocks[0]))
     write_tsv(output / "layer_flux_closure_timeseries.tsv", frame_rows, tuple(frame_rows[0]))
     write_tsv(output / "film_response_blocks_50ps.tsv", blocks, tuple(blocks[0]))
     write_tsv(output / "input_manifest.tsv", inputs, ("path", "size_bytes", "sha256"))
     if bool(raw.get("write_plots", True)):
-        _plot(summaries, blocks, output)
+        _plot(summaries, blocks, layer_blocks, output)
     maximum_flux_residual = max(abs(float(row["relative_closure_residual"])) for row in frame_rows)
     maximum_power_residual = max(abs(float(row["drive_power_residual_eV_per_ps"])) for row in frame_rows)
     summary = {
         "status": "PASS",
         "case_branches": len(cases),
         "layer_summary_rows": len(summaries),
+        "layer_block_rows": len(layer_blocks),
         "frame_rows": len(frame_rows),
         "block_rows": len(blocks),
         "maximum_relative_flux_closure": maximum_flux_residual,
@@ -338,7 +432,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "Layer fluxes are weighted by molecule count and closed against the global driven-oxygen "
         "center-of-mass velocity. Recorded drive power is compared with force times the reconstructed "
         "molecule-velocity sum. Sparse layers remain in tables but are excluded from the primary plot.\n\n"
-        "Time blocks are single-trajectory diagnostics, not independent replicas.\n",
+        "Layer and total-film time blocks are single-trajectory diagnostics, not independent replicas.\n",
         encoding="utf-8",
     )
     write_output_hashes(output)

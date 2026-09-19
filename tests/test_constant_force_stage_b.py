@@ -8,6 +8,7 @@ from molsimflow.postprocess.constant_force_stage_b_flux import (
     plane_crossing_counts,
 )
 from molsimflow.postprocess.constant_force_stage_b_layers import (
+    _summarize_layer_blocks,
     layer_flux_closure,
     occupancy_weighted_velocity,
 )
@@ -59,3 +60,38 @@ def test_layer_flux_closes_against_global_com_velocity() -> None:
     assert result["layer_velocity_sum_molecule_A_per_ps"] == pytest.approx(1.0)
     assert result["global_velocity_sum_molecule_A_per_ps"] == pytest.approx(1.0)
     assert result["closure_residual_molecule_A_per_ps"] == pytest.approx(0.0)
+
+
+def test_layer_blocks_use_molecule_sample_weights() -> None:
+    baseline_rows = [
+        {
+            "case_id": "oh_only",
+            "branch_id": "f0_shared",
+            "direction": "none",
+            "step": step,
+            "time_ps": time_ps,
+            "layer_index": 1,
+            "count": count,
+            "mean_vx_mps": velocity,
+            "mean_vy_mps": 0.0,
+        }
+        for step, time_ps, count, velocity in ((0, 10.0, 1, 2.0), (1, 20.0, 3, 4.0))
+    ]
+    driven_rows = [
+        {
+            **row,
+            "branch_id": "f8e-5_x",
+            "direction": "x",
+            "mean_vx_mps": velocity,
+        }
+        for row, velocity in zip(baseline_rows, (10.0, 20.0))
+    ]
+    baseline = {(int(row["step"]), int(row["layer_index"])): row for row in baseline_rows}
+
+    result = _summarize_layer_blocks(driven_rows, baseline, 50.0)
+
+    assert len(result) == 1
+    assert result[0]["molecule_samples"] == pytest.approx(4.0)
+    assert result[0]["raw_axis_velocity_mps"] == pytest.approx(17.5)
+    assert result[0]["baseline_axis_velocity_mps"] == pytest.approx(3.5)
+    assert result[0]["excess_axis_velocity_mps"] == pytest.approx(14.0)
