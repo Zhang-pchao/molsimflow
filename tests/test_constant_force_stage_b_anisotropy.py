@@ -8,6 +8,7 @@ from molsimflow.postprocess.constant_force_stage_b_anisotropy import (
     _bin_indices,
     _deposit_path_segments,
     _pearson,
+    _report_text,
     response_matrix_rows,
 )
 
@@ -93,3 +94,26 @@ def test_cli_registers_stage_b_anisotropy():
     assert args.contract == Path("contract.json")
     assert args.output == Path("results")
     assert args.func.__name__ == "_cmd_postprocess_constant_force_stage_b_anisotropy"
+
+
+def test_report_does_not_claim_absent_ch3_control():
+    report = _report_text(
+        ["mixed275", "oh_only"],
+        {"mixed275": "water_islands", "oh_only": "spread_film"},
+        0,
+    )
+    assert "Analyzed 2 interface cases (mixed275, oh_only)" in report
+    assert "Water-island transfer-channel applicability: mixed275" in report
+    assert "No ch3_only intrinsic X/Y control is included" in report
+    assert "All four interfaces" not in report
+
+
+def test_report_marks_present_ch3_control():
+    report = _report_text(
+        ["ch3_only"],
+        {"ch3_only": "finite_droplet"},
+        1,
+    )
+    assert "Finite-droplet TPCL applicability: ch3_only" in report
+    assert "The ch3_only intrinsic X/Y response is included" in report
+    assert "Verified external reference result sets: 1" in report

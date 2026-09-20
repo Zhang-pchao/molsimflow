@@ -536,6 +536,42 @@ def _plot_maps(
     plt.close(figure)
 
 
+def _report_text(
+    case_ids: Sequence[str],
+    morphology_by_case: Mapping[str, str],
+    reference_result_count: int,
+) -> str:
+    finite_cases = sorted(
+        case_id
+        for case_id in case_ids
+        if morphology_by_case[case_id] == "finite_droplet"
+    )
+    island_cases = sorted(
+        case_id
+        for case_id in case_ids
+        if morphology_by_case[case_id] == "water_islands"
+    )
+    ch3_control_included = "ch3_only" in case_ids
+    control_text = (
+        "The ch3_only intrinsic X/Y response is included in this contract."
+        if ch3_control_included
+        else "No ch3_only intrinsic X/Y control is included in this contract."
+    )
+    return (
+        "# Morphology-aware anisotropy maps\n\n"
+        f"Analyzed {len(case_ids)} interface cases ({', '.join(case_ids)}) on the same "
+        "substrate-fixed periodic grid within each case. Water occupancy and directed "
+        "current are F0-subtracted, and each response matrix retains longitudinal and "
+        "lateral components.\n\n"
+        f"Finite-droplet TPCL applicability: {', '.join(finite_cases) or 'none'}. "
+        f"Water-island transfer-channel applicability: {', '.join(island_cases) or 'none'}. "
+        f"Verified external reference result sets: {reference_result_count}.\n\n"
+        "Spatial correlations and X/Y differences are single-trajectory descriptive "
+        f"associations. {control_text} Pattern causality requires an independently "
+        "prepared or composition-preserving scrambled surface and remains untested.\n"
+    )
+
+
 def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     """Run a contract-defined Stage-B4 anisotropy synthesis."""
 
@@ -839,6 +875,10 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     write_tsv(output / "input_manifest.tsv", input_rows, tuple(input_rows[0]))
     font = resolve_path(contract["font_path"], base) if contract.get("font_path") else None
     case_ids = [str(entry["case_id"]) for entry in cases]
+    morphology_by_case = {
+        str(entry["case_id"]): str(entry["morphology_class"]) for entry in cases
+    }
+    ch3_control_included = "ch3_only" in case_ids
     _plot_maps(
         case_ids,
         surface_rows,
@@ -862,22 +902,14 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "response_matrix_rows": len(response_rows),
         "single_trajectory_descriptive_only": True,
         "pattern_causality_established": False,
-        "ch3_intrinsic_xy_control_included": True,
+        "case_ids": case_ids,
+        "reference_result_count": len(reference_results),
+        "ch3_intrinsic_xy_control_included": ch3_control_included,
         "new_md_submitted": False,
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     (output / "REPORT.md").write_text(
-        "# Stage-B4 morphology-aware anisotropy maps\n\n"
-        "All four interfaces use the same substrate-fixed periodic grid for the surface-site, "
-        "water-occupancy, and directed current maps. The response matrix is F0-subtracted and "
-        "retains both longitudinal and lateral components.\n\n"
-        "Finite-droplet TPCL dwell maps are limited to ch3_only and mixed291. The persistent "
-        "island-transfer channel map is limited to mixed275. A unique TPCL is not assigned to "
-        "mixed275 or the periodic oh_only film.\n\n"
-        "The spatial correlations and X/Y differences are single-trajectory descriptive "
-        "associations. Because ch3_only has its own X/Y response, mixed275 anisotropy is not "
-        "attributed wholly to the OH/CH3 pattern. Pattern causality requires an independently "
-        "prepared or composition-preserving scrambled surface and remains untested.\n",
+        _report_text(case_ids, morphology_by_case, len(reference_results)),
         encoding="utf-8",
     )
     write_output_hashes(output)
