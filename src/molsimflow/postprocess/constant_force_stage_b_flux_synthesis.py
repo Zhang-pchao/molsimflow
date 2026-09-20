@@ -24,7 +24,6 @@ from molsimflow.postprocess.constant_force_stage_b_flux import (
     iter_unwrapped_oxygen_frames,
 )
 
-
 CATEGORIES = (
     "UNCHANGED_TRACK",
     "PERSISTENT_ISLAND_TRANSFER",
@@ -60,7 +59,7 @@ def _group_rows(
 
 
 def _window_index(mid_time_ps: float, window_ps: float) -> int:
-    return int(math.floor(mid_time_ps / window_ps + 1.0e-12))
+    return math.floor(mid_time_ps / window_ps + 1.0e-12)
 
 
 def _aggregate_interval_windows(
@@ -149,9 +148,13 @@ def _response_rows(
 
 
 def _branch_summary(
-    windows: Sequence[Mapping[str, object]],
+    windows: Sequence[Mapping[str, object]], full_window_ps: float = 4000.0
 ) -> list[dict[str, object]]:
-    selected = [row for row in windows if float(row["window_ps"]) == 4000.0]
+    selected = [
+        row
+        for row in windows
+        if math.isclose(float(row["window_ps"]), full_window_ps)
+    ]
     baseline = {str(row["case_id"]): row for row in selected if str(row["direction"]) == "none"}
     output: list[dict[str, object]] = []
     for row in selected:
@@ -180,9 +183,13 @@ def _branch_summary(
 
 
 def _category_summary(
-    responses: Sequence[Mapping[str, object]],
+    responses: Sequence[Mapping[str, object]], full_window_ps: float = 4000.0
 ) -> list[dict[str, object]]:
-    full = [row for row in responses if float(row["window_ps"]) == 4000.0]
+    full = [
+        row
+        for row in responses
+        if math.isclose(float(row["window_ps"]), full_window_ps)
+    ]
     output: list[dict[str, object]] = []
     for row in full:
         component_responses = {
@@ -586,6 +593,9 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     if int(contract.get("schema_version", -1)) != 1:
         raise ValueError("schema_version must be 1")
+    full_window_ps = float(contract.get("full_window_ps", 4000.0))
+    if full_window_ps <= 0.0:
+        raise ValueError("full_window_ps must be positive")
     base = contract_path.parent
     source_contract_path = resolve_path(contract["flux_contract"], base)
     results = resolve_path(contract["flux_results"], base)
@@ -594,11 +604,15 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     intervals = _read_tsv(results / "directed_flux_intervals.tsv")
     centers = _read_tsv(results / "island_center_decomposition.tsv")
     windows = []
-    for window_ps in (50.0, 1000.0, 4000.0):
+    window_sizes: list[float] = []
+    for window_ps in (50.0, 1000.0, full_window_ps):
+        if any(math.isclose(window_ps, accepted) for accepted in window_sizes):
+            continue
+        window_sizes.append(window_ps)
         windows.extend(_aggregate_interval_windows(intervals, window_ps))
     response_rows = _response_rows(windows)
-    branch_rows = _branch_summary(windows)
-    category_rows = _category_summary(response_rows)
+    branch_rows = _branch_summary(windows, full_window_ps)
+    category_rows = _category_summary(response_rows, full_window_ps)
     class_rows, track_rows, recompute_residual = _reconstruct_track_transport(
         source_contract, source_contract_path.parent, intervals
     )
@@ -670,6 +684,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "maximum_recomputed_interval_residual_A": recompute_residual,
         "maximum_response_category_closure_mps": maximum_category_closure,
         "single_trajectory_descriptive_only": True,
+        "full_window_ps": full_window_ps,
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     (output / "REPORT.md").write_text(
@@ -682,7 +697,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "and remaining tracked islands are OTHER_MULTI_ISLAND. Track and size-class velocities "
         "are contributions to the all-water center-of-mass velocity over the full branch.\n\n"
         "F0, X, and Y are different drive conditions, not independent replicas. Fifty-picosecond "
-        "and one-nanosecond windows are single-trajectory descriptive diagnostics.\n",
+        "and longer contract-defined windows are single-trajectory descriptive diagnostics.\n",
         encoding="utf-8",
     )
     write_output_hashes(output)
