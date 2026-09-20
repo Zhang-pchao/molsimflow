@@ -86,6 +86,7 @@ SUMMARY_FIELDS = (
     "terminal_solution_OH",
     "terminal_overcoordinated",
     "terminal_unassigned_H",
+    "fixed_carbon_H",
     "partition_events",
     "persistent_partition_events",
     "cutoff_H3O_max_spread",
@@ -137,6 +138,48 @@ def read_type_symbols(model_data: Path) -> dict[int, str]:
     if not mapping:
         raise ValueError(f"No Masses mapping found in {model_data}")
     return mapping
+
+
+def read_model_arrays(model_data: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Read atom IDs, types, coordinates, and orthorhombic bounds from a data file."""
+
+    lines = Path(model_data).read_text(encoding="utf-8").splitlines()
+    atom_count = None
+    bounds: list[tuple[float, float]] = []
+    atoms_header = None
+    for index, raw in enumerate(lines):
+        fields = raw.split()
+        if len(fields) == 2 and fields[1] == "atoms" and fields[0].isdigit():
+            atom_count = int(fields[0])
+        if len(fields) >= 4 and " ".join(fields[-2:]) in {"xlo xhi", "ylo yhi", "zlo zhi"}:
+            bounds.append((float(fields[0]), float(fields[1])))
+        if raw.strip().startswith("Atoms"):
+            atoms_header = index
+    if atom_count is None or len(bounds) != 3 or atoms_header is None:
+        raise ValueError(f"Incomplete orthorhombic LAMMPS data file: {model_data}")
+    records: list[tuple[int, int, float, float, float]] = []
+    for raw in lines[atoms_header + 1 :]:
+        fields = raw.partition("#")[0].split()
+        if not fields:
+            continue
+        if not fields[0].lstrip("+-").isdigit():
+            if records:
+                break
+            continue
+        if len(fields) < 5:
+            raise ValueError(f"Invalid atomic-style row in {model_data}: {raw!r}")
+        records.append((int(fields[0]), int(fields[1]), *(float(value) for value in fields[2:5])))
+        if len(records) == atom_count:
+            break
+    if len(records) != atom_count:
+        raise ValueError(f"Expected {atom_count} atoms in {model_data}, found {len(records)}")
+    array = np.asarray(records, dtype=float)
+    return (
+        array[:, 0].astype(np.int64),
+        array[:, 1].astype(np.int64),
+        array[:, 2:5],
+        np.asarray(bounds, dtype=float),
+    )
 
 
 def _read_ids(path: Path) -> set[int]:
@@ -203,6 +246,30 @@ def _periodic_query(
     return np.asarray(index, dtype=int), np.asarray(distance, dtype=float)
 
 
+def identify_fixed_carbon_hydrogen_ids(
+    model_data: Path,
+    type_symbols: Mapping[int, str],
+    ch_cutoff_A: float,
+) -> set[int]:
+    """Identify model-defined methyl H atoms and keep them out of proton accounting."""
+
+    ids, types, coordinates, bounds = read_model_arrays(model_data)
+    symbols = np.asarray([type_symbols[int(atom_type)] for atom_type in types])
+    h_indices = np.where(symbols == "H")[0]
+    c_indices = np.where(symbols == "C")[0]
+    if len(c_indices) == 0:
+        return set()
+    nearest_c, distance_c = _periodic_query(coordinates[h_indices], coordinates[c_indices], bounds)
+    fixed: set[int] = set()
+    for carbon_index in range(len(c_indices)):
+        candidates = np.where((nearest_c == carbon_index) & (distance_c <= ch_cutoff_A))[0]
+        if len(candidates) < 3:
+            continue
+        closest = candidates[np.argsort(distance_c[candidates])[:3]]
+        fixed.update(int(ids[h_indices[index]]) for index in closest)
+    return fixed
+
+
 def assign_hydrogen_parents(
     ids: np.ndarray,
     types: np.ndarray,
@@ -210,24 +277,25 @@ def assign_hydrogen_parents(
     bounds: np.ndarray,
     type_symbols: Mapping[int, str],
     oh_cutoff_A: float,
-    ch_cutoff_A: float,
+    fixed_carbon_hydrogen_ids: set[int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Assign H to the nearest valid O or C and return oxygen parent IDs."""
+    """Assign non-methyl H to the nearest valid O and return oxygen parent IDs."""
 
     symbols = np.asarray([type_symbols[int(atom_type)] for atom_type in types])
     h_indices = np.where(symbols == "H")[0]
     o_indices = np.where(symbols == "O")[0]
-    c_indices = np.where(symbols == "C")[0]
     if len(h_indices) == 0 or len(o_indices) == 0:
         raise ValueError("Species assignment requires hydrogen and oxygen atoms")
     nearest_o, distance_o = _periodic_query(coordinates[h_indices], coordinates[o_indices], bounds)
-    nearest_c, distance_c = _periodic_query(coordinates[h_indices], coordinates[c_indices], bounds)
     valid_o = distance_o <= oh_cutoff_A
-    valid_c = distance_c <= ch_cutoff_A
-    choose_o = valid_o & (~valid_c | (distance_o <= distance_c))
+    fixed_carbon = np.asarray(
+        [int(atom_id) in fixed_carbon_hydrogen_ids for atom_id in ids[h_indices]],
+        dtype=bool,
+    )
+    choose_o = valid_o & ~fixed_carbon
     oxygen_parent_ids = np.full(len(h_indices), -1, dtype=np.int64)
     oxygen_parent_ids[choose_o] = ids[o_indices[nearest_o[choose_o]]]
-    assigned_any = choose_o | valid_c
+    assigned_any = choose_o | fixed_carbon
     return (
         ids[h_indices],
         ids[o_indices],
@@ -384,6 +452,11 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         paths = [resolve_path(path, base) for path in entry["trajectories"]]
         maximum_timestep = int(entry["maximum_timestep"])
         type_symbols = read_type_symbols(model_data)
+        fixed_carbon_hydrogen_ids = identify_fixed_carbon_hydrogen_ids(
+            model_data,
+            type_symbols,
+            ch_cutoff,
+        )
         solution_ids = _read_ids(solution_ids_path)
         for path in [model_data, solution_ids_path, *paths]:
             inputs.append(
@@ -417,7 +490,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                         frame.bounds,
                         type_symbols,
                         cutoff,
-                        ch_cutoff,
+                        fixed_carbon_hydrogen_ids,
                     )
                     metrics = species_metrics(
                         oxygen_ids,
@@ -516,6 +589,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                 "terminal_solution_OH": terminal["solution_OH"],
                 "terminal_overcoordinated": terminal["solution_overcoordinated"],
                 "terminal_unassigned_H": terminal["hydrogen_unassigned"],
+                "fixed_carbon_H": len(fixed_carbon_hydrogen_ids),
                 "partition_events": len(events),
                 "persistent_partition_events": sum(row["persistent"] == "true" for row in events),
                 "cutoff_H3O_max_spread": cutoff_spread,

@@ -2,12 +2,16 @@ import csv
 import json
 from pathlib import Path
 
-from molsimflow.postprocess.constant_force_species_timeseries import run_contract
+from molsimflow.postprocess.constant_force_species_timeseries import (
+    identify_fixed_carbon_hydrogen_ids,
+    read_type_symbols,
+    run_contract,
+)
 
 
 def _write_model(path: Path) -> None:
     path.write_text(
-        """7 atoms
+        """9 atoms
 4 atom types
 
 0 10 xlo xhi
@@ -30,6 +34,8 @@ Atoms # atomic
 5 2 7.8 7.0 2.0
 6 3 5.0 5.0 2.0
 7 2 5.9 5.0 2.0
+8 2 4.55 5.78 2.0
+9 2 4.55 4.22 2.0
 """,
         encoding="utf-8",
     )
@@ -44,6 +50,8 @@ def _write_dump(path: Path) -> None:
         "5 2 7.8 7.0 2.0 0 0 0",
         "6 3 5.0 5.0 2.0 0 0 0",
         "7 2 5.9 5.0 2.0 0 0 0",
+        "8 2 4.55 5.78 2.0 0 0 0",
+        "9 2 4.55 4.22 2.0 0 0 0",
     ]
     lines = []
     for step in (0, 10, 20):
@@ -52,7 +60,7 @@ def _write_dump(path: Path) -> None:
                 "ITEM: TIMESTEP",
                 str(step),
                 "ITEM: NUMBER OF ATOMS",
-                "7",
+                "9",
                 "ITEM: BOX BOUNDS pp pp ff",
                 "0 10",
                 "0 10",
@@ -110,3 +118,34 @@ def test_species_timeseries_uses_inclusive_safe_endpoint(tmp_path):
     assert all(int(row["framework_OH"]) == 1 for row in rows)
     branch = _rows(tmp_path / "results" / "branch_species_summary.tsv")
     assert branch[0]["inventory_integrity_gate"] == "PASS"
+    assert branch[0]["fixed_carbon_H"] == "3"
+
+
+def test_model_defined_methyl_hydrogens_are_fixed_when_an_oxygen_is_closer(tmp_path):
+    model = tmp_path / "ambiguous.data"
+    model.write_text(
+        """5 atoms
+3 atom types
+
+0 10 xlo xhi
+0 10 ylo yhi
+0 10 zlo zhi
+
+Masses
+
+1 15.999 # O
+2 1.008 # H
+3 12.011 # C
+
+Atoms # atomic/kk
+
+1 3 5.0 5.0 5.0 0 0 0
+2 2 5.9 5.0 5.0 0 0 0
+3 2 4.55 5.78 5.0 0 0 0
+4 2 4.55 4.22 5.0 0 0 0
+5 1 6.75 5.0 5.0 0 0 0
+""",
+        encoding="utf-8",
+    )
+    symbols = read_type_symbols(model)
+    assert identify_fixed_carbon_hydrogen_ids(model, symbols, 1.25) == {2, 3, 4}
