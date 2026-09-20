@@ -2434,6 +2434,19 @@ def _cmd_postprocess_constant_force_layers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_postprocess_constant_force_species_timeseries(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_species_timeseries import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"case_branches={summary['case_branches']} "
+        f"timeseries_rows={summary['timeseries_rows']} "
+        f"partition_events={summary['partition_events']}"
+    )
+    return 0
+
+
 def _cmd_postprocess_constant_force_water_structure(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.constant_force_water_structure import run_contract
 
@@ -4524,6 +4537,16 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_layers.add_argument("--contract", type=Path, required=True)
     constant_force_layers.add_argument("--output", type=Path, required=True)
     constant_force_layers.set_defaults(func=_cmd_postprocess_constant_force_layers)
+
+    constant_force_species_timeseries = postprocess_subparsers.add_parser(
+        "constant-force-species-timeseries",
+        help="Audit geometric water/surface proton partition through time",
+    )
+    constant_force_species_timeseries.add_argument("--contract", type=Path, required=True)
+    constant_force_species_timeseries.add_argument("--output", type=Path, required=True)
+    constant_force_species_timeseries.set_defaults(
+        func=_cmd_postprocess_constant_force_species_timeseries
+    )
 
     constant_force_water_structure = postprocess_subparsers.add_parser(
         "constant-force-water-structure",

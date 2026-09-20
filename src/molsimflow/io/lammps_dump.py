@@ -124,6 +124,23 @@ def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
             frame_index += 1
 
 
+def iter_lammps_dump_records_until(
+    dump_path: Path,
+    maximum_timestep: int | None = None,
+) -> Iterator[LammpsDumpFrame]:
+    """Iterate complete frames up to an optional inclusive timestep.
+
+    Returning before a damaged compressed tail is intentional: accepted
+    partial trajectories must be analyzed only through a separately audited
+    safe endpoint rather than by decoding the failed tail.
+    """
+
+    for frame in iter_lammps_dump_records(dump_path):
+        if maximum_timestep is not None and frame.timestep > maximum_timestep:
+            return
+        yield frame
+
+
 def _validate_dump_identity(
     dump_path: Path,
     expected_fields: Sequence[str],

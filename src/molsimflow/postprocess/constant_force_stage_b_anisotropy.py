@@ -14,7 +14,7 @@ from typing import TextIO
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import box_lengths, iter_lammps_dump_records
+from molsimflow.io.lammps_dump import box_lengths, iter_lammps_dump_records_until
 from molsimflow.postprocess.constant_force_oxygen import (
     resolve_path,
     sha256,
@@ -139,6 +139,7 @@ def analyze_branch(
     timestep_fs: float,
     grid_size: int,
     event_keys: set[tuple[int, int]] | None = None,
+    maximum_timestep: int | None = None,
 ) -> dict[str, object]:
     """Accumulate occupancy and a substrate-grid number-current proxy."""
 
@@ -156,7 +157,7 @@ def analyze_branch(
     lower: np.ndarray | None = None
     lengths: np.ndarray | None = None
     for trajectory in trajectories:
-        for frame in iter_lammps_dump_records(trajectory):
+        for frame in iter_lammps_dump_records_until(trajectory, maximum_timestep):
             if last_step is not None and frame.timestep <= last_step:
                 if frame.timestep == last_step:
                     continue
@@ -215,6 +216,8 @@ def analyze_branch(
                         }
             previous = (frame.timestep, ids, wrapped, unwrapped, bounds)
             last_step = frame.timestep
+        if maximum_timestep is not None and last_step == maximum_timestep:
+            break
     if first_step is None or last_step is None or lower is None or lengths is None:
         raise ValueError("branch contains no frames")
     duration_ps = (last_step - first_step) * timestep_fs / 1000.0
@@ -569,8 +572,8 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
     case_results: dict[str, dict[str, dict[str, object]]] = {}
     case_site_grids: dict[str, np.ndarray] = {}
     cases = contract.get("cases", [])
-    if len(cases) != 4:
-        raise ValueError("B4 requires exactly four interface cases")
+    if not cases:
+        raise ValueError("At least one interface case is required")
     for entry in cases:
         case_id = str(entry["case_id"])
         morphology = str(entry["morphology_class"])
@@ -623,6 +626,11 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                 timestep_fs=timestep_fs,
                 grid_size=grid_size,
                 event_keys=event_keys_by_branch.get(branch_id),
+                maximum_timestep=(
+                    int(branch["maximum_timestep"])
+                    if branch.get("maximum_timestep")
+                    else None
+                ),
             )
             branches[direction] = result
             branch_quality_rows.append(

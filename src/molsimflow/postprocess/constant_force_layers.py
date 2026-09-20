@@ -195,7 +195,8 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         site_cutoff = float(site_config.get("assignment_cutoff_A", 3.5))
         site_layer = int(site_config.get("layer_index", 0))
     else:
-        site_cutoff = math.nan; site_layer = -1
+        site_cutoff = math.nan
+        site_layer = -1
 
     layer_rows: list[dict] = []
     mode_rows: list[dict] = []
@@ -218,7 +219,11 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         previous_sites: dict[int, int] = {}
         residence_state: dict[int, tuple[int, float]] = {}
         final_time = math.nan
-        for frame in iter_oxygen_frames(paths):
+        maximum_timestep = entry.get("maximum_timestep")
+        for frame in iter_oxygen_frames(
+            paths,
+            int(maximum_timestep) if maximum_timestep else None,
+        ):
             if frame.velocities is None:
                 raise ValueError(f"Velocities are required at step {frame.timestep}")
             time_ps = (frame.timestep - origin) * timestep_fs / 1000.0
@@ -293,7 +298,8 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                     "mean_site_distance_A": float(np.mean(distances[assignments >= 0])) if np.any(assignments >= 0) else math.nan,
                 })
                 previous_sites = current_sites
-            previous_layers = layer_index.copy(); previous_time = time_ps
+            previous_layers = layer_index.copy()
+            previous_time = time_ps
         if previous_time is None:
             raise ValueError(f"No frames analyzed for {case_id}/{branch_id}")
         for atom_id, (layer, start_time) in residence_state.items():
@@ -333,7 +339,9 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                 raise ValueError("Driven and baseline layer grids are not aligned")
             key = "mean_vx_mps" if direction == "x" else "mean_vy_mps"
             flux_key = "surface_flux_x_molecules_per_A_ps" if direction == "x" else "surface_flux_y_molecules_per_A_ps"
-            axis = float(row[key]); base_axis = float(reference[key]); excess = axis - base_axis
+            axis = float(row[key])
+            base_axis = float(reference[key])
+            excess = axis - base_axis
             flux = float(row[flux_key])
             excess_flux = flux - float(reference[flux_key])
         response_groups[(row["case_id"], row["branch_id"], direction, int(row["layer_index"]))].append(

@@ -269,7 +269,11 @@ def _reconstruct_track_transport(
             (_as_int(row["step"]), _as_int(row["track_id"])): _as_int(row["size"])
             for row in island_rows
         }
-        frames = iter_unwrapped_oxygen_frames(paths)
+        maximum_timestep = entry.get("maximum_timestep")
+        frames = iter_unwrapped_oxygen_frames(
+            paths,
+            int(maximum_timestep) if maximum_timestep else None,
+        )
         previous = next(frames)
         owners = _initial_owners(previous, island_rows, cutoff_A)
         _validate_owner_sizes(owners, expected_sizes, previous.step)
