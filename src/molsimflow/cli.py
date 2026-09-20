@@ -2527,6 +2527,19 @@ def _cmd_postprocess_constant_force_stage_b_anisotropy(args: argparse.Namespace)
     return 0
 
 
+def _cmd_postprocess_constant_force_stage_c_synthesis(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_c_synthesis import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"response_rows={summary['response_comparison_rows']} "
+        f"event_blocks={summary['event_conditioned_block_rows']} "
+        f"partition_blocks={summary['partition_layer_block_rows']}"
+    )
+    return 0
+
+
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
@@ -4617,6 +4630,16 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_stage_b_anisotropy.add_argument("--output", type=Path, required=True)
     constant_force_stage_b_anisotropy.set_defaults(
         func=_cmd_postprocess_constant_force_stage_b_anisotropy
+    )
+
+    constant_force_stage_c_synthesis = postprocess_subparsers.add_parser(
+        "constant-force-stage-c-synthesis",
+        help="Compare replica responses and screen event and species-layer associations",
+    )
+    constant_force_stage_c_synthesis.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_c_synthesis.add_argument("--output", type=Path, required=True)
+    constant_force_stage_c_synthesis.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_c_synthesis
     )
 
     return parser
