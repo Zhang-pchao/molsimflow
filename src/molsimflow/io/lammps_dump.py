@@ -38,6 +38,10 @@ class LammpsDumpFrame:
         return len(self.atom_rows)
 
 
+class _MaximumTimestepReached(Exception):
+    """Signal an intentional stop before parsing an out-of-window frame."""
+
+
 @contextmanager
 def open_lammps_dump_text(dump_path: Path) -> Iterator[TextIO]:
     """Open a plain or zstd-compressed LAMMPS dump as a streaming text handle."""
@@ -72,8 +76,11 @@ def open_lammps_dump_text(dump_path: Path) -> Iterator[TextIO]:
             raise ValueError(f"zstd decode failed for {path}: {stderr.strip()}")
 
 
-def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
-    """Iterate complete dump rows while preserving every atom column."""
+def _iter_lammps_dump_records(
+    dump_path: Path,
+    maximum_timestep: int | None = None,
+) -> Iterator[LammpsDumpFrame]:
+    """Iterate dump rows, stopping before an out-of-window frame body."""
 
     with open_lammps_dump_text(dump_path) as handle:
         frame_index = 0
@@ -84,6 +91,8 @@ def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
             if line.strip() != "ITEM: TIMESTEP":
                 raise ValueError("Unexpected dump format: expected ITEM: TIMESTEP")
             timestep = int(handle.readline().strip())
+            if maximum_timestep is not None and timestep > maximum_timestep:
+                raise _MaximumTimestepReached
             if handle.readline().strip() != "ITEM: NUMBER OF ATOMS":
                 raise ValueError("Unexpected dump format: missing ITEM: NUMBER OF ATOMS")
             atom_count = int(handle.readline().strip())
@@ -124,6 +133,22 @@ def iter_lammps_dump_records(dump_path: Path) -> Iterator[LammpsDumpFrame]:
             frame_index += 1
 
 
+def iter_lammps_dump_records(
+    dump_path: Path,
+    maximum_timestep: int | None = None,
+) -> Iterator[LammpsDumpFrame]:
+    """Iterate complete dump rows while preserving every atom column.
+
+    An optional inclusive maximum stops the reader immediately after the next
+    timestep header, before it parses an out-of-window frame body.
+    """
+
+    try:
+        yield from _iter_lammps_dump_records(dump_path, maximum_timestep)
+    except _MaximumTimestepReached:
+        return
+
+
 def iter_lammps_dump_records_until(
     dump_path: Path,
     maximum_timestep: int | None = None,
@@ -135,10 +160,7 @@ def iter_lammps_dump_records_until(
     safe endpoint rather than by decoding the failed tail.
     """
 
-    for frame in iter_lammps_dump_records(dump_path):
-        if maximum_timestep is not None and frame.timestep > maximum_timestep:
-            return
-        yield frame
+    yield from iter_lammps_dump_records(dump_path, maximum_timestep)
 
 
 def _validate_dump_identity(
