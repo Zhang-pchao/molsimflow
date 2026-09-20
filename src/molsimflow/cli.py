@@ -2514,6 +2514,19 @@ def _cmd_postprocess_constant_force_stage_b_layers(args: argparse.Namespace) -> 
     return 0
 
 
+def _cmd_postprocess_constant_force_stage_b_anisotropy(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_b_anisotropy import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"cases={summary['case_count']} "
+        f"branches={summary['branch_count']} "
+        f"response_rows={summary['response_matrix_rows']}"
+    )
+    return 0
+
+
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--manifest", type=Path, help="CSV with case_label,xyz_path[,surface_atom_count]")
@@ -4594,6 +4607,16 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_stage_b_layers.add_argument("--output", type=Path, required=True)
     constant_force_stage_b_layers.set_defaults(
         func=_cmd_postprocess_constant_force_stage_b_layers
+    )
+
+    constant_force_stage_b_anisotropy = postprocess_subparsers.add_parser(
+        "constant-force-stage-b-anisotropy",
+        help="Map morphology-aware residence, current, and response anisotropy",
+    )
+    constant_force_stage_b_anisotropy.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_b_anisotropy.add_argument("--output", type=Path, required=True)
+    constant_force_stage_b_anisotropy.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_b_anisotropy
     )
 
     return parser

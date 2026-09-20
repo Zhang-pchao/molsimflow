@@ -1,7 +1,9 @@
 import math
+from pathlib import Path
 
 import numpy as np
 
+from molsimflow.cli import build_parser as build_cli_parser
 from molsimflow.postprocess.constant_force_stage_b_anisotropy import (
     _bin_indices,
     _deposit_path_segments,
@@ -75,3 +77,19 @@ def test_pearson_excludes_nonfinite_cells_and_reports_support():
     )
     assert math.isclose(value, 1.0)
     assert count == 3
+
+
+def test_cli_registers_stage_b_anisotropy():
+    args = build_cli_parser().parse_args(
+        [
+            "postprocess",
+            "constant-force-stage-b-anisotropy",
+            "--contract",
+            "contract.json",
+            "--output",
+            "results",
+        ]
+    )
+    assert args.contract == Path("contract.json")
+    assert args.output == Path("results")
+    assert args.func.__name__ == "_cmd_postprocess_constant_force_stage_b_anisotropy"
