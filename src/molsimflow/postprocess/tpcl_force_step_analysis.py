@@ -23,6 +23,7 @@ from molsimflow.io.lammps_dump import (
     box_lengths,
     iter_lammps_dump_records,
     minimum_image_vectors,
+    periodic_center,
 )
 from molsimflow.postprocess.constant_force_species_timeseries import (
     _frame_arrays,
@@ -154,6 +155,7 @@ def contact_line_metrics(
     contact_height_A: float,
     fixed_contact_count: int | None = None,
     edge_tail_fraction: float = 0.10,
+    bounds: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     """Measure substrate-fixed water footprint edges in both lateral axes."""
 
@@ -177,10 +179,16 @@ def contact_line_metrics(
             order = np.argsort(water_z)
             contact = np.zeros(len(water_z), dtype=bool)
             contact[order[:minimum_contact]] = True
-    substrate_xy = np.mean(unwrapped[top_mask, :2], axis=0)
-    water_xy = unwrapped[water_o_mask, :2] - substrate_xy
+    if bounds is None:
+        water_center = np.mean(unwrapped[water_o_mask, :2], axis=0)
+        water_xy = unwrapped[water_o_mask, :2] - water_center
+    else:
+        lengths = box_lengths(bounds)
+        water_wrapped = coordinates[water_o_mask]
+        water_center_3d = periodic_center(water_wrapped, bounds)
+        water_center = water_center_3d[:2]
+        water_xy = minimum_image_vectors(water_wrapped - water_center_3d, lengths)[:, :2]
     contact_xy = water_xy[contact]
-    center_xy = np.mean(water_xy, axis=0)
     contact_center = np.mean(contact_xy, axis=0)
     radial = np.linalg.norm(contact_xy - contact_center, axis=1)
     tail_count = max(5, int(math.ceil(edge_tail_fraction * len(contact_xy))))
@@ -190,8 +198,8 @@ def contact_line_metrics(
         "water_oxygen_count": int(np.count_nonzero(water_o_mask)),
         "contact_water_count": int(np.count_nonzero(contact)),
         "surface_plane_z_A": surface_plane,
-        "center_x_A": float(center_xy[0]),
-        "center_y_A": float(center_xy[1]),
+        "center_x_A": float(water_center[0]),
+        "center_y_A": float(water_center[1]),
         "trailing_x_A": float(np.mean(x_sorted[:tail_count])),
         "leading_x_A": float(np.mean(x_sorted[-tail_count:])),
         "trailing_y_A": float(np.mean(y_sorted[:tail_count])),
@@ -216,6 +224,7 @@ def initial_contact_count(run: RunSpec, contact_height_A: float) -> int:
         substrate_atoms=run.substrate_atoms,
         type_symbols=type_symbols,
         contact_height_A=contact_height_A,
+        bounds=frame.bounds,
     )
     return int(metrics["contact_water_count"])
 
@@ -228,6 +237,20 @@ def extract_kinematics(
     type_symbols = read_type_symbols(run.model_data)
     rows: list[dict[str, object]] = []
     dump = run.run_dir / "tpcl_coordinates.lammpstrj.zst"
+    motion_names, motion_values = _read_numeric_table(
+        run.run_dir / "motion_energy_stress_0p01ps.dat"
+    )
+    motion_columns = {name: index for index, name in enumerate(motion_names)}
+    substrate_displacement = {
+        int(row[0]): np.asarray(
+            [row[motion_columns["v_dxsub"]], row[motion_columns["v_dysub"]]],
+            dtype=float,
+        )
+        for row in motion_values
+    }
+    previous_center: np.ndarray | None = None
+    continuous_center: np.ndarray | None = None
+    initial_center: np.ndarray | None = None
     for frame in iter_lammps_dump_records(dump):
         ids, types, coordinates, unwrapped = _unwrapped_frame_arrays(frame)
         metrics = contact_line_metrics(
@@ -240,7 +263,34 @@ def extract_kinematics(
             type_symbols=type_symbols,
             contact_height_A=contact_height_A,
             fixed_contact_count=fixed_contact_count,
+            bounds=frame.bounds,
         )
+        wrapped_center = np.asarray([metrics["center_x_A"], metrics["center_y_A"]], dtype=float)
+        if previous_center is None:
+            continuous_center = wrapped_center.copy()
+            initial_center = wrapped_center.copy()
+        else:
+            assert continuous_center is not None
+            delta = minimum_image_vectors(
+                np.asarray([[*(wrapped_center - previous_center), 0.0]]),
+                box_lengths(frame.bounds),
+            )[0, :2]
+            continuous_center = continuous_center + delta
+        previous_center = wrapped_center
+        assert continuous_center is not None and initial_center is not None
+        if frame.timestep not in substrate_displacement:
+            raise ValueError(f"step {frame.timestep}: missing substrate displacement")
+        center_displacement = (
+            continuous_center - initial_center - substrate_displacement[frame.timestep]
+        )
+        for axis_index, axis in enumerate(("x", "y")):
+            metrics[f"center_{axis}_A"] = float(center_displacement[axis_index])
+            metrics[f"leading_{axis}_A"] = float(
+                center_displacement[axis_index] + float(metrics[f"leading_{axis}_A"])
+            )
+            metrics[f"trailing_{axis}_A"] = float(
+                center_displacement[axis_index] + float(metrics[f"trailing_{axis}_A"])
+            )
         rows.append(
             {
                 "case_id": run.case_id,
@@ -761,7 +811,7 @@ def analyze_package(
     contract = {
         "analysis_order": "kinematics_first_then_anchor_and_hbond",
         "pairing": "same_surface_forced_minus_f0_shared",
-        "kinematic_estimator": "fixed_f0_contact_population_and_10pct_tail_mean",
+        "kinematic_estimator": "periodic_center_unwrapped_collectively_fixed_f0_contact_population_and_10pct_tail_mean",
         "kinematic_smoothing_half_width_ps": 0.50,
         "minimum_event_duration_ps": 0.10,
         "contact_height_A": contact_height_A,

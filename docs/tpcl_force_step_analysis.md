@@ -12,8 +12,9 @@ for both `ch3_only` and `mixed291`. Every run must have a passing
 ## Analysis order
 
 1. Freeze the contact-water population size from the same-surface F0 parent
-   frame, then build substrate-fixed 10% tail-mean footprint edges while
-   preserving LAMMPS image flags.
+   frame, reconstruct the droplet center collectively under PBC, and build
+   substrate-fixed 10% tail-mean footprint edges. Per-molecule image flags are
+   not used as a collective contact-line coordinate.
 2. Subtract the same-surface `f0_shared` trace from each driven trace.
 3. Smooth over a 1 ps centered window and freeze persistent start, peak, and
    stall steps from leading/trailing-edge kinematics.

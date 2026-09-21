@@ -50,6 +50,34 @@ def test_donor_angle_geometry():
     assert not _donates(oh, np.asarray([-2.5, 0.0, 0.0]))
 
 
+def test_contact_edges_use_collective_periodic_center_not_atom_images():
+    top_ids = np.arange(1, 21)
+    water_ids = np.arange(101, 401, 3)
+    ids = np.concatenate((top_ids, water_ids))
+    types = np.concatenate((np.full(len(top_ids), 4), np.full(len(water_ids), 2)))
+    top = np.column_stack((np.linspace(0.1, 9.9, len(top_ids)), np.zeros(len(top_ids)), np.zeros(len(top_ids))))
+    local_x = np.linspace(-1.0, 1.0, len(water_ids))
+    water = np.column_stack(((local_x + 9.6) % 10.0, np.full(len(water_ids), 5.0), np.full(len(water_ids), 2.8)))
+    coordinates = np.vstack((top, water))
+    arbitrary_images = coordinates.copy()
+    arbitrary_images[len(top_ids) : len(top_ids) + 20, 0] += 10.0
+    bounds = np.asarray([[0.0, 10.0], [0.0, 10.0], [0.0, 20.0]])
+    common = dict(
+        ids=ids,
+        types=types,
+        coordinates=coordinates,
+        top_surface_ids=frozenset(map(int, top_ids)),
+        substrate_atoms=100,
+        type_symbols={2: "O", 4: "Si"},
+        contact_height_A=5.0,
+        bounds=bounds,
+    )
+    first = contact_line_metrics(unwrapped=coordinates, **common)
+    second = contact_line_metrics(unwrapped=arbitrary_images, **common)
+    assert math.isclose(first["leading_x_A"], second["leading_x_A"], abs_tol=1.0e-12)
+    assert math.isclose(first["trailing_x_A"], second["trailing_x_A"], abs_tol=1.0e-12)
+
+
 def test_event_selection_precedes_matched_controls():
     rows = []
     times = np.linspace(0.0, 100.0, 1001)
