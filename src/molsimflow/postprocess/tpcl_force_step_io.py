@@ -43,6 +43,13 @@ def expected_regular_steps(start_step: int, total_steps: int, stride: int) -> tu
         raise ValueError("invalid regular output schedule")
     return tuple(range(start_step + stride, start_step + total_steps + 1, stride))
 
+def expected_dump_steps(start_step: int, total_steps: int, stride: int) -> tuple[int, ...]:
+    """Return a dump cadence that includes the current parent timestep."""
+
+    return (start_step, *expected_regular_steps(start_step, total_steps, stride))
+
+
+
 
 def expected_multirate_steps(
     start_step: int,
@@ -70,7 +77,7 @@ def expected_multirate_steps(
         start_step + total_steps + 1,
         slow_stride,
     )
-    return tuple((*fast, *slow))
+    return tuple((start_step, *fast, *slow))
 
 
 def _require_file(path: Path) -> Path:
@@ -272,9 +279,9 @@ def project_production_size(
         )
     )
     dynamics_target = len(
-        expected_regular_steps(start_step, projection_total_steps, dynamics_stride)
+        expected_dump_steps(start_step, projection_total_steps, dynamics_stride)
     )
-    full_target = len(expected_regular_steps(start_step, projection_total_steps, full_stride))
+    full_target = len(expected_dump_steps(start_step, projection_total_steps, full_stride))
     table_target = len(expected_regular_steps(start_step, projection_total_steps, table_stride))
     targets = {
         "tpcl_coordinates.lammpstrj.zst": coordinate_target,
@@ -348,8 +355,8 @@ def validate_tpcl_force_step_output(
         fast_coordinate_stride,
         slow_coordinate_stride,
     )
-    dynamics_steps = expected_regular_steps(start_step, total_steps, dynamics_stride)
-    full_steps = expected_regular_steps(start_step, total_steps, full_stride)
+    dynamics_steps = expected_dump_steps(start_step, total_steps, dynamics_stride)
+    full_steps = expected_dump_steps(start_step, total_steps, full_stride)
     table_steps = expected_regular_steps(start_step, total_steps, table_stride)
     coordinates, selected_identity, _ = _validate_dump(
         root / "tpcl_coordinates.lammpstrj.zst",

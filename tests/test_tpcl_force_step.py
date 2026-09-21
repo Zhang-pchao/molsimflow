@@ -92,6 +92,7 @@ def test_build_package_freezes_paired_parent_and_static_selection(tmp_path: Path
                     "gpus_per_node": 1,
                 },
                 "cases": cases,
+                "job_name_suffix": "-r1",
             }
         ),
         encoding="utf-8",
@@ -115,5 +116,8 @@ def test_build_package_freezes_paired_parent_and_static_selection(tmp_path: Path
     smoke = (output / "04_jobs/q_smoke_m291_fx.sh").read_text()
     assert "#SBATCH --partition=gpu" in smoke
     assert "4000 smoke" in smoke
+    assert "#SBATCH --job-name=ndhf-smoke-m291-fx-r1" in smoke
     assert (output / "00_contract/RUNTIME-SHA256SUMS").is_file()
     assert "sbatch " not in smoke
+    snapshot_init = output / "05_postprocess/code_snapshot/molsimflow/postprocess/__init__.py"
+    assert "centroids" not in snapshot_init.read_text()

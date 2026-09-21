@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import stat
 import subprocess
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,9 +222,7 @@ def _copy_code_snapshot(root: Path) -> None:
     target = root / "05_postprocess/code_snapshot/molsimflow"
     selected = (
         Path("__init__.py"),
-        Path("io/__init__.py"),
         Path("io/lammps_dump.py"),
-        Path("postprocess/__init__.py"),
         Path("postprocess/constant_force_oxygen.py"),
         Path("postprocess/constant_force_species_timeseries.py"),
         Path("postprocess/tpcl_force_step_io.py"),
@@ -231,6 +231,23 @@ def _copy_code_snapshot(root: Path) -> None:
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(package_source / relative, destination)
+    (target / "io/__init__.py").write_text(
+        '"""Frozen TPCL force-step I/O snapshot."""\n',
+        encoding="utf-8",
+    )
+
+    (target / "postprocess/__init__.py").write_text(
+        '"""Frozen TPCL force-step postprocessing snapshot."""\n',
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(root / "05_postprocess/code_snapshot")
+    subprocess.run(
+        [sys.executable, "-c", "import molsimflow.postprocess.tpcl_force_step_io"],
+        check=True,
+        env=environment,
+    )
+
 
 
 def _write_runtime_manifest(root: Path) -> None:
@@ -286,6 +303,12 @@ def build_package(config_path: Path, output_dir: Path) -> dict[str, object]:
     cases = [CaseSpec.from_mapping(raw) for raw in config["cases"]]
     if {case.case_id for case in cases} != set(CASE_JOB_LABELS):
         raise ValueError("D1 requires exactly ch3_only and mixed291")
+    job_name_suffix = str(config.get("job_name_suffix", ""))
+    if job_name_suffix and (
+        not job_name_suffix.startswith("-")
+        or not job_name_suffix[1:].replace("-", "").isalnum()
+    ):
+        raise ValueError("job-name suffix must look like -r1")
     root = Path(output_dir).resolve()
     if root.exists():
         raise FileExistsError(f"refusing existing package directory: {root}")
@@ -353,7 +376,7 @@ def build_package(config_path: Path, output_dir: Path) -> dict[str, object]:
                 encoding="utf-8",
             )
             label = CASE_JOB_LABELS[spec.case_id]
-            job_name = f"ndhf-{label}-{short}"
+            job_name = f"ndhf-{label}-{short}{job_name_suffix}"
             job_path = root / "04_jobs" / f"q_{label}_{short}.sh"
             job_path.write_text(
                 _slurm_script(runtime, job_name, spec.case_id, branch, 200_000, "production"),
@@ -366,7 +389,7 @@ def build_package(config_path: Path, output_dir: Path) -> dict[str, object]:
     smoke_path.write_text(
         _slurm_script(
             runtime,
-            "ndhf-smoke-m291-fx",
+            f"ndhf-smoke-m291-fx{job_name_suffix}",
             "mixed291",
             "f8e-5_x",
             4_000,
@@ -412,6 +435,7 @@ def build_package(config_path: Path, output_dir: Path) -> dict[str, object]:
         "cases": [case.case_id for case in cases],
         "branches": [branch for branch, *_ in BRANCHES],
         "smoke": "mixed291/f8e-5_x",
+        "job_name_suffix": job_name_suffix,
         "status": "BUILT",
     }
     (root / "00_contract/BUILD.json").write_text(

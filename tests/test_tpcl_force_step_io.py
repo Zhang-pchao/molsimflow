@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from molsimflow.postprocess.tpcl_force_step_io import (
+    expected_dump_steps,
     expected_multirate_steps,
     expected_regular_steps,
     project_production_size,
@@ -11,6 +12,7 @@ from molsimflow.postprocess.tpcl_force_step_io import (
 
 def test_expected_multirate_steps_has_one_boundary_frame():
     assert expected_multirate_steps(1000, 100, 40, 10, 20) == (
+        1000,
         1010,
         1020,
         1030,
@@ -39,6 +41,10 @@ def test_expected_regular_steps_excludes_parent_frame():
     assert expected_regular_steps(1000, 40, 10) == (1010, 1020, 1030, 1040)
 
 
+def test_expected_dump_steps_includes_parent_frame():
+    assert expected_dump_steps(1000, 40, 10) == (1000, 1010, 1020, 1030, 1040)
+
+
 def test_size_projection_scales_each_output_by_its_own_cadence(tmp_path: Path):
     sizes = {
         "tpcl_coordinates.lammpstrj.zst": 200,
@@ -54,9 +60,9 @@ def test_size_projection_scales_each_output_by_its_own_cadence(tmp_path: Path):
     result = project_production_size(
         output_dir=tmp_path,
         observed_counts={
-            "coordinates": 200,
-            "dynamics": 40,
-            "full_reference": 4,
+            "coordinates": 201,
+            "dynamics": 41,
+            "full_reference": 5,
             "motion": 200,
             "force": 200,
         },
@@ -70,14 +76,14 @@ def test_size_projection_scales_each_output_by_its_own_cadence(tmp_path: Path):
         table_stride=20,
         restart_stride=10_000,
     )
-    assert result["projected_coordinate_frames"] == 3600
-    assert result["projected_dynamics_frames"] == 2000
-    assert result["projected_full_reference_frames"] == 200
+    assert result["projected_coordinate_frames"] == 3601
+    assert result["projected_dynamics_frames"] == 2001
+    assert result["projected_full_reference_frames"] == 201
     assert result["projected_table_rows"] == 10000
     assert result["projected_restart_checkpoints"] == 20
     components = result["components_bytes"]
-    assert components["tpcl_coordinates.lammpstrj.zst"] == 3600
-    assert components["tpcl_dynamics.lammpstrj.zst"] == 2000
-    assert components["full_reference.lammpstrj.zst"] == 200
+    assert components["tpcl_coordinates.lammpstrj.zst"] == 3584
+    assert components["tpcl_dynamics.lammpstrj.zst"] == 1953
+    assert components["full_reference.lammpstrj.zst"] == 161
     assert components["motion_energy_stress_0p01ps.dat"] == 10000
     assert components["restart_checkpoints_and_final"] == 210
