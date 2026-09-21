@@ -123,8 +123,6 @@ PYTHONPATH="$package_root/05_postprocess/code_snapshot" \
   --report "$output_root/VALIDATION.json" \
   > "$output_root/validation.stdout"
 
-find "$output_root" -maxdepth 1 -type f ! -name OUTPUT-SHA256SUMS -print0 \
-  | sort -z | xargs -0 sha256sum > "$output_root/OUTPUT-SHA256SUMS"
 printf 'status=PASS\nrun_result=PASS\njob_id=%s\nmode=%s\ncase=%s\nbranch=%s\n' \
   "$SLURM_JOB_ID" "$mode" "$CASE_NAME" "$BRANCH_NAME" > "$output_root/RUN-RESULT.txt"
 printf 'direction=%s\nforce_x_eV_per_A=%s\nforce_y_eV_per_A=%s\n' \
@@ -132,4 +130,6 @@ printf 'direction=%s\nforce_x_eV_per_A=%s\nforce_y_eV_per_A=%s\n' \
 printf 'parent_job_id=%s\nparent_restart_sha256=%s\nstart_step=%s\nend_step=%s\nend=%s\n' \
   "$PARENT_JOB_ID" "$PARENT_RESTART_SHA256" "$START_STEP" "$last_step" \
   "$(date --iso-8601=seconds)" >> "$output_root/RUN-RESULT.txt"
+find "$output_root" -maxdepth 1 -type f ! -name OUTPUT-SHA256SUMS -print0 \
+  | sort -z | xargs -0 sha256sum > "$output_root/OUTPUT-SHA256SUMS"
 trap - EXIT
