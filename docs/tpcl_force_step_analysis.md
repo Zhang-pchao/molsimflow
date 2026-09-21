@@ -11,10 +11,12 @@ for both `ch3_only` and `mixed291`. Every run must have a passing
 
 ## Analysis order
 
-1. Build substrate-fixed contact-footprint edges from the selected coordinate
-   stream, preserving LAMMPS image flags.
+1. Freeze the contact-water population size from the same-surface F0 parent
+   frame, then build substrate-fixed 10% tail-mean footprint edges while
+   preserving LAMMPS image flags.
 2. Subtract the same-surface `f0_shared` trace from each driven trace.
-3. Freeze start, peak, and stall steps from leading/trailing-edge kinematics.
+3. Smooth over a 1 ps centered window and freeze persistent start, peak, and
+   stall steps from leading/trailing-edge kinematics.
 4. Match non-event controls within the same branch and output-cadence phase.
 5. Only after event selection, evaluate SiOH--water H-bond anchoring and TPCL
    water-network turnover from the full-reference stream.

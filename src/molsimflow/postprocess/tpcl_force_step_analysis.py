@@ -152,6 +152,8 @@ def contact_line_metrics(
     substrate_atoms: int,
     type_symbols: Mapping[int, str],
     contact_height_A: float,
+    fixed_contact_count: int | None = None,
+    edge_tail_fraction: float = 0.10,
 ) -> dict[str, float | int]:
     """Measure substrate-fixed water footprint edges in both lateral axes."""
 
@@ -162,34 +164,67 @@ def contact_line_metrics(
         raise ValueError("insufficient top-surface or water-oxygen support")
     surface_plane = float(np.quantile(coordinates[top_mask, 2], 0.995))
     water_z = coordinates[water_o_mask, 2]
-    contact = water_z <= surface_plane + contact_height_A
     minimum_contact = max(50, int(math.ceil(0.05 * len(water_z))))
-    if np.count_nonzero(contact) < minimum_contact:
+    if fixed_contact_count is not None:
+        if fixed_contact_count < minimum_contact or fixed_contact_count > len(water_z):
+            raise ValueError("fixed contact count is outside the supported range")
         order = np.argsort(water_z)
         contact = np.zeros(len(water_z), dtype=bool)
-        contact[order[:minimum_contact]] = True
+        contact[order[:fixed_contact_count]] = True
+    else:
+        contact = water_z <= surface_plane + contact_height_A
+        if np.count_nonzero(contact) < minimum_contact:
+            order = np.argsort(water_z)
+            contact = np.zeros(len(water_z), dtype=bool)
+            contact[order[:minimum_contact]] = True
     substrate_xy = np.mean(unwrapped[top_mask, :2], axis=0)
     water_xy = unwrapped[water_o_mask, :2] - substrate_xy
     contact_xy = water_xy[contact]
     center_xy = np.mean(water_xy, axis=0)
     contact_center = np.mean(contact_xy, axis=0)
     radial = np.linalg.norm(contact_xy - contact_center, axis=1)
+    tail_count = max(5, int(math.ceil(edge_tail_fraction * len(contact_xy))))
+    x_sorted = np.sort(contact_xy[:, 0])
+    y_sorted = np.sort(contact_xy[:, 1])
     return {
         "water_oxygen_count": int(np.count_nonzero(water_o_mask)),
         "contact_water_count": int(np.count_nonzero(contact)),
         "surface_plane_z_A": surface_plane,
         "center_x_A": float(center_xy[0]),
         "center_y_A": float(center_xy[1]),
-        "trailing_x_A": float(np.quantile(contact_xy[:, 0], 0.02)),
-        "leading_x_A": float(np.quantile(contact_xy[:, 0], 0.98)),
-        "trailing_y_A": float(np.quantile(contact_xy[:, 1], 0.02)),
-        "leading_y_A": float(np.quantile(contact_xy[:, 1], 0.98)),
+        "trailing_x_A": float(np.mean(x_sorted[:tail_count])),
+        "leading_x_A": float(np.mean(x_sorted[-tail_count:])),
+        "trailing_y_A": float(np.mean(y_sorted[:tail_count])),
+        "leading_y_A": float(np.mean(y_sorted[-tail_count:])),
         "contact_radius_q50_A": float(np.quantile(radial, 0.50)),
         "contact_radius_q90_A": float(np.quantile(radial, 0.90)),
     }
 
 
-def extract_kinematics(run: RunSpec, contact_height_A: float) -> list[dict[str, object]]:
+def initial_contact_count(run: RunSpec, contact_height_A: float) -> int:
+    """Freeze the per-surface contact population from the shared F0 parent frame."""
+
+    type_symbols = read_type_symbols(run.model_data)
+    frame = next(iter(iter_lammps_dump_records(run.run_dir / "tpcl_coordinates.lammpstrj.zst")))
+    ids, types, coordinates, unwrapped = _unwrapped_frame_arrays(frame)
+    metrics = contact_line_metrics(
+        ids=ids,
+        types=types,
+        coordinates=coordinates,
+        unwrapped=unwrapped,
+        top_surface_ids=run.top_surface_ids,
+        substrate_atoms=run.substrate_atoms,
+        type_symbols=type_symbols,
+        contact_height_A=contact_height_A,
+    )
+    return int(metrics["contact_water_count"])
+
+
+def extract_kinematics(
+    run: RunSpec,
+    contact_height_A: float,
+    fixed_contact_count: int,
+) -> list[dict[str, object]]:
     type_symbols = read_type_symbols(run.model_data)
     rows: list[dict[str, object]] = []
     dump = run.run_dir / "tpcl_coordinates.lammpstrj.zst"
@@ -204,6 +239,7 @@ def extract_kinematics(run: RunSpec, contact_height_A: float) -> list[dict[str, 
             substrate_atoms=run.substrate_atoms,
             type_symbols=type_symbols,
             contact_height_A=contact_height_A,
+            fixed_contact_count=fixed_contact_count,
         )
         rows.append(
             {
@@ -269,7 +305,7 @@ def paired_kinematics(
     times = np.asarray([float(row["time_ps"]) for row in rows])
     for field in ("leading_response_A", "trailing_response_A", "edge_center_response_A"):
         values = np.asarray([float(row[field]) for row in rows])
-        smooth = _window_mean(times, values, 0.10)
+        smooth = _window_mean(times, values, 0.50)
         rate = np.gradient(smooth, times, edge_order=1)
         for row, smoothed, derivative in zip(rows, smooth, rate):
             row[field.replace("_A", "_smooth_A")] = float(smoothed)
@@ -281,7 +317,8 @@ def select_kinematic_events(
     rows: Sequence[Mapping[str, object]],
     *,
     minimum_rate_A_per_ps: float = 0.02,
-    maximum_events: int = 12,
+    maximum_events: int = 8,
+    minimum_duration_ps: float = 0.10,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, float]]:
     """Freeze advance episodes and matched non-events using kinematics only."""
 
@@ -290,7 +327,7 @@ def select_kinematic_events(
     rates = np.asarray([float(row["edge_center_response_rate_A_per_ps"]) for row in rows])
     median = float(np.median(rates))
     mad = float(np.median(np.abs(rates - median)))
-    threshold = max(minimum_rate_A_per_ps, median + 3.0 * 1.4826 * mad, float(np.quantile(rates, 0.95)))
+    threshold = max(minimum_rate_A_per_ps, median + 4.0 * 1.4826 * mad)
     active = rates >= threshold
     episodes: list[tuple[int, int]] = []
     start: int | None = None
@@ -306,13 +343,15 @@ def select_kinematic_events(
             start = None
     candidates: list[tuple[float, int, int, int]] = []
     for left, right in episodes:
+        if float(rows[right]["time_ps"]) - float(rows[left]["time_ps"]) < minimum_duration_ps:
+            continue
         peak = left + int(np.argmax(rates[left : right + 1]))
         candidates.append((float(rates[peak]), left, peak, right))
     candidates.sort(reverse=True)
     accepted: list[tuple[float, int, int, int]] = []
     for candidate in candidates:
         peak_time = float(rows[candidate[2]]["time_ps"])
-        if all(abs(peak_time - float(rows[item[2]]["time_ps"])) >= 0.75 for item in accepted):
+        if all(abs(peak_time - float(rows[item[2]]["time_ps"])) >= 2.0 for item in accepted):
             accepted.append(candidate)
         if len(accepted) >= maximum_events:
             break
@@ -361,7 +400,7 @@ def select_kinematic_events(
                 continue
             if (0 if time <= 20.0 else 1) != phase:
                 continue
-            if any(abs(time - float(item["peak_time_ps"])) < 1.5 for item in events):
+            if any(abs(time - float(item["peak_time_ps"])) < 2.0 for item in events):
                 continue
             if float(row["edge_center_response_rate_A_per_ps"]) >= 0.5 * threshold:
                 continue
@@ -722,6 +761,9 @@ def analyze_package(
     contract = {
         "analysis_order": "kinematics_first_then_anchor_and_hbond",
         "pairing": "same_surface_forced_minus_f0_shared",
+        "kinematic_estimator": "fixed_f0_contact_population_and_10pct_tail_mean",
+        "kinematic_smoothing_half_width_ps": 0.50,
+        "minimum_event_duration_ps": 0.10,
         "contact_height_A": contact_height_A,
         "oo_cutoff_A": oo_cutoff_A,
         "event_controls": "same_branch_same_output_phase_matched_non_event",
@@ -739,9 +781,17 @@ def analyze_package(
     kinematics: dict[tuple[str, str], list[dict[str, object]]] = {}
     anchors: dict[tuple[str, str], list[dict[str, object]]] = {}
     run_by_key = {(run.case_id, run.branch_id): run for run in runs}
+    fixed_contact_counts = {
+        case_id: initial_contact_count(run_by_key[(case_id, "f0_shared")], contact_height_A)
+        for case_id in ("ch3_only", "mixed291")
+    }
     for run in runs:
         key = (run.case_id, run.branch_id)
-        kinematics[key] = extract_kinematics(run, contact_height_A)
+        kinematics[key] = extract_kinematics(
+            run,
+            contact_height_A,
+            fixed_contact_counts[run.case_id],
+        )
         anchors[key] = extract_anchor_dynamics(run, contact_height_A, oo_cutoff_A)
         _write_tsv(output / "02_kinematics" / f"{run.case_id}__{run.branch_id}.tsv", kinematics[key])
         _write_tsv(output / "05_anchors" / f"{run.case_id}__{run.branch_id}.tsv", anchors[key])
