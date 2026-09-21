@@ -63,8 +63,8 @@ def test_size_projection_scales_each_output_by_its_own_cadence(tmp_path: Path):
             "coordinates": 201,
             "dynamics": 41,
             "full_reference": 5,
-            "motion": 200,
-            "force": 200,
+            "motion": 201,
+            "force": 201,
         },
         start_step=36_200_000,
         projection_total_steps=200_000,
@@ -79,11 +79,11 @@ def test_size_projection_scales_each_output_by_its_own_cadence(tmp_path: Path):
     assert result["projected_coordinate_frames"] == 3601
     assert result["projected_dynamics_frames"] == 2001
     assert result["projected_full_reference_frames"] == 201
-    assert result["projected_table_rows"] == 10000
+    assert result["projected_table_rows"] == 10001
     assert result["projected_restart_checkpoints"] == 20
     components = result["components_bytes"]
     assert components["tpcl_coordinates.lammpstrj.zst"] == 3584
     assert components["tpcl_dynamics.lammpstrj.zst"] == 1953
     assert components["full_reference.lammpstrj.zst"] == 161
-    assert components["motion_energy_stress_0p01ps.dat"] == 10000
+    assert components["motion_energy_stress_0p01ps.dat"] == 9952
     assert components["restart_checkpoints_and_final"] == 210

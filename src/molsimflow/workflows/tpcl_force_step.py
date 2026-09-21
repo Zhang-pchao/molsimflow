@@ -242,12 +242,14 @@ def _copy_code_snapshot(root: Path) -> None:
     )
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(root / "05_postprocess/code_snapshot")
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     subprocess.run(
         [sys.executable, "-c", "import molsimflow.postprocess.tpcl_force_step_io"],
         check=True,
         env=environment,
     )
-
+    for pycache in (root / "05_postprocess/code_snapshot").rglob("__pycache__"):
+        shutil.rmtree(pycache)
 
 
 def _write_runtime_manifest(root: Path) -> None:

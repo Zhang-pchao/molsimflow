@@ -121,3 +121,4 @@ def test_build_package_freezes_paired_parent_and_static_selection(tmp_path: Path
     assert "sbatch " not in smoke
     snapshot_init = output / "05_postprocess/code_snapshot/molsimflow/postprocess/__init__.py"
     assert "centroids" not in snapshot_init.read_text()
+    assert not list((output / "05_postprocess/code_snapshot").rglob("__pycache__"))

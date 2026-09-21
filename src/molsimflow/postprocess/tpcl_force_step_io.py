@@ -282,7 +282,7 @@ def project_production_size(
         expected_dump_steps(start_step, projection_total_steps, dynamics_stride)
     )
     full_target = len(expected_dump_steps(start_step, projection_total_steps, full_stride))
-    table_target = len(expected_regular_steps(start_step, projection_total_steps, table_stride))
+    table_target = len(expected_dump_steps(start_step, projection_total_steps, table_stride))
     targets = {
         "tpcl_coordinates.lammpstrj.zst": coordinate_target,
         "tpcl_dynamics.lammpstrj.zst": dynamics_target,
@@ -357,7 +357,7 @@ def validate_tpcl_force_step_output(
     )
     dynamics_steps = expected_dump_steps(start_step, total_steps, dynamics_stride)
     full_steps = expected_dump_steps(start_step, total_steps, full_stride)
-    table_steps = expected_regular_steps(start_step, total_steps, table_stride)
+    table_steps = expected_dump_steps(start_step, total_steps, table_stride)
     coordinates, selected_identity, _ = _validate_dump(
         root / "tpcl_coordinates.lammpstrj.zst",
         COORDINATE_FIELDS,
