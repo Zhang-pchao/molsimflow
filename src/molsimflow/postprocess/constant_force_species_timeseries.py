@@ -217,12 +217,30 @@ def _frame_arrays(
     return ids, types, coordinates
 
 
+def _validate_box_boundary(frame: LammpsDumpFrame, *, periodic_z: bool) -> None:
+    """Reject a contract whose distance convention disagrees with dump boundaries."""
+
+    flags = frame.box_header.split()[3:]
+    if len(flags) < 3 or any(len(flag) != 2 or set(flag) - set("pfsm") for flag in flags[-3:]):
+        raise ValueError(
+            f"step {frame.timestep} has unsupported box boundary header: {frame.box_header}"
+        )
+    x_flag, y_flag, z_flag = flags[-3:]
+    if x_flag != "pp" or y_flag != "pp" or (z_flag == "pp") != periodic_z:
+        raise ValueError(
+            f"step {frame.timestep} boundary {x_flag} {y_flag} {z_flag} "
+            f"conflicts with periodic x/y and periodic_z={periodic_z}"
+        )
+
+
 def _periodic_query(
     sources: np.ndarray,
     targets: np.ndarray,
     bounds: np.ndarray,
+    *,
+    periodic_z: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return nearest target index and distance with periodic x/y and open z."""
+    """Return nearest target index with periodic x/y and configurable z."""
 
     from scipy.spatial import cKDTree
 
@@ -230,13 +248,16 @@ def _periodic_query(
         return np.full(len(sources), -1, dtype=int), np.full(len(sources), np.inf)
     lengths = box_lengths(bounds)
     pseudo_z = max(1.0e5, 10.0 * lengths[2])
-    box = np.asarray([lengths[0], lengths[1], pseudo_z])
+    box = lengths if periodic_z else np.asarray([lengths[0], lengths[1], pseudo_z])
 
     def normalize(values: np.ndarray) -> np.ndarray:
         result = np.empty_like(values, dtype=float)
         result[:, 0] = (values[:, 0] - bounds[0, 0]) % lengths[0]
         result[:, 1] = (values[:, 1] - bounds[1, 0]) % lengths[1]
-        result[:, 2] = values[:, 2] - bounds[2, 0] + 0.25 * pseudo_z
+        if periodic_z:
+            result[:, 2] = (values[:, 2] - bounds[2, 0]) % lengths[2]
+        else:
+            result[:, 2] = values[:, 2] - bounds[2, 0] + 0.25 * pseudo_z
         return result
 
     distance, index = cKDTree(normalize(targets), boxsize=box).query(
@@ -250,6 +271,8 @@ def identify_fixed_carbon_hydrogen_ids(
     model_data: Path,
     type_symbols: Mapping[int, str],
     ch_cutoff_A: float,
+    *,
+    periodic_z: bool = False,
 ) -> set[int]:
     """Identify model-defined methyl H atoms and keep them out of proton accounting."""
 
@@ -259,7 +282,9 @@ def identify_fixed_carbon_hydrogen_ids(
     c_indices = np.where(symbols == "C")[0]
     if len(c_indices) == 0:
         return set()
-    nearest_c, distance_c = _periodic_query(coordinates[h_indices], coordinates[c_indices], bounds)
+    nearest_c, distance_c = _periodic_query(
+        coordinates[h_indices], coordinates[c_indices], bounds, periodic_z=periodic_z
+    )
     fixed: set[int] = set()
     for carbon_index in range(len(c_indices)):
         candidates = np.where((nearest_c == carbon_index) & (distance_c <= ch_cutoff_A))[0]
@@ -278,6 +303,8 @@ def assign_hydrogen_parents(
     type_symbols: Mapping[int, str],
     oh_cutoff_A: float,
     fixed_carbon_hydrogen_ids: set[int],
+    *,
+    periodic_z: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Assign non-methyl H to the nearest valid O and return oxygen parent IDs."""
 
@@ -286,7 +313,9 @@ def assign_hydrogen_parents(
     o_indices = np.where(symbols == "O")[0]
     if len(h_indices) == 0 or len(o_indices) == 0:
         raise ValueError("Species assignment requires hydrogen and oxygen atoms")
-    nearest_o, distance_o = _periodic_query(coordinates[h_indices], coordinates[o_indices], bounds)
+    nearest_o, distance_o = _periodic_query(
+        coordinates[h_indices], coordinates[o_indices], bounds, periodic_z=periodic_z
+    )
     valid_o = distance_o <= oh_cutoff_A
     fixed_carbon = np.asarray(
         [int(atom_id) in fixed_carbon_hydrogen_ids for atom_id in ids[h_indices]],
@@ -384,7 +413,11 @@ def _assignment_events(
                     "to_region": new_region,
                     "event_class": f"{old_region}_TO_{new_region}",
                     "new_assignment_duration_ps": duration,
-                    "persistent": str(duration >= minimum_persistence_ps).lower(),
+                    "persistent": str(
+                        old_region != "UNASSIGNED"
+                        and new_region != "UNASSIGNED"
+                        and duration >= minimum_persistence_ps
+                    ).lower(),
                 }
             )
     return rows
@@ -429,6 +462,9 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         cutoffs.append(primary_cutoff)
         cutoffs.sort()
     ch_cutoff = float(raw.get("ch_cutoff_A", 1.25))
+    periodic_z = raw.get("periodic_z", False)
+    if not isinstance(periodic_z, bool):
+        raise ValueError("periodic_z must be a boolean")
     minimum_persistence = float(raw.get("minimum_persistence_ps", 20.0))
     base = contract_path.parent
     rows: list[dict[str, object]] = []
@@ -456,6 +492,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
             model_data,
             type_symbols,
             ch_cutoff,
+            periodic_z=periodic_z,
         )
         solution_ids = _read_ids(solution_ids_path)
         for path in [model_data, solution_ids_path, *paths]:
@@ -479,6 +516,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                 previous_step = frame.timestep
                 if (frame.timestep - origin) % sampling_stride != 0:
                     continue
+                _validate_box_boundary(frame, periodic_z=periodic_z)
                 ids, types, coordinates = _frame_arrays(frame)
                 primary_assignment: np.ndarray | None = None
                 hydrogen_ids: np.ndarray | None = None
@@ -491,6 +529,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                         type_symbols,
                         cutoff,
                         fixed_carbon_hydrogen_ids,
+                        periodic_z=periodic_z,
                     )
                     metrics = species_metrics(
                         oxygen_ids,
@@ -595,7 +634,13 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
                 "cutoff_H3O_max_spread": cutoff_spread,
                 "inventory_integrity_gate": "PASS" if inventory_pass else "FAIL",
                 "proton_partition_stationarity": (
-                    "STABLE_LAST_50PS_CANDIDATE" if last_range <= 3 else "VARIABLE_LAST_50PS"
+                    "NOT_ASSESSED_SHORT_WINDOW"
+                    if times[-1] - times[0] < 50.0
+                    else (
+                        "STABLE_LAST_50PS_CANDIDATE"
+                        if last_range <= 3
+                        else "VARIABLE_LAST_50PS"
+                    )
                 ),
             }
         )
@@ -627,6 +672,7 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "partition_events": len(event_rows),
         "persistent_partition_events": sum(row["persistent"] == "true" for row in event_rows),
         "species_definition": "nearest-parent geometric proxy, not formal charge",
+        "periodic_z": periodic_z,
         "scientific_limit": "descriptive time series; proton identity is cutoff sensitive",
     }
     (output / "summary.json").write_text(
@@ -637,7 +683,8 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         "# Constant-force species and proton-partition time series\n\n"
         "Species labels are nearest-parent geometric proxies, not formal charges. "
         "The inventory gate checks the accepted endpoint independently from the "
-        "descriptive proton-partition stationarity label.\n",
+        "descriptive proton-partition stationarity label. "
+        f"O-H assignment uses periodic x/y and {'periodic' if periodic_z else 'open'} z.\n",
         encoding="utf-8",
     )
     write_output_hashes(output)
