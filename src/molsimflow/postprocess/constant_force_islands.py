@@ -247,7 +247,11 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
         previous_centers: dict[int, tuple[np.ndarray, np.ndarray, float]] = {}
         next_track = 1
         previous_step: int | None = None
-        for frame in iter_oxygen_frames(paths):
+        maximum_timestep = entry.get("maximum_timestep")
+        for frame in iter_oxygen_frames(
+            paths,
+            int(maximum_timestep) if maximum_timestep else None,
+        ):
             time_ps = (frame.timestep - origin) * timestep_fs / 1000.0
             component_indices = connected_components(frame.coordinates, frame.bounds, cutoff)
             components = [set(frame.atom_ids[index].tolist()) for index in component_indices]

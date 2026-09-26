@@ -5,6 +5,7 @@ from molsimflow.io.lammps_dump import (
     cylinder_membership,
     iter_lammps_dump_frames,
     iter_lammps_dump_records,
+    iter_lammps_dump_records_until,
     midpoint_minimum_image,
     periodic_center,
     validate_lammps_dump_bundle,
@@ -68,6 +69,27 @@ def test_full_dump_records_preserve_extra_atom_columns(tmp_path):
     reread = next(iter_lammps_dump_records(output))
     assert reread.atom_fields == ("id", "type", "x", "y", "z", "charge")
     assert reread.atom_rows[0][-1] == "-0.4"
+
+
+def test_bounded_dump_reader_skips_damaged_next_frame(tmp_path):
+    source = tmp_path / "damaged-tail.lammpstrj"
+    source.write_text(
+        "ITEM: TIMESTEP\n10\n"
+        "ITEM: NUMBER OF ATOMS\n1\n"
+        "ITEM: BOX BOUNDS pp pp pp\n0 10\n0 10\n0 10\n"
+        "ITEM: ATOMS id type x y z\n1 2 1 2 3\n"
+        "ITEM: TIMESTEP\n20\n"
+        "ITEM: NUMBER OF ATOMS\n1\n"
+        "ITEM: BOX BOUNDS pp pp pp\n0 10\n0 10\n0 10\n"
+        "ITEM: ATOMS id type x y z\n1 2 4\n",
+        encoding="utf-8",
+    )
+
+    frames = list(iter_lammps_dump_records_until(source, maximum_timestep=10))
+
+    assert [frame.timestep for frame in frames] == [10]
+    with np.testing.assert_raises_regex(ValueError, "Atom column count mismatch"):
+        list(iter_lammps_dump_records(source))
 
 
 def test_validate_lammps_dump_bundle(tmp_path):

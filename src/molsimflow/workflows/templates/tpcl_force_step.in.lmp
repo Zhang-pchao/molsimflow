@@ -1,0 +1,162 @@
+# High-frequency paired force-step TPCL microdynamics.
+units metal
+boundary p p f
+atom_style atomic/kk
+atom_modify map yes
+read_restart ${RESTART}
+timestep 0.0005
+run_style verlet/kk
+neighbor 1.0 bin
+neigh_modify every 1 delay 0 check yes
+
+pair_style deepmd/kk ${MODEL}
+pair_coeff * * H O N Na Cl Ti C Si
+include ${GROUP_FILE}
+
+# Store the force before external post-force modifications.
+fix RAW all store/force
+velocity anchor set 0.0 0.0 0.0
+fix ANCHOR anchor setforce 0.0 0.0 0.0
+compute Tsub mobile_substrate temp/com
+compute Tliq water temp/com
+fix BATH mobile_substrate nvt/kk temp 330.0 330.0 0.1
+fix_modify BATH temp Tsub
+fix LIQ water nve/kk
+
+suffix off
+fix DRIVE upperAllO addforce ${FORCE_X} ${FORCE_Y} 0.0
+fix_modify DRIVE energy no
+fix WALL all wall/reflect zlo EDGE zhi EDGE units box
+suffix kk
+
+compute COMsub substrate com
+compute COMwater water com
+compute COMdriveO upperAllO com
+compute FrawAll all reduce sum f_RAW[1] f_RAW[2] f_RAW[3]
+compute FrawSub substrate reduce sum f_RAW[1] f_RAW[2] f_RAW[3]
+compute FrawWater water reduce sum f_RAW[1] f_RAW[2] f_RAW[3]
+compute FrawDriveO upperAllO reduce sum f_RAW[1] f_RAW[2] f_RAW[3]
+compute FnetWater water reduce sum fx fy fz
+compute FnetDriveO upperAllO reduce sum fx fy fz
+variable rawmag atom sqrt(f_RAW[1]*f_RAW[1]+f_RAW[2]*f_RAW[2]+f_RAW[3]*f_RAW[3])
+variable ospeed atom sqrt(vx*vx+vy*vy+vz*vz)
+compute FrawMax all reduce max v_rawmag
+compute OSpeedMax upperAllO reduce max v_ospeed
+compute ZminWater water reduce min z
+compute ZmaxWater water reduce max z
+
+variable nanchor equal count(anchor)
+variable nwater equal count(water)
+variable nwaterO equal count(waterO)
+variable ndriveO equal count(upperAllO)
+variable nselected equal count(tpclAnalysis)
+variable vsubx equal vcm(substrate,x)
+variable vsuby equal vcm(substrate,y)
+variable vsubz equal vcm(substrate,z)
+variable vwaterx equal vcm(water,x)
+variable vwatery equal vcm(water,y)
+variable vwaterz equal vcm(water,z)
+variable vdriveOx equal vcm(upperAllO,x)
+variable vdriveOy equal vcm(upperAllO,y)
+variable vdriveOz equal vcm(upperAllO,z)
+variable fexpectedx equal ${NDRIVE_O}*${FORCE_X}
+variable fexpectedy equal ${NDRIVE_O}*${FORCE_Y}
+variable factualx equal c_FnetDriveO[1]-c_FrawDriveO[1]
+variable factualy equal c_FnetDriveO[2]-c_FrawDriveO[2]
+variable ferrx equal abs(v_factualx-v_fexpectedx)
+variable ferry equal abs(v_factualy-v_fexpectedy)
+variable pxx_box equal pxx
+variable pyy_box equal pyy
+variable pzz_box equal pzz
+variable pxy_box equal pxy
+variable pxz_box equal pxz
+variable pyz_box equal pyz
+
+thermo_style custom step time temp c_Tsub c_Tliq pe ke etotal f_BATH &
+    pxx pyy pzz pxy pxz pyz c_COMdriveO[1] c_COMdriveO[2] &
+    c_COMsub[1] c_COMsub[2] v_factualx v_factualy c_FrawMax c_OSpeedMax
+run 0 post no
+print "ANCHOR_COUNT=$(v_nanchor:%.0f)"
+print "WATER_ATOM_COUNT=$(v_nwater:%.0f)"
+print "WATER_O_COUNT=$(v_nwaterO:%.0f)"
+print "DRIVE_O_COUNT=$(v_ndriveO:%.0f)"
+print "TPCL_ANALYSIS_COUNT=$(v_nselected:%.0f)"
+print "ADDED_FORCE_X=$(v_factualx:%.16g) EXPECTED=$(v_fexpectedx:%.16g)"
+print "ADDED_FORCE_Y=$(v_factualy:%.16g) EXPECTED=$(v_fexpectedy:%.16g)"
+if "$(step) != ${START_STEP}" then "quit 2"
+if "${nanchor} != ${NANCHOR}" then "quit 2"
+if "${nwater} != ${NWATER}" then "quit 2"
+if "${nwaterO} != ${NDRIVE_O}" then "quit 2"
+if "${ndriveO} != ${NDRIVE_O}" then "quit 2"
+if "${nselected} != ${NSELECTED}" then "quit 2"
+if "${ferrx} > 1.0e-9" then "quit 2"
+if "${ferry} > 1.0e-9" then "quit 2"
+
+variable xO0 equal $(c_COMdriveO[1]:%.16g)
+variable yO0 equal $(c_COMdriveO[2]:%.16g)
+variable xsub0 equal $(c_COMsub[1]:%.16g)
+variable ysub0 equal $(c_COMsub[2]:%.16g)
+variable xrel0 equal $(c_COMdriveO[1]-c_COMsub[1]:%.16g)
+variable yrel0 equal $(c_COMdriveO[2]-c_COMsub[2]:%.16g)
+variable dxO equal c_COMdriveO[1]-v_xO0
+variable dyO equal c_COMdriveO[2]-v_yO0
+variable dxsub equal c_COMsub[1]-v_xsub0
+variable dysub equal c_COMsub[2]-v_ysub0
+variable dxrel equal c_COMdriveO[1]-c_COMsub[1]-v_xrel0
+variable dyrel equal c_COMdriveO[2]-c_COMsub[2]-v_yrel0
+variable vrelx equal v_vdriveOx-v_vsubx
+variable vrely equal v_vdriveOy-v_vsuby
+variable drivework equal ${NDRIVE_O}*(${FORCE_X}*v_dxO+${FORCE_Y}*v_dyO)
+variable drivepower equal ${NDRIVE_O}*(${FORCE_X}*v_vdriveOx+${FORCE_Y}*v_vdriveOy)
+variable guardF equal c_FrawMax
+variable guardV equal c_OSpeedMax
+variable guardT equal c_Tliq
+
+fix HALT_FORCE all halt 10 v_guardF > ${MAX_RAW_FORCE} error hard message yes
+fix HALT_SPEED all halt 10 v_guardV > ${MAX_O_SPEED} error hard message yes
+fix HALT_TEMP all halt 100 v_guardT > ${MAX_WATER_TEMP} error hard message yes
+fix MOTION all ave/time ${TABLE_FREQ} 1 ${TABLE_FREQ} &
+    c_COMsub[1] c_COMsub[2] c_COMsub[3] &
+    c_COMwater[1] c_COMwater[2] c_COMwater[3] &
+    c_COMdriveO[1] c_COMdriveO[2] c_COMdriveO[3] &
+    v_vsubx v_vsuby v_vsubz v_vwaterx v_vwatery v_vwaterz &
+    v_vdriveOx v_vdriveOy v_vdriveOz &
+    v_dxO v_dyO v_dxsub v_dysub v_dxrel v_dyrel v_vrelx v_vrely &
+    v_drivework v_drivepower c_Tsub c_Tliq f_BATH &
+    v_pxx_box v_pyy_box v_pzz_box v_pxy_box v_pxz_box v_pyz_box &
+    c_FrawMax c_OSpeedMax c_ZminWater c_ZmaxWater v_factualx v_factualy &
+    v_fexpectedx v_fexpectedy &
+    file ${OUTDIR}/motion_energy_stress_0p01ps.dat format %20.12g
+fix FORCE all ave/time ${TABLE_FREQ} 1 ${TABLE_FREQ} &
+    c_FrawAll[1] c_FrawAll[2] c_FrawAll[3] &
+    c_FrawSub[1] c_FrawSub[2] c_FrawSub[3] &
+    c_FrawWater[1] c_FrawWater[2] c_FrawWater[3] &
+    c_FnetWater[1] c_FnetWater[2] c_FnetWater[3] &
+    c_FrawDriveO[1] c_FrawDriveO[2] c_FrawDriveO[3] &
+    c_FnetDriveO[1] c_FnetDriveO[2] c_FnetDriveO[3] &
+    file ${OUTDIR}/force_sums_0p01ps.dat format %20.12g
+
+thermo_style custom step time temp c_Tsub c_Tliq pe ke etotal f_BATH &
+    pxx pyy pzz pxy pxz pyz v_dxrel v_dyrel v_vrelx v_vrely &
+    v_drivework v_drivepower c_FrawMax c_OSpeedMax &
+    c_ZminWater c_ZmaxWater v_factualx v_factualy
+thermo ${TABLE_FREQ}
+thermo_modify lost error flush yes format float %20.12g
+
+dump TPCLCOORD tpclAnalysis custom/zstd ${FAST_COORD_FREQ} &
+    ${OUTDIR}/tpcl_coordinates.lammpstrj.zst id type x y z ix iy iz
+dump_modify TPCLCOORD sort id format float %.12g
+dump TPCLDYN tpclAnalysis custom/zstd ${DYNAMICS_FREQ} &
+    ${OUTDIR}/tpcl_dynamics.lammpstrj.zst &
+    id type vx vy vz fx fy fz f_RAW[1] f_RAW[2] f_RAW[3]
+dump_modify TPCLDYN sort id format float %.12g
+dump FULL all custom/zstd ${FULL_FREQ} ${OUTDIR}/full_reference.lammpstrj.zst &
+    id type x y z ix iy iz
+dump_modify FULL sort id format float %.12g
+
+restart ${RESTART_FREQ} ${OUTDIR}/restart.*.bin
+run ${FAST_STEPS}
+dump_modify TPCLCOORD every ${SLOW_COORD_FREQ}
+run ${SLOW_STEPS}
+write_restart ${OUTDIR}/final.restart
+write_data ${OUTDIR}/final.data

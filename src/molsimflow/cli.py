@@ -2434,6 +2434,19 @@ def _cmd_postprocess_constant_force_layers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_postprocess_constant_force_species_timeseries(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_species_timeseries import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"case_branches={summary['case_branches']} "
+        f"timeseries_rows={summary['timeseries_rows']} "
+        f"partition_events={summary['partition_events']}"
+    )
+    return 0
+
+
 def _cmd_postprocess_constant_force_water_structure(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.constant_force_water_structure import run_contract
 
@@ -2497,6 +2510,47 @@ def _cmd_postprocess_constant_force_stage_b_layers(args: argparse.Namespace) -> 
         f"case_branches={summary['case_branches']} "
         f"frame_rows={summary['frame_rows']} "
         f"block_rows={summary['block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_b_anisotropy(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_b_anisotropy import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"cases={summary['case_count']} "
+        f"branches={summary['branch_count']} "
+        f"response_rows={summary['response_matrix_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_c_synthesis(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_c_synthesis import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"response_rows={summary['response_comparison_rows']} "
+        f"event_blocks={summary['event_conditioned_block_rows']} "
+        f"partition_blocks={summary['partition_layer_block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_estimator_consistency(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_estimator_consistency import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"response_rows={summary['response_comparison_rows']} "
+        f"block_rows={summary['response_block_rows']} "
+        f"longitudinal_sign_matches="
+        f"{summary['longitudinal_high_frequency_displacement_sign_matches']}/"
+        f"{summary['longitudinal_high_frequency_displacement_sign_total']}"
     )
     return 0
 
@@ -4525,6 +4579,16 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_layers.add_argument("--output", type=Path, required=True)
     constant_force_layers.set_defaults(func=_cmd_postprocess_constant_force_layers)
 
+    constant_force_species_timeseries = postprocess_subparsers.add_parser(
+        "constant-force-species-timeseries",
+        help="Audit geometric water/surface proton partition through time",
+    )
+    constant_force_species_timeseries.add_argument("--contract", type=Path, required=True)
+    constant_force_species_timeseries.add_argument("--output", type=Path, required=True)
+    constant_force_species_timeseries.set_defaults(
+        func=_cmd_postprocess_constant_force_species_timeseries
+    )
+
     constant_force_water_structure = postprocess_subparsers.add_parser(
         "constant-force-water-structure",
         help="Analyze morphology-aware H bonds, water order, turnover, and residence",
@@ -4571,6 +4635,36 @@ def build_parser() -> argparse.ArgumentParser:
     constant_force_stage_b_layers.add_argument("--output", type=Path, required=True)
     constant_force_stage_b_layers.set_defaults(
         func=_cmd_postprocess_constant_force_stage_b_layers
+    )
+
+    constant_force_stage_b_anisotropy = postprocess_subparsers.add_parser(
+        "constant-force-stage-b-anisotropy",
+        help="Map morphology-aware residence, current, and response anisotropy",
+    )
+    constant_force_stage_b_anisotropy.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_b_anisotropy.add_argument("--output", type=Path, required=True)
+    constant_force_stage_b_anisotropy.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_b_anisotropy
+    )
+
+    constant_force_stage_c_synthesis = postprocess_subparsers.add_parser(
+        "constant-force-stage-c-synthesis",
+        help="Compare replica responses and screen event and species-layer associations",
+    )
+    constant_force_stage_c_synthesis.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_c_synthesis.add_argument("--output", type=Path, required=True)
+    constant_force_stage_c_synthesis.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_c_synthesis
+    )
+
+    constant_force_estimator_consistency = postprocess_subparsers.add_parser(
+        "constant-force-estimator-consistency",
+        help="Compare displacement, dense-velocity, and sparse-snapshot responses",
+    )
+    constant_force_estimator_consistency.add_argument("--contract", type=Path, required=True)
+    constant_force_estimator_consistency.add_argument("--output", type=Path, required=True)
+    constant_force_estimator_consistency.set_defaults(
+        func=_cmd_postprocess_constant_force_estimator_consistency
     )
 
     return parser

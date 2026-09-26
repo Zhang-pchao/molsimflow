@@ -4,6 +4,7 @@ import pytest
 
 from molsimflow.postprocess.constant_force_stage_b_flux_synthesis import (
     _aggregate_interval_windows,
+    _branch_summary,
     _category_summary,
     _response_rows,
     _size_class,
@@ -50,6 +51,30 @@ def test_response_and_fraction_denominators_remain_explicit() -> None:
     assert persistent["signed_fraction_of_total_response"] == pytest.approx(0.5)
     assert persistent["absolute_component_l1_denominator_mps"] == pytest.approx(4.0)
     assert persistent["absolute_fraction_of_component_l1"] == pytest.approx(0.5)
+
+
+def test_custom_full_window_is_used_for_branch_and_category_summaries() -> None:
+    intervals = [
+        _interval("f0", "none", 10.0, 2.0),
+        _interval("fx", "x", 30.0, 12.0),
+    ]
+    full_window_ps = 3270.0
+    windows = _aggregate_interval_windows(intervals, full_window_ps)
+    response = _response_rows(windows)
+
+    branches = _branch_summary(windows, full_window_ps)
+    categories = _category_summary(response, full_window_ps)
+
+    driven_x = next(
+        row for row in branches if row["branch_id"] == "fx" and row["axis"] == "x"
+    )
+    assert driven_x["duration_ps"] == pytest.approx(50.0)
+    assert {row["category"] for row in categories} == {
+        "UNCHANGED_TRACK",
+        "PERSISTENT_ISLAND_TRANSFER",
+        "LINEAGE_REASSIGNMENT",
+        "UNTRACKED_TRANSITION",
+    }
 
 
 def test_size_class_uses_previous_membership_and_largest_track() -> None:

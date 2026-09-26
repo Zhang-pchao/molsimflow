@@ -47,6 +47,37 @@ def test_connected_components_is_periodic_in_xy_and_not_z():
     assert [len(component) for component in components] == [2, 1]
 
 
+def test_island_contract_stops_at_inclusive_maximum_timestep(tmp_path):
+    trajectory = tmp_path / "oxygen.lammpstrj"
+    atoms = [(1, 1.0, 1.0, 1.0, 0, 0, 0), (2, 1.5, 1.0, 1.0, 0, 0, 0)]
+    _write_dump(trajectory, [(0, atoms), (10, atoms), (20, atoms)])
+    contract = tmp_path / "islands.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "time_origin_step": 0,
+                "timestep_fs": 1000.0,
+                "cluster_cutoff_A": 1.0,
+                "write_plots": False,
+                "cases": [
+                    {
+                        "case_id": "surface",
+                        "branch_id": "f0",
+                        "direction": "none",
+                        "maximum_timestep": 10,
+                        "trajectories": [str(trajectory)],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_islands(contract, tmp_path / "islands-output")
+    frames = _read_tsv(tmp_path / "islands-output" / "frame_summary.tsv")
+    assert [int(row["step"]) for row in frames] == [0, 10]
+
+
 def test_island_tracking_resolves_merge_and_split(tmp_path):
     trajectory = tmp_path / "oxygen.lammpstrj"
     _write_dump(

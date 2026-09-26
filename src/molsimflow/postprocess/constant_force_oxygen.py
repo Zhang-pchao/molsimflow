@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import iter_lammps_dump_records
+from molsimflow.io.lammps_dump import iter_lammps_dump_records_until
 
 
 @dataclass(frozen=True)
@@ -74,7 +74,10 @@ def _columns(frame) -> tuple[int, tuple[int, int, int], tuple[int, int, int] | N
     return fields.index("id"), tuple(fields.index(name) for name in ("x", "y", "z")), velocity
 
 
-def iter_oxygen_frames(paths: Sequence[Path]) -> Iterator[OxygenFrame]:
+def iter_oxygen_frames(
+    paths: Sequence[Path],
+    maximum_timestep: int | None = None,
+) -> Iterator[OxygenFrame]:
     """Stream restart segments, remove a shared endpoint, and verify atom identity."""
 
     if not paths:
@@ -86,7 +89,7 @@ def iter_oxygen_frames(paths: Sequence[Path]) -> Iterator[OxygenFrame]:
         if not Path(path).is_file():
             raise FileNotFoundError(path)
         segment_frames = 0
-        for frame in iter_lammps_dump_records(path):
+        for frame in iter_lammps_dump_records_until(path, maximum_timestep):
             segment_frames += 1
             if previous_step is not None and frame.timestep == previous_step:
                 continue
@@ -125,6 +128,8 @@ def iter_oxygen_frames(paths: Sequence[Path]) -> Iterator[OxygenFrame]:
             )
         if segment_frames == 0:
             raise ValueError(f"No complete frames in {path}")
+        if maximum_timestep is not None and previous_step == maximum_timestep:
+            return
 
 
 def xy_minimum_image(vectors: np.ndarray, bounds: np.ndarray) -> np.ndarray:

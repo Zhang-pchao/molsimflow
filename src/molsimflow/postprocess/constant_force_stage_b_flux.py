@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from molsimflow.io.lammps_dump import iter_lammps_dump_records
+from molsimflow.io.lammps_dump import iter_lammps_dump_records_until
 from molsimflow.postprocess.constant_force_oxygen import (
     connected_components,
     resolve_path,
@@ -42,7 +42,10 @@ def _as_int(value: object) -> int:
     return int(float(str(value)))
 
 
-def iter_unwrapped_oxygen_frames(paths: Sequence[Path]) -> Iterator[UnwrappedOxygenFrame]:
+def iter_unwrapped_oxygen_frames(
+    paths: Sequence[Path],
+    maximum_timestep: int | None = None,
+) -> Iterator[UnwrappedOxygenFrame]:
     """Stream restart segments and reconstruct coordinates from LAMMPS image flags."""
 
     reference_ids: np.ndarray | None = None
@@ -50,7 +53,7 @@ def iter_unwrapped_oxygen_frames(paths: Sequence[Path]) -> Iterator[UnwrappedOxy
     previous_bounds: np.ndarray | None = None
     for path in paths:
         segment_frames = 0
-        for frame in iter_lammps_dump_records(path):
+        for frame in iter_lammps_dump_records_until(path, maximum_timestep):
             segment_frames += 1
             if previous_step is not None and frame.timestep == previous_step:
                 continue
@@ -108,6 +111,8 @@ def iter_unwrapped_oxygen_frames(paths: Sequence[Path]) -> Iterator[UnwrappedOxy
             previous_bounds = frame.bounds.copy()
         if segment_frames == 0:
             raise ValueError(f"No complete frames in {path}")
+        if maximum_timestep is not None and previous_step == maximum_timestep:
+            return
 
 
 def plane_crossing_counts(
@@ -369,7 +374,11 @@ def run_contract(contract_path: Path, output_path: Path) -> dict[str, object]:
             (_as_int(row["step"]), _as_int(row["track_id"])): _as_int(row["size"])
             for row in island_rows
         }
-        frame_iterator = iter_unwrapped_oxygen_frames(paths)
+        maximum_timestep = entry.get("maximum_timestep")
+        frame_iterator = iter_unwrapped_oxygen_frames(
+            paths,
+            int(maximum_timestep) if maximum_timestep else None,
+        )
         previous = next(frame_iterator, None)
         if previous is None:
             raise ValueError(f"No frames for {case_id}/{branch_id}")
