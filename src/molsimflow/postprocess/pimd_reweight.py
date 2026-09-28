@@ -2627,6 +2627,19 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
+    conditional_spec = None
+    if reweight.get("bias_mode") == "centroid_conditioned":
+        conditional_spec = reweight.get("conditional_path")
+        require(profile == "core" and len(reweight["cv_names"]) == 1,
+                "centroid_conditioned currently requires the one-dimensional core profile")
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "centroid_conditioned requires a stationary frozen-bias record")
+        require(isinstance(conditional_spec, dict) and conditional_spec.get("frozen") is True,
+                "conditional_path must declare a frozen model")
+        require(bool(reweight.get("bias_column")) and not reweight.get("extra_bias_columns"),
+                "centroid_conditioned requires one total-bias column without extra biases")
+        require(source.get("sampling_slug") == "centroid_conditioned"
+                and bool(source.get("sampling_label")), "explicit conditional-path labels are required")
     primary_estimator = validate_primary_estimator(
         str(reweight.get("primary_estimator", "probability_mean"))
     )
@@ -2680,6 +2693,12 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         "duplicate bead input file",
     )
     consumed_paths = [centroid_path, *bead_paths]
+    conditional_model = None
+    if conditional_spec is not None:
+        from molsimflow.postprocess.conditional_path import load_model
+        model_path = run_root / conditional_spec["model_file"]
+        conditional_model = load_model(model_path, expected_sha256=conditional_spec["model_sha256"])
+        consumed_paths.append(model_path)
     if profile == "water_ionization_opes":
         consumed_paths.append(run_root / source["kernels"])
         consumed_paths.extend(run_root / name for name in source["thermo_logs"])
@@ -2937,6 +2956,20 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     require(reweight.get("energy_unit", "eV") == "eV", "energy_unit must be eV; convert energy columns before analysis")
     expected_kbt = KB_EV_PER_K * temperature
     require(abs(kbt_ev - expected_kbt) <= 1e-12, "kBT/temperature mismatch")
+    if conditional_spec is not None:
+        from molsimflow.postprocess.conditional_path import audit_record
+        audit = audit_record(
+            conditional_model, centroid[:, 0],
+            selected_bead_field(conditional_spec["bead_region_column"]),
+            field(centroid_data, fields, conditional_spec["log_normalizer_column"])[selected],
+            field(centroid_data, fields, conditional_spec["centroid_bias_column"])[selected],
+            bias_ev, coupling=conditional_spec["coupling"], kbt=kbt_ev,
+            energy_atol=conditional_spec["energy_atol_eV"],
+            normalizer_atol=conditional_spec["log_normalizer_atol"],
+        )
+        audit["model_sha256"] = conditional_spec["model_sha256"]
+        (output / "qc" / "conditional-path.json").write_text(
+            json.dumps(audit, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     quasi_static_declared = reweight.get("quasi_static") is True
     if weight_kind == "precomputed":
         require(not extra_bias_columns, "precomputed weights cannot also use extra bias columns")

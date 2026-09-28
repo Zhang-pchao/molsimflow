@@ -340,3 +340,52 @@ def test_coordinate_transform_preserves_shared_zero_diagnostic_gap(
     np.testing.assert_allclose(
         (transformed_diagnostic - zero) - (transformed - zero), gap, atol=1e-12,
     )
+
+
+@pytest.mark.parametrize("damage", [None, "missing_correction", "changed_normalizer", "adaptive"])
+def test_conditional_path_record_audit_and_fes(tmp_path, monkeypatch, damage):
+    from molsimflow.postprocess.conditional_path import SCHEMA, save_model
+    contract_path, contract = _write_contract(tmp_path)
+    model = {"schema": SCHEMA, "domain": [-1.5, 1.5], "coefficients": [-0.8, 0.2],
+             "epsilon": 0.1, "fit_diagnostics": {}, "provenance": {"kind": "synthetic"}}
+    model_path = tmp_path / "normalizer.json"
+    digest = save_model(model, model_path)
+    kbt = contract["reweight"]["kbt_eV"]
+    h = np.exp(-0.5)
+    base = 0.1
+    logm = -0.8
+    total = base-kbt*np.log(0.5+0.5*(0.1+h)/np.exp(logm))
+    if damage == "missing_correction":
+        total = base
+    printed_logm = logm + (0.1 if damage == "changed_normalizer" else 0)
+    times = np.arange(12, dtype=float)
+    np.savetxt(tmp_path / "sampling.colvar", np.column_stack([
+        times, np.zeros(12), np.full(12, base), np.full(12, printed_logm), np.full(12, total)]),
+        header="FIELDS time x base logm total", comments="#! ")
+    for bead, x in enumerate([-1, 1]):
+        np.savetxt(tmp_path / f"bead-{bead}.colvar",
+                   np.column_stack([times, np.full(12, x), np.full(12, h)]),
+                   header="FIELDS time x h", comments="#! ")
+    names = ['sampling.colvar', 'bead-0.colvar', 'bead-1.colvar', 'normalizer.json']
+    manifest = tmp_path / 'RAW-SHA256SUMS'
+    manifest.write_text(''.join(f'{reweight.sha256(tmp_path / name)}  {name}\n' for name in names))
+    contract['source'].update(raw_manifest_sha256=reweight.sha256(manifest),
+                              sampling_slug='centroid_conditioned', sampling_label='Conditional path')
+    contract['reweight'].update(
+        bias_mode='centroid_conditioned', weight_kind='fixed_bias', bias_column='total',
+        conditional_path={"frozen": damage != "adaptive", "model_file": "normalizer.json",
+                          "model_sha256": digest, "coupling": 0.5, "bead_region_column": "h",
+                          "log_normalizer_column": "logm", "centroid_bias_column": "base",
+                          "energy_atol_eV": 1e-12, "log_normalizer_atol": 1e-12})
+    contract_path.write_text(json.dumps(contract))
+    monkeypatch.setattr(reweight, 'save_figure', lambda *args: None)
+    if damage:
+        with pytest.raises(ValueError):
+            reweight.analyze(contract_path, tmp_path/'analysis')
+    else:
+        summary = reweight.analyze(contract_path, tmp_path/'analysis')
+        assert summary['status'] == 'PASS'
+        audit = json.loads((tmp_path/'analysis/qc/conditional-path.json').read_text())
+        assert audit['frame_count'] == 12 and audit['bead_count'] == 2
+        assert audit['model_sha256'] == digest
+        assert audit['maximum_total_bias_error'] < 1e-14

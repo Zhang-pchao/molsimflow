@@ -8,7 +8,7 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 
 
-BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared"}
+BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared", "centroid_conditioned"}
 WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
 FES_ESTIMATORS = {"probability_mean", "free_energy_mean"}
 
@@ -62,7 +62,7 @@ def total_bias_energy(
         _require(np.isfinite(values).all(), "bead-density bias energies must be finite")
         return np.mean(values, axis=1)
 
-    _require(bead_bias_energies is None, "centroid/bead-mean bias uses one sampling energy")
+    _require(bead_bias_energies is None, "this bias mode uses one complete-path sampling energy")
     _require(sampling_bias_energy is not None, "sampling bias energy is required")
     values = np.asarray(sampling_bias_energy, dtype=float)
     _require(values.ndim == 1 and values.size > 0, "sampling bias energy must be a vector")
