@@ -389,3 +389,68 @@ def test_conditional_path_record_audit_and_fes(tmp_path, monkeypatch, damage):
         assert audit['frame_count'] == 12 and audit['bead_count'] == 2
         assert audit['model_sha256'] == digest
         assert audit['maximum_total_bias_error'] < 1e-14
+
+
+@pytest.mark.parametrize("mode", ["bead_probability_mixture", "centroid_probability_mixture"])
+@pytest.mark.parametrize("damage", [None, "mean_bias", "adaptive", "field_hash", "temperature"])
+def test_probability_mixture_record_audit_and_fes(tmp_path, monkeypatch, mode, damage, coupling=0.4):
+    from molsimflow.postprocess.probability_mixture import arithmetic_bias, centroid_mixture
+    contract_path, contract = _write_contract(tmp_path)
+    thermal = contract["reweight"]["kbt_eV"]
+    time = np.arange(12, dtype=float)
+    values = np.column_stack([0.01 + time * 0.0001, 0.06 - time * 0.0002])
+    vc = np.full(12, 0.02)
+    total, _ = arithmetic_bias(values, kbt=thermal)
+    if mode == "centroid_probability_mixture":
+        total, _ = centroid_mixture(vc, total, kbt=thermal, coupling=coupling, log_normalizer=0.2)
+    if damage == "mean_bias":
+        total = values.mean(axis=1)
+    (tmp_path / "field.txt").write_text("Synthetic frozen field identity\n")
+    (tmp_path / "centroid.txt").write_text("Synthetic centroid field identity\n")
+    spec = {"schema": "probability-mixture-v1", "frozen": True, "mode": mode,
+            "expected_beads": 2, "kbt": thermal, "energy_unit": "eV",
+            "field_sha256": reweight.sha256(tmp_path / "field.txt"),
+            "centroid_field_sha256": reweight.sha256(tmp_path / "centroid.txt"),
+            "coupling": coupling, "log_normalizer": 0.2}
+    if damage == "temperature":
+        spec["kbt"] *= 2
+    if damage == "field_hash":
+        spec["field_sha256"] = "f" * 64
+    (tmp_path / "mixture.json").write_text(json.dumps(spec))
+    np.savetxt(tmp_path / "sampling.colvar", np.column_stack([time, np.zeros(12), total, vc]),
+               header="FIELDS time x total vc", comments="#! ")
+    for b in range(2):
+        np.savetxt(tmp_path / f"bead-{b}.colvar",
+                   np.column_stack([time, np.full(12, 2 * b - 1), values[:, b]]),
+                   header="FIELDS time x v", comments="#! ")
+    names = ["sampling.colvar", "bead-0.colvar", "bead-1.colvar", "field.txt", "centroid.txt", "mixture.json"]
+    manifest = tmp_path / "RAW-SHA256SUMS"
+    manifest.write_text("".join(f"{reweight.sha256(tmp_path / n)}  {n}\n" for n in names))
+    contract["source"].update(raw_manifest_sha256=reweight.sha256(manifest),
+                              sampling_slug=mode, sampling_label="Probability mixture")
+    contract["reweight"].update(
+        bias_mode=mode, weight_kind="quasi_static_opes" if damage == "adaptive" else "fixed_bias",
+        bias_column="total", probability_mixture={
+            "manifest_file": "mixture.json", "manifest_sha256": reweight.sha256(tmp_path / "mixture.json"),
+            "field_file": "field.txt", "centroid_field_file": "centroid.txt",
+            "bead_bias_column": "v", "centroid_bias_column": "vc", "energy_atol_eV": 1e-12,
+        })
+    if mode == "centroid_probability_mixture" and coupling == 0:
+        (tmp_path / "field.txt").unlink()
+        contract["reweight"]["probability_mixture"].pop("bead_bias_column")
+    contract_path.write_text(json.dumps(contract))
+    monkeypatch.setattr(reweight, "save_figure", lambda *args: None)
+    if damage:
+        with pytest.raises(ValueError):
+            reweight.analyze(contract_path, tmp_path / "analysis")
+    else:
+        summary = reweight.analyze(contract_path, tmp_path / "analysis")
+        assert summary["status"] == "PASS"
+        audit = json.loads((tmp_path / "analysis/qc/probability-mixture.json").read_text())
+        assert audit["frames"] == 12 and audit["max_energy_error"] < 1e-14
+        assert audit["observable_bead_weight"] == "uniform"
+
+
+def test_zero_probability_mixture_omits_inactive_inputs(tmp_path, monkeypatch):
+    test_probability_mixture_record_audit_and_fes(
+        tmp_path, monkeypatch, "centroid_probability_mixture", None, coupling=0.0)

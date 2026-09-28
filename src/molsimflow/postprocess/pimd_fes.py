@@ -8,7 +8,8 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 
 
-BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared", "centroid_conditioned"}
+BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared", "centroid_conditioned",
+              "bead_probability_mixture", "centroid_probability_mixture"}
 WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
 FES_ESTIMATORS = {"probability_mean", "free_energy_mean"}
 

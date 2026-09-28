@@ -2627,6 +2627,19 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
+    probability_spec = None
+    probability_modes = {"bead_probability_mixture", "centroid_probability_mixture"}
+    if reweight.get("bias_mode", source.get("sampling_slug")) in probability_modes:
+        probability_spec = reweight.get("probability_mixture")
+        require(profile == "core" and len(reweight["cv_names"]) == 1,
+                "probability mixtures currently require the one-dimensional core profile")
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "probability mixtures require stationary frozen-bias records")
+        require(isinstance(probability_spec, dict), "probability_mixture manifest specification is required")
+        require(bool(reweight.get("bias_column")) and not reweight.get("extra_bias_columns"),
+                "probability mixtures require one complete-path total-bias column")
+        require(source.get("sampling_slug") == reweight.get("bias_mode")
+                and bool(source.get("sampling_label")), "explicit probability-mixture labels are required")
     conditional_spec = None
     if reweight.get("bias_mode") == "centroid_conditioned":
         conditional_spec = reweight.get("conditional_path")
@@ -2699,6 +2712,23 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         model_path = run_root / conditional_spec["model_file"]
         conditional_model = load_model(model_path, expected_sha256=conditional_spec["model_sha256"])
         consumed_paths.append(model_path)
+    probability_model = None
+    if probability_spec is not None:
+        from molsimflow.postprocess.probability_mixture import load_manifest
+        model_path = run_root / probability_spec["manifest_file"]
+        probability_model = load_manifest(model_path, expected_sha256=probability_spec["manifest_sha256"])
+        require(probability_model["mode"] == reweight["bias_mode"], "probability mixture mode mismatch")
+        require(probability_model["expected_beads"] == len(bead_paths), "probability mixture bead count mismatch")
+        require(probability_model["energy_unit"] == "eV", "probability mixture field must use eV")
+        consumed_paths.append(model_path)
+        field_keys = ["field"]
+        if probability_model["mode"] == "centroid_probability_mixture":
+            field_keys = (["field"] if probability_model["coupling"] > 0 else []) + ["centroid_field"]
+        for key in field_keys:
+            input_path = run_root / probability_spec[key + "_file"]
+            require(sha256(input_path) == probability_model[key + "_sha256"],
+                    "probability mixture frozen field hash mismatch")
+            consumed_paths.append(input_path)
     if profile == "water_ionization_opes":
         consumed_paths.append(run_root / source["kernels"])
         consumed_paths.extend(run_root / name for name in source["thermo_logs"])
@@ -2969,6 +2999,24 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         )
         audit["model_sha256"] = conditional_spec["model_sha256"]
         (output / "qc" / "conditional-path.json").write_text(
+            json.dumps(audit, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    if probability_spec is not None:
+        from molsimflow.postprocess.probability_mixture import audit_record
+        require(abs(probability_model["kbt"] - kbt_ev) <= 1e-12,
+                "probability mixture kBT mismatch")
+        centroid_bias = None
+        if probability_model["mode"] == "centroid_probability_mixture":
+            centroid_bias = field(centroid_data, fields, probability_spec["centroid_bias_column"])[selected]
+        audit = audit_record(
+            probability_model,
+            None if probability_model["mode"] == "centroid_probability_mixture"
+            and probability_model["coupling"] == 0
+            else selected_bead_field(probability_spec["bead_bias_column"]),
+            bias_ev, field_sha256=probability_model["field_sha256"],
+            centroid_bias=centroid_bias, energy_atol=probability_spec["energy_atol_eV"],
+        )
+        audit["manifest_sha256"] = probability_spec["manifest_sha256"]
+        (output / "qc" / "probability-mixture.json").write_text(
             json.dumps(audit, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     quasi_static_declared = reweight.get("quasi_static") is True
     if weight_kind == "precomputed":
