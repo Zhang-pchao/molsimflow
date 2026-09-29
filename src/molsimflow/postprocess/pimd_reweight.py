@@ -2627,6 +2627,21 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
+    if reweight.get("bias_mode", source.get("sampling_slug")) == "contracted_bead_mean":
+        from molsimflow.postprocess.path_contraction import validate_contraction_metadata
+
+        metadata = reweight.get("path_contraction")
+        validate_contraction_metadata(metadata)
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "contracted bead mean currently requires stationary frozen-bias records")
+        require(bool(reweight.get("bias_column")), "contracted bead mean requires total bias energy")
+        require(source.get("sampling_slug") == reweight.get("bias_mode")
+                and bool(source.get("sampling_label")), "explicit contracted-bead-mean labels are required")
+        require(bool(reweight.get("bead_cv_names")), "declare the original real-bead CV columns")
+        (output / "qc" / "path-contraction.json").write_text(
+            json.dumps({"status": "METADATA_VALIDATED", **metadata}, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
     probability_spec = None
     probability_modes = {"bead_probability_mixture", "centroid_probability_mixture"}
     if reweight.get("bias_mode", source.get("sampling_slug")) in probability_modes:

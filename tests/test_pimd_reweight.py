@@ -527,19 +527,20 @@ def test_ring_polymer_spread_uses_only_requested_trajectory_steps():
 
 
 @pytest.mark.parametrize(
-    "weight_kind, declaration, rejected",
+    "weight_kind, declaration, rejected, bias_mode",
     [
-        ("precomputed", None, False),
-        ("fixed_bias", None, False),
-        ("quasi_static_opes", True, False),
-        ("quasi_static_opes", None, True),
-        ("quasi_static_opes", False, True),
-        ("quasi_static_opes", "false", True),
-        ("quasi_static_opes", 1, True),
+        ("precomputed", None, False, "bead_mean"),
+        ("fixed_bias", None, False, "bead_mean"),
+        ("fixed_bias", None, False, "contracted_bead_mean"),
+        ("quasi_static_opes", True, False, "bead_mean"),
+        ("quasi_static_opes", None, True, "bead_mean"),
+        ("quasi_static_opes", False, True, "bead_mean"),
+        ("quasi_static_opes", "false", True, "bead_mean"),
+        ("quasi_static_opes", 1, True, "bead_mean"),
     ],
 )
 def test_core_profile_runs_one_generic_cv_with_declared_weights(
-    weight_kind, declaration, rejected,
+    weight_kind, declaration, rejected, bias_mode,
 ):
     def write_plumed(path, fields, rows):
         body = ["#! FIELDS " + " ".join(fields)]
@@ -617,6 +618,13 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             },
             "plots": {"cv_labels": {"coordination": "Coordination number"}},
         }
+        contract["reweight"]["bias_mode"] = bias_mode
+        if bias_mode == "contracted_bead_mean":
+            contract["source"]["sampling_slug"] = bias_mode
+            contract["source"]["sampling_label"] = "Contracted bead mean (lambda=0.5)"
+            contract["reweight"]["path_contraction"] = {
+                "lambda": 0.5, "coordinate_lift": "pimd_unwrapped", "observable_coordinates": "real_beads"
+            }
         contract["reweight"]["weight_kind"] = weight_kind
         if weight_kind != "precomputed":
             contract["reweight"]["bias_column"] = "logw"
@@ -630,6 +638,10 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
                 analyze(contract_path, output)
             return
         summary = analyze(contract_path, output)
+        if bias_mode == "contracted_bead_mean":
+            metadata = json.loads((output / "qc" / "path-contraction.json").read_text())
+            assert metadata["observable_coordinates"] == "real_beads"
+            assert metadata["lambda"] == 0.5
         assert summary["status"] == "PASS"
         assert summary["analysis_profile"] == "core"
         assert summary["fes"]["dimensions"] == 1
