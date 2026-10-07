@@ -10,6 +10,15 @@ import numpy as np
 
 BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared", "centroid_conditioned",
               "bead_probability_mixture", "centroid_probability_mixture", "contracted_bead_mean"}
+# Primary input names resolve to the existing output-schema identifiers.
+BIAS_MODE_ALIASES = {
+    "coordinate_mean": "centroid_coord",
+    "cv_mean": "bead_mean",
+    "bias_mean": "bead_density_shared",
+    "probability_mean": "bead_probability_mixture",
+    "contracted_cv_mean": "contracted_bead_mean",
+}
+BIAS_MODES |= BIAS_MODE_ALIASES.keys()
 WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
 FES_ESTIMATORS = {"probability_mean", "free_energy_mean"}
 
@@ -31,11 +40,15 @@ def normalized_log_weights(values: Sequence[float] | np.ndarray) -> np.ndarray:
 
 
 def validate_bias_mode(value: str) -> str:
-    """Validate the path-CV bias modes supported by this workflow."""
+    """Resolve a bias name to its stable output-schema identifier.
+
+    Both primary names and original input names are accepted. This does not
+    select the FES estimator, which has its own independent contract field.
+    """
 
     mode = str(value)
     _require(mode in BIAS_MODES, f"unsupported PIMD bias mode: {mode}")
-    return mode
+    return BIAS_MODE_ALIASES.get(mode, mode)
 
 
 def validate_primary_estimator(value: str) -> str:

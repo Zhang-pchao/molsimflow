@@ -15,6 +15,8 @@ from typing import Any
 
 import numpy as np
 
+from molsimflow.postprocess.pimd_fes import BIAS_MODE_ALIASES
+
 MODES = {"bead_probability_mixture", "centroid_probability_mixture"}
 
 
@@ -98,6 +100,9 @@ def validate_manifest(spec: dict[str, Any]) -> dict[str, Any]:
     """Validate the portable frozen-field identity and thermodynamic contract."""
     if spec.get("schema") != "probability-mixture-v1" or spec.get("frozen") is not True:
         raise ValueError("a probability-mixture-v1 frozen manifest is required")
+    # Keep frozen file bytes/hash identity intact; normalize only the parsed copy.
+    spec = dict(spec)
+    spec["mode"] = BIAS_MODE_ALIASES.get(spec.get("mode"), spec.get("mode"))
     if spec.get("mode") not in MODES:
         raise ValueError("invalid probability mixture mode")
     beads = spec.get("expected_beads")

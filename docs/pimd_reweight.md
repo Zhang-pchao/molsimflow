@@ -2,14 +2,16 @@
 
 `molsimflow postprocess pimd-reweight` reconstructs bead-defined quantum free
 energies from a complete ring-polymer trajectory.  The workflow supports three
-explicit path-CV bias modes:
+basic path-CV bias modes, plus a frozen probability mean:
 
-- `centroid_coord`: the bias is evaluated on a CV of the Cartesian centroid;
-- `bead_mean`: the bias is evaluated on the arithmetic mean of the bead CVs;
-- `bead_density_shared`: one shared field is evaluated on every bead and the
-  complete-path bias energy is `mean_b B(q_b)`.
+- `coordinate_mean`: the bias is evaluated on a CV of the Cartesian centroid;
+- `cv_mean`: the bias is evaluated on the arithmetic mean of the bead CVs;
+- `bias_mean`: one shared field is evaluated on every bead and the
+  complete-path bias energy is `mean_b B(q_b)`;
+- `probability_mean`: the complete-path bias is `-kBT log(mean_b exp(-v_b/kBT))`,
+  with a common frozen field and the manifest checks described below.
 
-All three modes use the same default quantum target: the bead marginal of the
+All these modes use the same default quantum target: the bead marginal of the
 requested coordinate. For frame `n`, every bead uses the same normalized frame
 weight `W_n`, and each of its `P` beads contributes `W_n / P` to that marginal.
 The bias representation changes how the complete-path energy is assembled; it
@@ -25,24 +27,37 @@ For a nonlinear CV, `Q(mean_b R_b)`, `mean_b Q(R_b)`, and the distribution of
 
 | Operation | LAMMPS / PLUMED | Analysis contract |
 | --- | --- | --- |
-| Coordinate-centroid bias: `B(s(mean_b R_b))` | `path_integral centroid` | `centroid_coord` |
-| Bead-averaged CV bias: `B(mean_b s(R_b))` | `path_integral bead_mean` with `ENSEMBLE` | `bead_mean` |
-| Bead-averaged bias energy: `mean_b B(s(R_b))` | `path_integral bead_density`, one shared field | `bead_density_shared` |
-| Mean probability-ratio bias: `-kBT log(mean_b exp(-v_b/kBT))` | `bead_mean` adapter with `PATH_LOGMEANEXP` | `bead_probability_mixture` |
+| Coordinate-centroid bias: `B(s(mean_b R_b))` | `path_integral coordinate_mean` | `coordinate_mean` |
+| Bead-averaged CV bias: `B(mean_b s(R_b))` | `path_integral cv_mean` with `ENSEMBLE` | `cv_mean` |
+| Bead-averaged bias energy: `mean_b B(s(R_b))` | `path_integral bias_mean`, one shared field | `bias_mean` |
+| Mean probability-ratio bias: `-kBT log(mean_b exp(-v_b/kBT))` | `cv_mean` adapter with `PATH_LOGMEANEXP` | `probability_mean` |
 | Frozen mixture of two path probabilities | `PROBABILITY_MIX`, global normalizer | `centroid_probability_mixture` |
 
-Existing keywords and schema values retain their meanings. Use these descriptive
-names in labels and reports, and include the actual keyword in reproducibility
-records. The `probability_mean` **FES estimator** is separate from a probability
-mixture **sampling bias**: averaging weighted bead contributions for an observable
-does not select the Hamiltonian that generated the trajectory.
+These primary names are accepted by `reweight.bias_mode` and by explicit
+`source.sampling_slug` values. Original input names remain valid:
+
+| Primary input | Original input and stored output identifier |
+| --- | --- |
+| `coordinate_mean` | `centroid_coord` |
+| `cv_mean` | `bead_mean` |
+| `bias_mean` | `bead_density_shared` |
+| `probability_mean` | `bead_probability_mixture` |
+| `contracted_cv_mean` | `contracted_bead_mean` |
+
+The saved analysis contract and source labels retain the exact supplied names.
+Machine-readable bias-mode results keep their existing identifiers for downstream
+compatibility. Both spellings undergo identical admission and energy checks.
+The `reweight.primary_estimator: probability_mean` **FES estimator** is independent
+of `reweight.bias_mode: probability_mean`, which selects a **sampling bias**.
+Averaging weighted bead observations does not select the sampling Hamiltonian.
 
 `path_contraction` changes virtual coordinates to
 `R_tilde_b = R_c + lambda_coord * (R_b - R_c)` before CV averaging. Its endpoints
 recover the coordinate-centroid and bead-averaged CV constructions on the same
 coordinate lift. Intermediate values are generally not a linear interpolation of
 those CVs. Distinguish `lambda_coord` in explanations from the `COUPLING` value
-of a probability mixture; neither name here changes an input keyword.
+of a probability mixture. Use `bias_mode: contracted_cv_mean` with the explicit
+`path_contraction` metadata for a trajectory biased through contracted coordinates.
 Use original-bead coordinates for quantum observables and one total-bias weight
 per complete path. See [probability mixtures](probability_mixture.md) for the
 frozen-field and normalization requirements.
@@ -80,12 +95,12 @@ grid and bandwidth settings for the actual inputs:
 {
   "analysis_profile": "core",
   "source": {
-    "sampling_label": "Bead mean",
-    "sampling_slug": "bead_mean",
+    "sampling_label": "CV mean",
+    "sampling_slug": "cv_mean",
     "restart_duplicate_policy": "keep_first"
   },
   "reweight": {
-    "bias_mode": "bead_mean",
+    "bias_mode": "cv_mean",
     "primary_estimator": "probability_mean",
     "temperature_K": 300.0,
     "energy_unit": "eV",
@@ -124,7 +139,7 @@ and identical shared OPES diagnostics at every selected time:
     "expected_beads": 4
   },
   "reweight": {
-    "bias_mode": "bead_density_shared",
+    "bias_mode": "bias_mean",
     "weight_kind": "quasi_static_opes",
     "quasi_static": true,
     "bias_column": "opes.bias",
@@ -203,9 +218,9 @@ bead **average** to the complete-path energy. The energy to remove is:
 
 | Bias mode | Sampling coordinate | Complete-path bias energy |
 | --- | --- | --- |
-| `centroid_coord` | `Q(mean_b R[n,b])` | `B(Q(mean_b R[n,b]))` |
-| `bead_mean` | `mean_b q[n,b]` | `B(mean_b q[n,b])` |
-| `bead_density_shared` | Each `q[n,b]` in one shared field | `mean_b B(q[n,b])` |
+| `coordinate_mean` | `Q(mean_b R[n,b])` | `B(Q(mean_b R[n,b]))` |
+| `cv_mean` | `mean_b q[n,b]` | `B(mean_b q[n,b])` |
+| `bias_mean` | Each `q[n,b]` in one shared field | `mean_b B(q[n,b])` |
 
 For fixed bias, or an explicitly selected quasi-static OPES window,
 

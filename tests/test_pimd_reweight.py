@@ -531,6 +531,9 @@ def test_ring_polymer_spread_uses_only_requested_trajectory_steps():
     [
         ("precomputed", None, False, "bead_mean"),
         ("fixed_bias", None, False, "bead_mean"),
+        ("fixed_bias", None, False, "coordinate_mean"),
+        ("fixed_bias", None, False, "cv_mean"),
+        ("fixed_bias", None, False, "contracted_cv_mean"),
         ("fixed_bias", None, False, "contracted_bead_mean"),
         ("quasi_static_opes", True, False, "bead_mean"),
         ("quasi_static_opes", None, True, "bead_mean"),
@@ -619,7 +622,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
             "plots": {"cv_labels": {"coordination": "Coordination number"}},
         }
         contract["reweight"]["bias_mode"] = bias_mode
-        if bias_mode == "contracted_bead_mean":
+        if validate_bias_mode(bias_mode) == "contracted_bead_mean":
             contract["source"]["sampling_slug"] = bias_mode
             contract["source"]["sampling_label"] = "Contracted bead mean (lambda=0.5)"
             contract["reweight"]["path_contraction"] = {
@@ -638,7 +641,7 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
                 analyze(contract_path, output)
             return
         summary = analyze(contract_path, output)
-        if bias_mode == "contracted_bead_mean":
+        if validate_bias_mode(bias_mode) == "contracted_bead_mean":
             metadata = json.loads((output / "qc" / "path-contraction.json").read_text())
             assert metadata["observable_coordinates"] == "real_beads"
             assert metadata["lambda"] == 0.5
@@ -703,7 +706,10 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         np.testing.assert_allclose(frames["time_ps"], times / 1000.0)
 
 
-@pytest.mark.parametrize("bias_mode", ["centroid_coord", "bead_mean", "bead_density_shared"])
+@pytest.mark.parametrize("bias_mode", [
+    "centroid_coord", "bead_mean", "bead_density_shared",
+    "coordinate_mean", "cv_mean", "bias_mean",
+])
 @pytest.mark.parametrize("include_wall", [False, True])
 @pytest.mark.parametrize("bead_count", [1, 2, 5])
 def test_core_2d_recovers_analytic_mixture_and_frame_ess(tmp_path, bias_mode, include_wall, bead_count):
@@ -1093,3 +1099,21 @@ def test_analysis_checks_declared_bead_count_before_reading(tmp_path, expected):
     path.write_text(json.dumps(contract))
     with pytest.raises(ValueError, match="expected_beads"):
         analyze(path, tmp_path / "analysis")
+
+
+@pytest.mark.parametrize("name, stored", [
+    ("coordinate_mean", "centroid_coord"), ("cv_mean", "bead_mean"),
+    ("bias_mean", "bead_density_shared"),
+    ("probability_mean", "bead_probability_mixture"),
+    ("contracted_cv_mean", "contracted_bead_mean"),
+])
+def test_primary_bias_names_preserve_energy_semantics(name, stored):
+    assert validate_bias_mode(name) == stored
+    values = np.array([[-0.3, 0.2], [0.5, 1.2]])
+    inputs = ({"bead_bias_energies": values} if name == "bias_mean"
+              else {"sampling_bias_energy": values[:, 0]})
+    np.testing.assert_array_equal(total_bias_energy(name, **inputs),
+                                  total_bias_energy(stored, **inputs))
+    if name == "bias_mean":
+        with pytest.raises(ValueError, match="bead-local energies"):
+            total_bias_energy(name, sampling_bias_energy=values[:, 0])

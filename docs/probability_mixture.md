@@ -2,8 +2,11 @@
 
 `molsimflow.postprocess.probability_mixture` supplies a deterministic oracle,
 frozen-manifest validation, record auditing and PLUMED graph composition.
-The opt-in modes are `bead_probability_mixture` and
-`centroid_probability_mixture`. Existing modes retain their semantics.
+The opt-in modes are `probability_mean` and
+`centroid_probability_mixture`. `bead_probability_mixture` remains a compatible
+input for `probability_mean`. Both spellings are accepted in the frozen manifest,
+analysis bias mode, and source sampling slug. Parsed audit results retain the
+original schema identifier; the input contract and frozen file hashes are preserved.
 
 For a common frozen energy field `v(s)`, define `ell_b=-v(s_b)/kBT` and
 `V_A=-kBT log(mean_b exp(ell_b))`. The force coefficient is the bead softmax
@@ -25,9 +28,11 @@ return the same energy and bead-force coefficients.
 ## Runtime and records
 
 Use identical frozen fields on every bead and the PLUMED `PATH_LOGMEANEXP`
-action. The existing LAMMPS `bead_mean` adapter converts physical path forces
-to the integrator convention and reports the energy once per path. Do not
-select `bead_density`, which would introduce an extra scaling.
+action. The existing LAMMPS `cv_mean` adapter (originally `bead_mean`) converts physical path forces
+to the integrator convention and reports the energy once per path. The PLUMED
+graph selects probability averaging; there is no LAMMPS `path_integral
+probability_mean` setting. Do not
+select `bias_mean` (originally `bead_density`), which would introduce an extra scaling.
 
 `export_plumed` composes already defined scalar fields. For active frozen
 OPES, set `active_field_bias=True` to apply `V_path-v_b`, cancelling its

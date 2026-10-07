@@ -19,7 +19,7 @@ it only to the bias increment. Do not smooth the physical force.
 
 ## Existing FES workflow integration
 
-Use `bias_mode` and `sampling_slug` equal to `contracted_bead_mean`, an explicit
+Use `bias_mode` and `sampling_slug` equal to `contracted_cv_mean`, an explicit
 sampling label, a stationary `fixed_bias` record and the actual complete-path
 bias column. Declare the original real-bead observable columns with
 `bead_cv_names`. The reweight section also requires:
@@ -40,3 +40,6 @@ as real-bead observations. The generic estimator reuses one `exp(beta*V)`
 weight per complete frame, shared by all its correlated beads. No coordinate
 Jacobian or extra lambda factor is appropriate. Adaptive OPES reweighting is
 not admitted through this new record type.
+
+The original `contracted_bead_mean` input remains accepted. Output schema
+identifiers retain that spelling for compatibility.

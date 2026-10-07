@@ -99,8 +99,12 @@ def test_exact_path_target_and_uniform_observable():
     np.testing.assert_allclose(p0 * np.exp(-mixed) / zc, 0.6 * p0 * np.exp(-vc) / zc + 0.4 * qa)
 
 
-def test_manifest_audit_and_export():
-    spec = manifest()
+@pytest.mark.parametrize("mode", ["bead_probability_mixture", "probability_mean"])
+def test_manifest_audit_and_export(mode):
+    spec = manifest(mode)
+    original = dict(spec)
+    assert validate_manifest(spec)["mode"] == "bead_probability_mixture"
+    assert spec == original
     values = np.array([[0.1, 0.5], [0.2, -1]])
     total, _ = arithmetic_bias(values, kbt=1)
     assert audit_record(spec, values, total, field_sha256="a" * 64)["frames"] == 2

@@ -391,8 +391,8 @@ def test_conditional_path_record_audit_and_fes(tmp_path, monkeypatch, damage):
         assert audit['maximum_total_bias_error'] < 1e-14
 
 
-@pytest.mark.parametrize("mode", ["bead_probability_mixture", "centroid_probability_mixture"])
-@pytest.mark.parametrize("damage", [None, "mean_bias", "adaptive", "field_hash", "temperature"])
+@pytest.mark.parametrize("mode", ["bead_probability_mixture", "probability_mean", "centroid_probability_mixture"])
+@pytest.mark.parametrize("damage", [None, "mean_bias", "adaptive", "field_hash", "temperature", "missing_manifest", "mode_mismatch", "missing_mode", "missing_label"])
 def test_probability_mixture_record_audit_and_fes(tmp_path, monkeypatch, mode, damage, coupling=0.4):
     from molsimflow.postprocess.probability_mixture import arithmetic_bias, centroid_mixture
     contract_path, contract = _write_contract(tmp_path)
@@ -412,6 +412,9 @@ def test_probability_mixture_record_audit_and_fes(tmp_path, monkeypatch, mode, d
             "field_sha256": reweight.sha256(tmp_path / "field.txt"),
             "centroid_field_sha256": reweight.sha256(tmp_path / "centroid.txt"),
             "coupling": coupling, "log_normalizer": 0.2}
+    if damage == "mode_mismatch":
+        spec["mode"] = ("bead_probability_mixture" if mode == "centroid_probability_mixture"
+                        else "centroid_probability_mixture")
     if damage == "temperature":
         spec["kbt"] *= 2
     if damage == "field_hash":
@@ -435,6 +438,12 @@ def test_probability_mixture_record_audit_and_fes(tmp_path, monkeypatch, mode, d
             "field_file": "field.txt", "centroid_field_file": "centroid.txt",
             "bead_bias_column": "v", "centroid_bias_column": "vc", "energy_atol_eV": 1e-12,
         })
+    if damage == "missing_mode":
+        contract["reweight"].pop("bias_mode")
+    if damage == "missing_label":
+        contract["source"].pop("sampling_label")
+    if damage == "missing_manifest":
+        contract["reweight"].pop("probability_mixture")
     if mode == "centroid_probability_mixture" and coupling == 0:
         (tmp_path / "field.txt").unlink()
         contract["reweight"]["probability_mixture"].pop("bead_bias_column")
@@ -449,8 +458,30 @@ def test_probability_mixture_record_audit_and_fes(tmp_path, monkeypatch, mode, d
         audit = json.loads((tmp_path / "analysis/qc/probability-mixture.json").read_text())
         assert audit["frames"] == 12 and audit["max_energy_error"] < 1e-14
         assert audit["observable_bead_weight"] == "uniform"
+        saved = json.loads((tmp_path / "analysis/provenance/analysis-contract.json").read_text())
+        assert saved == contract
+        # New contracts can refer to already frozen manifests with the old name.
+        if mode == "probability_mean":
+            contract["reweight"]["bias_mode"] = "bead_probability_mixture"
+            contract_path.write_text(json.dumps(contract))
+            old = reweight.analyze(contract_path, tmp_path / "analysis-alias")
+            assert old["reweighting"] == summary["reweighting"]
+            assert old["fes"] == summary["fes"]
 
 
 def test_zero_probability_mixture_omits_inactive_inputs(tmp_path, monkeypatch):
     test_probability_mixture_record_audit_and_fes(
         tmp_path, monkeypatch, "centroid_probability_mixture", None, coupling=0.0)
+
+
+def test_probability_mean_contract_accepts_original_frozen_manifest(tmp_path, monkeypatch):
+    test_probability_mixture_record_audit_and_fes(
+        tmp_path, monkeypatch, "bead_probability_mixture", None)
+    path = tmp_path / "contract.json"
+    contract = json.loads(path.read_text())
+    contract["source"]["sampling_slug"] = "probability_mean"
+    contract["reweight"]["bias_mode"] = "probability_mean"
+    path.write_text(json.dumps(contract))
+    summary = reweight.analyze(path, tmp_path / "analysis-primary")
+    assert summary["status"] == "PASS"
+    assert summary["sampling_representation"]["bias_mode"] == "bead_probability_mixture"

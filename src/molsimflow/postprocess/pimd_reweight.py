@@ -2627,7 +2627,15 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     source = contract["source"]
     selection = contract["selection"]
     reweight = contract["reweight"]
-    if reweight.get("bias_mode", source.get("sampling_slug")) == "contracted_bead_mean":
+    # Resolve names before mode-specific admission, preserving the input contract
+    # and sampling labels verbatim in provenance and output filenames.
+    sampling_mode = source.get("sampling_slug", "centroid")
+    inferred_bias_mode = {
+        "centroid": "centroid_coord",
+        "bead_density": "bead_density_shared",
+    }.get(sampling_mode, sampling_mode)
+    bias_mode = validate_bias_mode(str(reweight.get("bias_mode", inferred_bias_mode)))
+    if bias_mode == "contracted_bead_mean":
         from molsimflow.postprocess.path_contraction import validate_contraction_metadata
 
         metadata = reweight.get("path_contraction")
@@ -2635,7 +2643,8 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         require(reweight.get("weight_kind") == "fixed_bias",
                 "contracted bead mean currently requires stationary frozen-bias records")
         require(bool(reweight.get("bias_column")), "contracted bead mean requires total bias energy")
-        require(source.get("sampling_slug") == reweight.get("bias_mode")
+        require(reweight.get("bias_mode") is not None
+                and validate_bias_mode(str(source.get("sampling_slug"))) == bias_mode
                 and bool(source.get("sampling_label")), "explicit contracted-bead-mean labels are required")
         require(bool(reweight.get("bead_cv_names")), "declare the original real-bead CV columns")
         (output / "qc" / "path-contraction.json").write_text(
@@ -2644,7 +2653,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         )
     probability_spec = None
     probability_modes = {"bead_probability_mixture", "centroid_probability_mixture"}
-    if reweight.get("bias_mode", source.get("sampling_slug")) in probability_modes:
+    if bias_mode in probability_modes:
         probability_spec = reweight.get("probability_mixture")
         require(profile == "core" and len(reweight["cv_names"]) == 1,
                 "probability mixtures currently require the one-dimensional core profile")
@@ -2653,10 +2662,11 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         require(isinstance(probability_spec, dict), "probability_mixture manifest specification is required")
         require(bool(reweight.get("bias_column")) and not reweight.get("extra_bias_columns"),
                 "probability mixtures require one complete-path total-bias column")
-        require(source.get("sampling_slug") == reweight.get("bias_mode")
+        require(reweight.get("bias_mode") is not None
+                and validate_bias_mode(str(source.get("sampling_slug"))) == bias_mode
                 and bool(source.get("sampling_label")), "explicit probability-mixture labels are required")
     conditional_spec = None
-    if reweight.get("bias_mode") == "centroid_conditioned":
+    if bias_mode == "centroid_conditioned":
         conditional_spec = reweight.get("conditional_path")
         require(profile == "core" and len(reweight["cv_names"]) == 1,
                 "centroid_conditioned currently requires the one-dimensional core profile")
@@ -2732,7 +2742,7 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
         from molsimflow.postprocess.probability_mixture import load_manifest
         model_path = run_root / probability_spec["manifest_file"]
         probability_model = load_manifest(model_path, expected_sha256=probability_spec["manifest_sha256"])
-        require(probability_model["mode"] == reweight["bias_mode"], "probability mixture mode mismatch")
+        require(probability_model["mode"] == bias_mode, "probability mixture mode mismatch")
         require(probability_model["expected_beads"] == len(bead_paths), "probability mixture bead count mismatch")
         require(probability_model["energy_unit"] == "eV", "probability mixture field must use eV")
         consumed_paths.append(model_path)
@@ -2798,12 +2808,6 @@ def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
     sampling_label = str(source.get("sampling_label", "Centroid"))
     sampling_slug = str(source.get("sampling_slug", "centroid"))
     require(bool(sampling_slug) and Path(sampling_slug).name == sampling_slug, "invalid sampling_slug")
-    inferred_bias_mode = {
-        "centroid": "centroid_coord",
-        "bead_mean": "bead_mean",
-        "bead_density": "bead_density_shared",
-    }.get(sampling_slug, sampling_slug)
-    bias_mode = validate_bias_mode(str(reweight.get("bias_mode", inferred_bias_mode)))
     derived_spec = piecewise_derived_coordinate_spec(
         contract.get("derived_coordinate"), cv_names
     )
