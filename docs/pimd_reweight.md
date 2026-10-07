@@ -21,6 +21,32 @@ cannot be converted into the quantum bead marginal by rescaling its free energy.
 For a nonlinear CV, `Q(mean_b R_b)`, `mean_b Q(R_b)`, and the distribution of
 `Q(R_b)` are distinct observables.
 
+## Names across the sampling and analysis interfaces
+
+| Operation | LAMMPS / PLUMED | Analysis contract |
+| --- | --- | --- |
+| Coordinate-centroid bias: `B(s(mean_b R_b))` | `path_integral centroid` | `centroid_coord` |
+| Bead-averaged CV bias: `B(mean_b s(R_b))` | `path_integral bead_mean` with `ENSEMBLE` | `bead_mean` |
+| Bead-averaged bias energy: `mean_b B(s(R_b))` | `path_integral bead_density`, one shared field | `bead_density_shared` |
+| Mean probability-ratio bias: `-kBT log(mean_b exp(-v_b/kBT))` | `bead_mean` adapter with `PATH_LOGMEANEXP` | `bead_probability_mixture` |
+| Frozen mixture of two path probabilities | `PROBABILITY_MIX`, global normalizer | `centroid_probability_mixture` |
+
+Existing keywords and schema values retain their meanings. Use these descriptive
+names in labels and reports, and include the actual keyword in reproducibility
+records. The `probability_mean` **FES estimator** is separate from a probability
+mixture **sampling bias**: averaging weighted bead contributions for an observable
+does not select the Hamiltonian that generated the trajectory.
+
+`path_contraction` changes virtual coordinates to
+`R_tilde_b = R_c + lambda_coord * (R_b - R_c)` before CV averaging. Its endpoints
+recover the coordinate-centroid and bead-averaged CV constructions on the same
+coordinate lift. Intermediate values are generally not a linear interpolation of
+those CVs. Distinguish `lambda_coord` in explanations from the `COUPLING` value
+of a probability mixture; neither name here changes an input keyword.
+Use original-bead coordinates for quantum observables and one total-bias weight
+per complete path. See [probability mixtures](probability_mixture.md) for the
+frozen-field and normalization requirements.
+
 ## Command
 
 ```bash

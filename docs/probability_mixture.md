@@ -17,6 +17,11 @@ The optional centroid mixture is
 potential, but the effective mixture fraction is uncertain. C is not the
 coordinate-dependent conditional normalizer of `conditional_path`.
 
+The Python entry point is `probability_ratio_bias`. The original name
+`arithmetic_bias` remains an alias for compatibility; it refers to the arithmetic
+mean of the probability ratios, not the mean of the bias energies. Both names
+return the same energy and bead-force coefficients.
+
 ## Runtime and records
 
 Use identical frozen fields on every bead and the PLUMED `PATH_LOGMEANEXP`

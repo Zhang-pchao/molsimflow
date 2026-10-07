@@ -9,6 +9,7 @@ from molsimflow.postprocess.probability_mixture import (
     centroid_mixture,
     export_plumed,
     log_mean_exp,
+    probability_ratio_bias,
     validate_manifest,
 )
 
@@ -20,26 +21,27 @@ def manifest(mode="bead_probability_mixture"):
             "coupling": 0.4, "log_normalizer": 0.2}
 
 
+@pytest.mark.parametrize("bias_function", [probability_ratio_bias, arithmetic_bias])
 @pytest.mark.parametrize("beads", [1, 2, 8, 32])
-def test_gradient_permutation_equal_beads(beads):
+def test_gradient_permutation_equal_beads(beads, bias_function):
     values = np.linspace(-3, 2, beads)
-    energy, alpha = arithmetic_bias(values, kbt=0.7)
+    energy, alpha = bias_function(values, kbt=0.7)
     assert np.isclose(alpha.sum(), 1)
     for b in range(beads):
         for step in [1e-4, 1e-5, 1e-6]:
             plus, minus = values.copy(), values.copy()
             plus[b] += step
             minus[b] -= step
-            derivative = (arithmetic_bias(plus, kbt=0.7)[0]
-                          - arithmetic_bias(minus, kbt=0.7)[0]) / (2 * step)
+            derivative = (bias_function(plus, kbt=0.7)[0]
+                          - bias_function(minus, kbt=0.7)[0]) / (2 * step)
             assert derivative == pytest.approx(alpha[b], abs=1e-8, rel=1e-6)
-    shifted, weights = arithmetic_bias(values + 123, kbt=0.7)
+    shifted, weights = bias_function(values + 123, kbt=0.7)
     assert shifted == pytest.approx(energy + 123)
     np.testing.assert_allclose(weights, alpha)
-    permuted, weights = arithmetic_bias(values[::-1], kbt=0.7)
+    permuted, weights = bias_function(values[::-1], kbt=0.7)
     assert permuted == pytest.approx(energy)
     np.testing.assert_allclose(weights, alpha[::-1])
-    energy, alpha = arithmetic_bias(np.full(beads, 2.3), kbt=0.7)
+    energy, alpha = bias_function(np.full(beads, 2.3), kbt=0.7)
     assert energy == pytest.approx(2.3)
     np.testing.assert_allclose(alpha, 1 / beads)
 

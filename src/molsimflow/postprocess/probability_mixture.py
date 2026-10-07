@@ -45,14 +45,22 @@ def log_mean_exp(log_ratios: Any) -> tuple[np.ndarray, np.ndarray]:
     return result, scaled / total
 
 
-def arithmetic_bias(bead_bias: Any, *, kbt: float) -> tuple[np.ndarray, np.ndarray]:
-    """Return V_A and dV_A/dv_b; no extra 1/P follows this derivative."""
+def probability_ratio_bias(bead_bias: Any, *, kbt: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return -kBT log(mean(exp(-v_b/kBT))) and its bead derivatives.
+
+    The arithmetic mean acts on probability ratios, not on bias energies.
+    No extra 1/P follows the derivative.
+    """
     thermal = _kbt(kbt)
     values = _finite(bead_bias, "bead bias")
     with np.errstate(over="ignore"):
         log_mean, alpha = log_mean_exp(-values / thermal)
         energy = -thermal * log_mean
     return _finite(energy, "path bias"), alpha
+
+
+# Compatibility name for callers using the original probability-mixture API.
+arithmetic_bias = probability_ratio_bias
 
 
 def centroid_mixture(
@@ -150,7 +158,7 @@ def audit_record(
         raise ValueError("bead bias must contain every bead of each frame")
     if total.shape != (values.shape[0],):
         raise ValueError("one total bias is required per complete path")
-    expected, alpha = arithmetic_bias(values, kbt=spec["kbt"])
+    expected, alpha = probability_ratio_bias(values, kbt=spec["kbt"])
     if spec["mode"] == "centroid_probability_mixture":
         expected, _ = centroid_mixture(centroid_bias, expected, kbt=spec["kbt"],
                                       coupling=spec["coupling"],
