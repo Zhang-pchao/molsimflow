@@ -1,0 +1,4152 @@
+"""PIMD path-bias reweighting and engineering diagnostics."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+
+import numpy as np
+
+from molsimflow.postprocess.pimd_fes import (
+    bead_density_estimators,
+    frame_log_weights,
+    normalized_log_weights as _normalized_log_weights,
+    restart_unique_indices,
+    total_bias_energy,
+    validate_bias_mode,
+    validate_primary_estimator,
+)
+
+
+KB_EV_PER_K = 8.617333262145e-5
+EV_TO_KCAL_MOL = 23.06054783061903
+KCAL_TO_KJ_MOL = 4.184
+ANALYSIS_PROFILES = {"core", "water_ionization_opes"}
+
+FES_COLORS = (
+    (34, 75, 121),
+    (40, 108, 133),
+    (57, 156, 146),
+    (70, 168, 143),
+    (85, 180, 138),
+    (118, 194, 116),
+    (184, 216, 81),
+    (216, 220, 72),
+    (250, 223, 63),
+    (255, 207, 69),
+    (255, 186, 78),
+    (252, 164, 83),
+    (237, 133, 74),
+    (214, 87, 59),
+    (255, 255, 255),
+)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def analysis_profile(contract: Mapping[str, object]) -> str:
+    """Return the generic or case-specific diagnostics profile."""
+    profile = str(contract.get("analysis_profile", "water_ionization_opes"))
+    require(profile in ANALYSIS_PROFILES, f"unsupported analysis profile: {profile}")
+    return profile
+
+
+def estimator_plot_labels(bias_mode: str) -> Dict[str, str]:
+    """Name both documented bead estimators without assigning policy priority."""
+    validate_bias_mode(bias_mode)
+    return {
+        "probability_mean": "Probability-mean bead FES",
+        "free_energy_mean": "Free-energy-mean bead FES",
+    }
+
+
+def alternate_estimator(primary_estimator: str) -> str:
+    """Return the estimator reported alongside the selected primary result."""
+
+    primary = validate_primary_estimator(primary_estimator)
+    return "free_energy_mean" if primary == "probability_mean" else "probability_mean"
+
+
+def estimator_support_masks(
+    log_sampling_density: np.ndarray,
+    log_probability_mean: np.ndarray,
+    log_bead_density: np.ndarray,
+    log_relative_threshold: float,
+) -> Dict[str, np.ndarray]:
+    """Build independent and pairwise support masks for all FES comparisons."""
+
+    sampling = np.asarray(log_sampling_density, dtype=float)
+    probability = np.asarray(log_probability_mean, dtype=float)
+    beads = np.asarray(log_bead_density, dtype=float)
+    require(beads.shape[1:] == sampling.shape == probability.shape, "support density shape mismatch")
+    require(np.isfinite(sampling).all() and np.isfinite(probability).all()
+            and np.isfinite(beads).all(), "non-finite KDE density")
+    sampling_support = sampling - np.max(sampling) >= log_relative_threshold
+    probability_support = probability - np.max(probability) >= log_relative_threshold
+    bead_axes = tuple(range(1, beads.ndim))
+    relative_beads = beads - np.max(beads, axis=bead_axes, keepdims=True)
+    free_energy_support = np.all(relative_beads >= log_relative_threshold, axis=0)
+    estimator_common = probability_support & free_energy_support
+    return {
+        "centroid": sampling_support,
+        "probability_mean": probability_support,
+        "free_energy_mean": free_energy_support,
+        # Compatibility name now has the scientifically relevant estimator-pair meaning.
+        "common": estimator_common,
+        "estimator_common": estimator_common,
+        "all_common": sampling_support & estimator_common,
+        "sampling_probability_common": sampling_support & probability_support,
+        "sampling_free_energy_common": sampling_support & free_energy_support,
+    }
+
+
+FES_TABLE_FIELDS = (
+    "sampling_support",
+    "probability_mean_support",
+    "free_energy_mean_support",
+    "common_support",
+    "estimator_common_support",
+    "primary_support",
+    "F_sampling_kcal_mol",
+    "F_quantum_probability_mean_kcal_mol",
+    "F_quantum_free_energy_mean_kcal_mol",
+    "F_primary_kcal_mol",
+    # Historical public name retained as a compatibility alias.
+    "F_bead_free_energy_mean_diagnostic_kcal_mol",
+)
+
+
+def fes_table_columns(
+    surfaces_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    primary_estimator: str,
+    index: int | Tuple[int, ...],
+) -> Dict[str, float | int]:
+    """Return schema-3 FES columns plus the historical diagnostic alias."""
+
+    primary = validate_primary_estimator(primary_estimator)
+    return {
+        "sampling_support": int(supports["centroid"][index]),
+        "probability_mean_support": int(supports["probability_mean"][index]),
+        "free_energy_mean_support": int(supports["free_energy_mean"][index]),
+        "common_support": int(supports["estimator_common"][index]),
+        "estimator_common_support": int(supports["estimator_common"][index]),
+        "primary_support": int(supports[primary][index]),
+        "F_sampling_kcal_mol": float(surfaces_kcal["centroid"][index]),
+        "F_quantum_probability_mean_kcal_mol": float(
+            surfaces_kcal["probability_mean"][index]
+        ),
+        "F_quantum_free_energy_mean_kcal_mol": float(
+            surfaces_kcal["free_energy_mean"][index]
+        ),
+        "F_primary_kcal_mol": float(surfaces_kcal[primary][index]),
+        "F_bead_free_energy_mean_diagnostic_kcal_mol": float(
+            surfaces_kcal["free_energy_mean"][index]
+        ),
+    }
+
+
+def default_cv_label(name: str) -> str:
+    """Return publication-readable labels for the maintained water-ionization CVs."""
+    return {
+        "ionization": r"Ionization state, $s_a$ (dimensionless)",
+        "iondistance": r"Ion separation, $s_t$ ($\AA$)",
+        "logdistance": r"Log ion-separation coordinate, $s'_t$ (dimensionless)",
+    }.get(str(name), str(name))
+
+
+def sampling_protocol_label(reweight: Mapping[str, object]) -> str:
+    """Return an explicit plot label for the declared weighting protocol."""
+    if "protocol_label" in reweight:
+        label = str(reweight["protocol_label"])
+        require(bool(label), "protocol_label must not be empty")
+        return label
+    return {
+        "fixed_bias": "fixed bias",
+        "quasi_static_opes": "quasi-static OPES",
+        "precomputed": "precomputed weights",
+    }[str(reweight.get("weight_kind", "quasi_static_opes"))]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_manifest_inputs(
+    manifest: Path, run_root: Path, inputs: Sequence[Path],
+) -> Dict[str, str]:
+    """Verify consumed files against GNU SHA256SUMS, relative to run_root."""
+    entries: Dict[Path, str] = {}
+    for line_number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+        match = re.fullmatch(r"(\\?)([0-9a-fA-F]{64}) [ *](.+)", line)
+        require(match is not None, f"invalid SHA256SUMS record at line {line_number}")
+        escaped, digest, name = match.groups()
+        if escaped:
+            # GNU checksum tools escape backslash, newline, and carriage return.
+            require(
+                re.fullmatch(r"(?:[^\\]|\\[\\nr])*", name) is not None,
+                f"invalid SHA256SUMS filename escape at line {line_number}",
+            )
+            name = re.sub(
+                r"\\([\\nr])",
+                lambda item: {"\\": "\\", "n": "\n", "r": "\r"}[item.group(1)],
+                name,
+            )
+        path = (run_root / name).resolve()
+        require(path not in entries, f"duplicate SHA256SUMS entry: {name}")
+        entries[path] = digest.lower()
+    require(bool(entries), "empty SHA256SUMS manifest")
+    verified: Dict[str, str] = {}
+    for path in inputs:
+        resolved = path.resolve()
+        require(resolved in entries, f"input missing from SHA256SUMS: {path}")
+        if str(resolved) in verified:
+            continue
+        require(path.is_file(), f"input is not a regular file: {path}")
+        digest = sha256(path)
+        require(digest == entries[resolved], f"input hash mismatch: {path}")
+        verified[str(resolved)] = digest
+    return verified
+
+
+def artifact_basename(config: Mapping[str, object], key: str, default: str) -> str:
+    """Return a configured output basename without allowing path traversal."""
+    name = str(config.get(key, default))
+    require(bool(name) and Path(name).name == name, f"{key} must be a basename")
+    return name
+
+
+def cv_column_names(
+    config: Mapping[str, object], key: str, logical_names: Sequence[str]
+) -> Tuple[str, ...]:
+    """Resolve representation-specific PLUMED columns for logical CV names."""
+    names = tuple(str(value) for value in config.get(key, logical_names))
+    require(len(names) == len(logical_names), f"{key} must match cv_names")
+    return names
+
+
+def diagnostic_cv_spec(config: Mapping[str, object] | None) -> Dict[str, object] | None:
+    """Validate one directly printed diagnostic CV without defining a FES."""
+    if config is None:
+        return None
+    require(isinstance(config, Mapping), "diagnostic_cv must be an object")
+    result = {
+        "name": str(config.get("name", "")),
+        "sampling_column": str(config.get("sampling_column", "")),
+        "bead_column": str(config.get("bead_column", "")),
+        "label": str(config.get("label", config.get("name", ""))),
+        "mean_tolerance": float(config.get("mean_tolerance", 1e-12)),
+    }
+    for key in ("name", "sampling_column", "bead_column"):
+        value = str(result[key])
+        require(bool(value) and Path(value).name == value, f"invalid diagnostic_cv {key}")
+    require(float(result["mean_tolerance"]) >= 0.0, "negative diagnostic_cv tolerance")
+    return result
+
+
+def portable_artifact_path(path: Path | str, output: Path) -> str:
+    """Represent paths inside a movable output tree without staging prefixes."""
+    value = Path(path)
+    if not value.is_absolute():
+        return str(path)
+    try:
+        relative = value.relative_to(output)
+    except ValueError:
+        return str(path)
+    return "{output}/" + relative.as_posix()
+
+
+def adapt_reference_source(source: str) -> str:
+    """Apply the minimal non-square-grid fix to the legacy reference driver."""
+    original = "x,y=np.meshgrid(grid_cv_x,grid_cv_y)"
+    replacement = "x,y=np.meshgrid(grid_cv_x,grid_cv_y,indexing='ij')"
+    require(source.count(original) == 1, "unexpected reference meshgrid implementation")
+    return source.replace(original, replacement)
+
+
+def logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray | float:
+    values = np.asarray(values, dtype=float)
+    maximum = np.max(values, axis=axis, keepdims=True)
+    result = maximum + np.log(np.sum(np.exp(values - maximum), axis=axis, keepdims=True))
+    if axis is None:
+        return float(result.squeeze())
+    return np.squeeze(result, axis=axis)
+
+
+def normalized_log_weights(raw: Sequence[float]) -> np.ndarray:
+    """Normalize frame weights while preserving the workflow keyword API."""
+    return _normalized_log_weights(raw)
+
+
+def cumulative_weight_diagnostics(
+    weights: Sequence[float] | np.ndarray,
+    *,
+    log_weights: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return prefix Kish ESS fraction and maximum share without overflow.
+
+    Supply log weights before exponentiation to preserve prefixes whose linear
+    weights would underflow to zero after full-trajectory normalization.
+    """
+    values = np.asarray(weights, dtype=float)
+    require(values.ndim == 1 and values.size > 0, "empty weights")
+    require(np.isfinite(values).all(), "invalid weights")
+    if not log_weights:
+        require(np.all(values > 0.0), "invalid weights")
+        values = np.log(values)
+    values = values - np.max(values)
+    total = np.logaddexp.accumulate(values)
+    squared_total = np.logaddexp.accumulate(2.0 * values)
+    count = np.arange(1, values.size + 1, dtype=float)
+    ess_fraction = np.exp(2.0 * total - squared_total) / count
+    maximum_share = np.exp(np.maximum.accumulate(values) - total)
+    return ess_fraction, maximum_share
+
+
+def time_window_mask(
+    values: Sequence[float] | np.ndarray,
+    first: float,
+    last: float,
+    *,
+    tolerance: float = 0.0,
+) -> np.ndarray:
+    """Select a finite closed time interval with an explicit tolerance."""
+    times = np.asarray(values, dtype=float)
+    require(times.ndim == 1 and times.size > 0, "invalid time axis")
+    require(np.isfinite(times).all(), "non-finite time axis")
+    require(float(first) <= float(last), "inverted time window")
+    require(float(tolerance) >= 0.0, "negative time-window tolerance")
+    return (times >= float(first) - float(tolerance)) & (
+        times <= float(last) + float(tolerance)
+    )
+
+
+def time_scale_to_fs(value: object, label: str) -> float:
+    """Validate one explicit conversion from an input time column to fs."""
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"invalid {label}") from None
+    require(np.isfinite(scale) and scale > 0.0, f"invalid {label}")
+    return scale
+
+
+def time_values_to_fs(values: Sequence[float] | np.ndarray, scale: float) -> np.ndarray:
+    """Apply one validated raw-time conversion scale."""
+    return np.asarray(values, dtype=float) * scale
+
+
+def aligned_time_indices(
+    source: Sequence[float] | np.ndarray,
+    target: Sequence[float] | np.ndarray,
+    *,
+    tolerance: float = 1e-8,
+) -> np.ndarray:
+    """Match each target to one distinct source frame within a finite tolerance.
+
+    Missing or ambiguous matches raise instead of interpolating or reusing data.
+    """
+    source_times = np.asarray(source, dtype=float)
+    target_times = np.asarray(target, dtype=float)
+    require(source_times.ndim == target_times.ndim == 1, "invalid time-grid rank")
+    require(source_times.size > 0 and target_times.size > 0, "empty time grid")
+    require(np.isfinite(source_times).all(), "non-finite source time grid")
+    require(np.isfinite(target_times).all(), "non-finite target time grid")
+    require(np.all(np.diff(source_times) > 0.0), "source time grid is not strictly increasing")
+    require(np.all(np.diff(target_times) > 0.0), "target time grid is not strictly increasing")
+    tolerance = float(tolerance)
+    require(np.isfinite(tolerance) and tolerance >= 0.0, "invalid time-grid tolerance")
+    # Find the entire closed tolerance interval, not just its right neighbour.
+    indices = np.searchsorted(source_times, target_times - tolerance, side="left")
+    stops = np.searchsorted(source_times, target_times + tolerance, side="right")
+    matches = stops - indices
+    require(np.all(matches > 0), "target time is absent from source grid")
+    require(np.all(matches == 1), "ambiguous time-grid match within tolerance")
+    require(np.all(np.diff(indices) > 0), "target times map to the same source frame")
+    return indices
+
+
+def surface_difference_metrics(
+    reference: np.ndarray, current: np.ndarray, support: np.ndarray
+) -> Tuple[int, float, float]:
+    difference = np.asarray(current, dtype=float) - np.asarray(reference, dtype=float)
+    mask = np.asarray(support, dtype=bool)
+    require(difference.shape == mask.shape, "surface/support shape mismatch")
+    count = int(np.count_nonzero(mask))
+    require(count >= 2, "insufficient surface-comparison support")
+    selected = difference[mask]
+    return count, float(np.sqrt(np.mean(selected**2))), float(np.max(np.abs(selected)))
+
+
+
+def optional_surface_difference_metrics(
+    reference: np.ndarray, current: np.ndarray, support: np.ndarray
+) -> Tuple[int, float | None, float | None]:
+    """Keep insufficient diagnostic overlap separate from a valid primary FES."""
+    count = int(np.count_nonzero(support))
+    if count < 2:
+        return count, None, None
+    return surface_difference_metrics(reference, current, support)
+
+
+def diagnostic_gap_metrics(gap: np.ndarray, support: np.ndarray) -> Dict[str, float | None]:
+    """Compare the diagnostic using the primary zero, without extrapolated tails."""
+    selected = np.asarray(gap)[np.asarray(support, dtype=bool)]
+    return {
+        "probability_free_energy_mean_rmse_common_support_kcal_mol": (
+            float(np.sqrt(np.mean(selected**2))) if selected.size else None
+        ),
+        "probability_free_energy_mean_max_abs_common_support_kcal_mol": (
+            float(np.max(np.abs(selected))) if selected.size else None
+        ),
+    }
+
+
+def reconstruction_within_tolerance(
+    error: float, tolerance: float | None
+) -> bool:
+    return tolerance is None or float(error) <= float(tolerance)
+
+
+def _validate_logdistance_parameters(
+    switch: float, offset: float, linear_shift: float,
+    log_scale: float, log_reference: float,
+) -> None:
+    """Reject noninvertible joins; allow the archived eight-digit shift rounding."""
+    parameters = np.asarray([switch, offset, linear_shift, log_scale, log_reference])
+    require(np.isfinite(parameters).all(), "non-finite piecewise-logdistance parameter")
+    require(switch + offset > 0.0, "invalid piecewise-logdistance domain")
+    require(log_scale > 0.0 and log_reference > 0.0, "invalid logarithm scale/reference")
+    left = log_scale * math.log((switch + offset) / log_reference)
+    right = switch - linear_shift
+    require(abs(left - right) <= 5e-8, "discontinuous piecewise-logdistance join")
+
+
+def piecewise_logdistance(
+    iondistance: Sequence[float] | np.ndarray,
+    *,
+    switch: float = 1.0,
+    offset: float = 0.03,
+    linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+) -> np.ndarray:
+    """Evaluate the Reactive Voronoi piecewise log-distance coordinate."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
+    values = np.asarray(iondistance, dtype=float)
+    require(np.isfinite(values).all(), "non-finite iondistance")
+    require(np.all(values + float(offset) > 0.0), "iondistance is outside transform domain")
+    return np.where(
+        values < float(switch),
+        float(log_scale) * np.log((values + float(offset)) / float(log_reference)),
+        values - float(linear_shift),
+    )
+
+
+def inverse_piecewise_logdistance(
+    logdistance: Sequence[float] | np.ndarray,
+    *,
+    switch: float = 1.0,
+    offset: float = 0.03,
+    linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+) -> np.ndarray:
+    """Invert the continuous Reactive Voronoi piecewise log-distance map."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
+    values = np.asarray(logdistance, dtype=float)
+    require(np.isfinite(values).all(), "non-finite logdistance")
+    # Prefer the exact linear branch at the switch. Archived shifts are rounded
+    # by a few nanounits; midpoint classification misinverts the switch itself.
+    boundary = float(switch) - float(linear_shift)
+    return np.where(
+        values < boundary,
+        float(log_reference) * np.exp(np.minimum(values, boundary) / float(log_scale)) - float(offset),
+        values + float(linear_shift),
+    )
+
+
+def piecewise_logdistance_jacobian(
+    iondistance: Sequence[float] | np.ndarray,
+    *,
+    switch: float = 1.0,
+    offset: float = 0.03,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+    linear_shift: float = 0.9704412,
+) -> np.ndarray:
+    """Return the absolute d(logdistance)/d(iondistance) density Jacobian."""
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
+    values = np.asarray(iondistance, dtype=float)
+    require(np.isfinite(values).all(), "non-finite iondistance")
+    require(np.all(values + float(offset) > 0.0), "iondistance is outside Jacobian domain")
+    return np.where(values < float(switch), float(log_scale) / (values + float(offset)), 1.0)
+
+
+def transform_piecewise_logdistance_fes(
+    logdistance_grid: Sequence[float] | np.ndarray,
+    free_energy: np.ndarray,
+    kbt: float,
+    *,
+    axis: int = -1,
+    switch: float = 1.0,
+    offset: float = 0.03,
+    linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+    zero_minimum: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Transform a logdistance FES axis to iondistance with its Jacobian."""
+    source_grid = np.asarray(logdistance_grid, dtype=float)
+    values = np.asarray(free_energy, dtype=float)
+    require(source_grid.ndim == 1 and source_grid.size > 1, "invalid logdistance grid")
+    require(np.all(np.diff(source_grid) > 0.0), "logdistance grid is not strictly increasing")
+    require(values.ndim > 0, "invalid free-energy array")
+    normalized_axis = int(axis) % values.ndim
+    require(
+        values.shape[normalized_axis] == source_grid.size,
+        "FES/logdistance grid shape mismatch",
+    )
+    require(np.isfinite(values).all(), "non-finite free energy")
+    require(np.isfinite(kbt) and float(kbt) > 0.0, "kBT must be positive")
+    iondistance = inverse_piecewise_logdistance(
+        source_grid,
+        switch=switch,
+        offset=offset,
+        linear_shift=linear_shift,
+        log_scale=log_scale,
+        log_reference=log_reference,
+    )
+    jacobian = piecewise_logdistance_jacobian(
+        iondistance, switch=switch, offset=offset, linear_shift=linear_shift,
+        log_scale=log_scale, log_reference=log_reference
+    )
+    correction_shape = [1] * values.ndim
+    correction_shape[normalized_axis] = source_grid.size
+    transformed = values - float(kbt) * np.log(jacobian).reshape(correction_shape)
+    if zero_minimum:
+        transformed -= float(np.min(transformed))
+    return iondistance, jacobian, transformed
+
+
+def validate_piecewise_logdistance_printed(
+    logdistance: Sequence[float] | np.ndarray,
+    iondistance: Sequence[float] | np.ndarray,
+    *,
+    tolerance: float,
+    switch: float = 1.0,
+    offset: float = 0.03,
+    linear_shift: float = 0.9704412,
+    log_scale: float = 1.0,
+    log_reference: float = 1.0,
+) -> Dict[str, float]:
+    """Fail closed unless printed source and derived coordinates agree."""
+    source = np.asarray(logdistance, dtype=float)
+    printed = np.asarray(iondistance, dtype=float)
+    require(source.shape == printed.shape and source.size > 0, "printed transform shape mismatch")
+    require(np.isfinite(source).all(), "non-finite printed logdistance")
+    require(np.isfinite(printed).all(), "non-finite printed iondistance")
+    require(np.isfinite(tolerance) and float(tolerance) >= 0.0, "invalid printed-transform tolerance")
+    forward_error = float(
+        np.max(
+            np.abs(
+                piecewise_logdistance(
+                    printed,
+                    switch=switch,
+                    offset=offset,
+                    linear_shift=linear_shift,
+                    log_scale=log_scale,
+                    log_reference=log_reference,
+                )
+                - source
+            )
+        )
+    )
+    inverse_error = float(
+        np.max(
+            np.abs(
+                inverse_piecewise_logdistance(
+                    source,
+                    switch=switch,
+                    offset=offset,
+                    linear_shift=linear_shift,
+                    log_scale=log_scale,
+                    log_reference=log_reference,
+                )
+                - printed
+            )
+        )
+    )
+    require(
+        max(forward_error, inverse_error) <= float(tolerance),
+        "printed logdistance/iondistance transform mismatch",
+    )
+    return {
+        "forward_maximum_absolute_error": forward_error,
+        "inverse_maximum_absolute_error": inverse_error,
+        "maximum_absolute_error": max(forward_error, inverse_error),
+    }
+
+
+def piecewise_derived_coordinate_spec(
+    config: Mapping[str, object] | None,
+    cv_names: Sequence[str],
+) -> Dict[str, object] | None:
+    """Validate the optional deterministic derived-coordinate contract."""
+    if config is None:
+        return None
+    require(isinstance(config, Mapping), "derived_coordinate must be an object")
+    require(config.get("kind") == "piecewise_logdistance", "unsupported derived coordinate")
+    source = str(config.get("source", ""))
+    target = str(config.get("target", ""))
+    printed_column = str(config.get("printed_column", ""))
+    sampling_printed_column = str(
+        config.get("sampling_printed_column", printed_column)
+    )
+    bead_printed_column = str(config.get("bead_printed_column", printed_column))
+    require(source in cv_names, "derived-coordinate source is not a biased CV")
+    require(target not in cv_names, "derived coordinate must not be an independent biased CV")
+    for label, value in (
+        ("target", target),
+        ("printed_column", printed_column),
+        ("sampling_printed_column", sampling_printed_column),
+        ("bead_printed_column", bead_printed_column),
+    ):
+        require(bool(value) and Path(value).name == value, f"invalid derived-coordinate {label}")
+    switch = float(config.get("switch", 1.0))
+    offset = float(config.get("offset", 0.03))
+    linear_shift = float(config.get("linear_shift", 0.9704412))
+    log_scale = float(config.get("log_scale", 1.0))
+    log_reference = float(config.get("log_reference", 1.0))
+    tolerance = float(config.get("printed_transform_tolerance", 1e-12))
+    _validate_logdistance_parameters(switch, offset, linear_shift, log_scale, log_reference)
+    require(switch + offset > 0.0, "invalid piecewise-logdistance domain")
+    require(np.isfinite(tolerance) and tolerance >= 0.0, "invalid printed-transform tolerance")
+    return {
+        "kind": "piecewise_logdistance",
+        "source": source,
+        "target": target,
+        "printed_column": printed_column,
+        "sampling_printed_column": sampling_printed_column,
+        "bead_printed_column": bead_printed_column,
+        "switch": switch,
+        "offset": offset,
+        "linear_shift": linear_shift,
+        "log_scale": log_scale,
+        "log_reference": log_reference,
+        "printed_transform_tolerance": tolerance,
+        "label": str(config.get("label", target)),
+    }
+
+
+def _validate_kde_weights(samples: np.ndarray, log_weights: np.ndarray) -> None:
+    require(samples.shape[0] > 0 and np.isfinite(samples).all(), "invalid KDE samples")
+    require(log_weights.shape == (samples.shape[0],), "KDE frame weight count mismatch")
+    require(np.isfinite(log_weights).all(), "non-finite KDE log weights")
+
+
+def weighted_log_kde_1d(
+    samples: np.ndarray, log_weights: np.ndarray, grid: np.ndarray, bandwidth: float
+) -> np.ndarray:
+    samples = np.asarray(samples, dtype=float)
+    log_weights = np.asarray(log_weights, dtype=float)
+    require(samples.ndim == 1, "1D sample shape mismatch")
+    _validate_kde_weights(samples, log_weights)
+    require(np.isfinite(bandwidth) and float(bandwidth) > 0.0,
+            "bandwidth must be finite and positive")
+    exponent = log_weights[None, :] - 0.5 * (
+        (grid[:, None] - samples[None, :]) / float(bandwidth)
+    ) ** 2
+    return np.asarray(logsumexp(exponent, axis=1)) - math.log(
+        float(bandwidth) * math.sqrt(2.0 * math.pi)
+    )
+
+
+def weighted_log_kde_2d(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    bandwidth: Sequence[float],
+    *,
+    chunk_points: int = 128,
+) -> np.ndarray:
+    samples = np.asarray(samples, dtype=float)
+    log_weights = np.asarray(log_weights, dtype=float)
+    require(samples.ndim == 2 and samples.shape[1] == 2, "2D sample shape mismatch")
+    _validate_kde_weights(samples, log_weights)
+    hx, hy = (float(value) for value in bandwidth)
+    require(np.isfinite([hx, hy]).all() and hx > 0.0 and hy > 0.0,
+            "bandwidths must be finite and positive")
+    require(isinstance(chunk_points, (int, np.integer))
+            and not isinstance(chunk_points, bool) and chunk_points > 0,
+            "chunk_points must be a positive integer")
+    xx, yy = np.meshgrid(x_grid, y_grid)
+    points = np.column_stack((xx.ravel(), yy.ravel()))
+    output = np.empty(points.shape[0], dtype=float)
+    for start in range(0, points.shape[0], int(chunk_points)):
+        stop = min(points.shape[0], start + int(chunk_points))
+        current = points[start:stop]
+        exponent = (
+            log_weights[None, :]
+            - 0.5 * ((current[:, 0, None] - samples[None, :, 0]) / hx) ** 2
+            - 0.5 * ((current[:, 1, None] - samples[None, :, 1]) / hy) ** 2
+        )
+        output[start:stop] = np.asarray(logsumexp(exponent, axis=1))
+    output -= math.log(2.0 * math.pi * hx * hy)
+    return output.reshape(len(y_grid), len(x_grid))
+
+
+
+def quantum_kde_block_jackknife(
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    grids: Sequence[np.ndarray],
+    bandwidth: Sequence[float],
+    *,
+    kbt: float,
+    block_frames: int,
+    reference_grid_index: Sequence[int],
+    relative_density_support: float,
+    primary_estimator: str = "probability_mean",
+) -> dict[str, object]:
+    """Estimate fixed-bandwidth primary-estimator errors in one or two CVs.
+
+    Grid indices follow CV order; 2D arrays follow the existing (y, x) layout.
+    Whole contiguous frame blocks are deleted. Support must survive every
+    deletion. This estimates sampling error, not KDE smoothing bias.
+    """
+    values = np.asarray(beads, dtype=float)
+    axes = [np.asarray(axis, dtype=float) for axis in grids]
+    widths = np.asarray(bandwidth, dtype=float)
+    dims = len(axes)
+    require(dims in (1, 2), "jackknife requires one or two CV grids")
+    require(
+        values.ndim == 3
+        and values.shape[2] == dims
+        and values.shape[0] > 0
+        and values.shape[1] > 0,
+        "invalid bead shape",
+    )
+    require(np.isfinite(values).all(), "non-finite bead CV")
+    require(
+        all(
+            axis.ndim == 1
+            and len(axis) > 0
+            and np.isfinite(axis).all()
+            and np.all(np.diff(axis) > 0)
+            for axis in axes
+        ),
+        "invalid grid",
+    )
+    require(
+        widths.shape == (dims,) and np.isfinite(widths).all() and np.all(widths > 0),
+        "invalid bandwidth",
+    )
+    require(np.isfinite(kbt) and kbt > 0, "kBT must be finite and positive")
+    require(
+        np.isfinite(relative_density_support) and 0 < relative_density_support <= 1,
+        "invalid relative density support",
+    )
+    weights = np.asarray(raw_log_weights, dtype=float)
+    require(weights.shape == (len(values),), "weight/frame shape mismatch")
+    normalized_log_weights(weights)
+    require(
+        isinstance(block_frames, (int, np.integer))
+        and not isinstance(block_frames, bool)
+        and block_frames > 0,
+        "block_frames must be a positive integer",
+    )
+    size = int(block_frames)
+    require(len(values) % size == 0, "equal blocks must cover all frames")
+    blocks = len(values) // size
+    require(blocks >= 2, "jackknife requires at least two blocks")
+    require(
+        isinstance(reference_grid_index, (list, tuple, np.ndarray)), "invalid reference_grid_index"
+    )
+    index = tuple(reference_grid_index)
+    require(
+        len(index) == dims
+        and all(
+            isinstance(i, (int, np.integer)) and not isinstance(i, bool) and 0 <= i < len(axis)
+            for i, axis in zip(index, axes)
+        ),
+        "invalid reference_grid_index",
+    )
+    array_index = index if dims == 1 else index[::-1]
+    threshold = math.log(relative_density_support)
+    primary = validate_primary_estimator(primary_estimator)
+
+    def curve(keep):
+        selected = values[keep]
+        logw = normalized_log_weights(weights[keep])
+        if dims == 1:
+            logs = [
+                weighted_log_kde_1d(selected[:, b, 0], logw, axes[0], widths[0])
+                for b in range(values.shape[1])
+            ]
+        else:
+            logs = [
+                weighted_log_kde_2d(selected[:, b], logw, axes[0], axes[1], widths)
+                for b in range(values.shape[1])
+            ]
+        bead_logs = np.asarray(logs)
+        estimators = bead_density_estimators(
+            bead_logs, kbt, primary_estimator=primary
+        )
+        logp = np.asarray(logsumexp(bead_logs, axis=0)) - math.log(values.shape[1])
+        if primary == "probability_mean":
+            support = logp - np.max(logp) >= threshold
+        else:
+            bead_axes = tuple(range(1, bead_logs.ndim))
+            relative = bead_logs - np.max(bead_logs, axis=bead_axes, keepdims=True)
+            support = np.all(relative >= threshold, axis=0)
+        require(support[array_index], "reference grid point loses density support")
+        curve_values = np.asarray(estimators[primary], dtype=float)
+        return curve_values - curve_values[array_index], support
+
+    full, support = curve(np.ones(len(values), dtype=bool))
+    estimates = []
+    for block in range(blocks):
+        keep = np.ones(len(values), dtype=bool)
+        keep[block * size : (block + 1) * size] = False
+        current, current_support = curve(keep)
+        estimates.append(current)
+        support &= current_support
+    deleted = np.asarray(estimates)
+    error = np.sqrt(
+        (blocks - 1) / blocks * np.sum((deleted - np.mean(deleted, axis=0)) ** 2, axis=0)
+    )
+    error[~support] = np.nan
+    return {
+        "free_energy_difference": full,
+        "standard_error": error,
+        "support": support,
+        "blocks": blocks,
+        "block_frames": size,
+    }
+
+
+def write_kde_uncertainty(
+    output: Path,
+    reweight: Mapping[str, object],
+    cv_names: Sequence[str],
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    kbt: float,
+) -> None:
+    """Write optional whole-frame sampling errors without changing block diagnostics."""
+    if "uncertainty" not in reweight:
+        return
+    config = reweight["uncertainty"]
+    require(
+        isinstance(config, dict) and set(config) == {"block_frames", "reference_grid_index"},
+        "invalid uncertainty configuration",
+    )
+    grids = [np.linspace(*reweight["grid"][name]) for name in cv_names]
+    bandwidth = reweight["bandwidth_variants"][reweight["primary_bandwidth"]]
+    result = quantum_kde_block_jackknife(
+        beads,
+        raw_log_weights,
+        grids,
+        bandwidth,
+        kbt=kbt,
+        block_frames=config["block_frames"],
+        reference_grid_index=config["reference_grid_index"],
+        relative_density_support=float(reweight["relative_density_support"]),
+        primary_estimator=str(reweight.get("primary_estimator", "probability_mean")),
+    )
+    points = np.column_stack([axis.ravel() for axis in np.meshgrid(*grids)])
+    fields = list(cv_names) + ["delta_F_eV", "standard_error_eV", "support"]
+    rows = []
+    for n, point in enumerate(points):
+        row = dict(zip(cv_names, point))
+        row.update(
+            delta_F_eV=result["free_energy_difference"].ravel()[n],
+            standard_error_eV=result["standard_error"].ravel()[n],
+            support=int(result["support"].ravel()[n]),
+        )
+        rows.append(row)
+    write_csv(output / "blocks" / "quantum-fes-uncertainty.csv", rows, fields)
+    metadata = {
+        "estimator": str(reweight.get("primary_estimator", "probability_mean")),
+        "method": "delete_one_frame_block_jackknife",
+        "blocks": result["blocks"],
+        "block_frames": result["block_frames"],
+        "reference_grid_index": config["reference_grid_index"],
+        "reference_coordinates": [
+            float(axis[i]) for axis, i in zip(grids, config["reference_grid_index"])
+        ],
+        "bandwidth": list(bandwidth),
+        "relative_density_support": float(reweight["relative_density_support"]),
+        "units": "eV",
+        "scope": "Fixed-bandwidth sampling standard error; not smoothing bias or a confidence interval.",
+    }
+    (output / "blocks" / "quantum-fes-uncertainty.json").write_text(
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def compute_surfaces(
+    beads: np.ndarray,
+    centroid: np.ndarray,
+    raw_log_weights: np.ndarray,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    bandwidth: Sequence[float],
+    kbt_ev: float,
+    primary_estimator: str = "probability_mean",
+) -> Dict[str, np.ndarray]:
+    beads = np.asarray(beads, dtype=float)
+    centroid = np.asarray(centroid, dtype=float)
+    require(beads.ndim == 3 and beads.shape[2] == 2, "beads must be frame x bead x 2")
+    require(centroid.shape == (beads.shape[0], 2), "centroid/bead shape mismatch")
+    require(np.isfinite(beads).all() and np.isfinite(centroid).all(), "non-finite CV values")
+    log_weights = normalized_log_weights(raw_log_weights)
+    log_beads = np.asarray(
+        [
+            weighted_log_kde_2d(beads[:, bead, :], log_weights, x_grid, y_grid, bandwidth)
+            for bead in range(beads.shape[1])
+        ]
+    )
+    log_centroid = weighted_log_kde_2d(
+        centroid, log_weights, x_grid, y_grid, bandwidth
+    )
+    estimators = bead_density_estimators(
+        log_beads, kbt_ev, primary_estimator=primary_estimator
+    )
+    raw_sampling = -float(kbt_ev) * log_centroid
+    return {
+        "log_weights": log_weights,
+        "weights": np.exp(log_weights),
+        "log_centroid": log_centroid,
+        "log_beads": log_beads,
+        "log_probability_mean": estimators["log_probability_mean"],
+        "raw_centroid": raw_sampling,
+        "raw_probability_mean": estimators["raw_probability_mean"],
+        "raw_free_energy_mean": estimators["raw_free_energy_mean"],
+        "centroid": raw_sampling - np.min(raw_sampling),
+        "probability_mean": estimators["probability_mean"],
+        "free_energy_mean": estimators["free_energy_mean"],
+    }
+
+
+def compute_marginals(
+    beads: np.ndarray,
+    centroid: np.ndarray,
+    raw_log_weights: np.ndarray,
+    grid: np.ndarray,
+    bandwidth: float,
+    component: int,
+    kbt_ev: float,
+    primary_estimator: str = "probability_mean",
+) -> Dict[str, np.ndarray]:
+    log_weights = normalized_log_weights(raw_log_weights)
+    log_beads = np.asarray(
+        [
+            weighted_log_kde_1d(beads[:, bead, component], log_weights, grid, bandwidth)
+            for bead in range(beads.shape[1])
+        ]
+    )
+    log_centroid = weighted_log_kde_1d(
+        centroid[:, component], log_weights, grid, bandwidth
+    )
+    estimators = bead_density_estimators(
+        log_beads, kbt_ev, primary_estimator=primary_estimator
+    )
+    sampling_f = -float(kbt_ev) * log_centroid
+    return {
+        "centroid": sampling_f - np.min(sampling_f),
+        "probability_mean": estimators["probability_mean"],
+        "free_energy_mean": estimators["free_energy_mean"],
+        "log_centroid": log_centroid,
+        "log_probability_mean": estimators["log_probability_mean"],
+        "log_beads": log_beads,
+    }
+
+
+def read_plumed(path: Path) -> Tuple[Tuple[str, ...], np.ndarray]:
+    fields: Tuple[str, ...] | None = None
+    rows: List[List[float]] = []
+    with Path(path).open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("#! FIELDS"):
+                candidate = tuple(line.split()[2:])
+                if fields is None:
+                    fields = candidate
+                else:
+                    require(fields == candidate, f"FIELDS changed in {path}")
+            elif line.startswith("#") or not line.strip():
+                continue
+            else:
+                require(fields is not None, f"missing FIELDS header: {path}")
+                values = [float(value) for value in line.split()]
+                require(len(values) == len(fields), f"column mismatch: {path}")
+                rows.append(values)
+    require(fields is not None and rows, f"empty PLUMED table: {path}")
+    data = np.asarray(rows, dtype=float)
+    require(np.isfinite(data).all(), f"non-finite PLUMED table: {path}")
+    return fields, data
+
+
+def field(data: np.ndarray, fields: Sequence[str], name: str) -> np.ndarray:
+    try:
+        index = tuple(fields).index(name)
+    except ValueError as exc:
+        raise ValueError(f"column not found: {name}") from exc
+    return data[:, index]
+
+
+def write_csv(path: Path, rows: Iterable[Mapping[str, object]], fieldnames: Sequence[str]) -> None:
+    """Write CSV while adding kJ/mol peers for legacy kcal/mol energy columns."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    expanded = []
+    kj_columns = {}
+    for name in fieldnames:
+        expanded.append(name)
+        if name.endswith("_kcal_mol"):
+            target = name.replace("_kcal_mol", "_kJ_mol")
+            expanded.append(target)
+            kj_columns[name] = target
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=expanded)
+        writer.writeheader()
+        for source in rows:
+            row = dict(source)
+            for legacy, target in kj_columns.items():
+                row[target] = float(row[legacy]) * KCAL_TO_KJ_MOL
+            writer.writerow(row)
+
+
+def write_filtered_colvar(
+    path: Path, fields: Sequence[str], data: np.ndarray, selected: np.ndarray
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("#! FIELDS " + " ".join(fields) + "\n")
+        for row in data[selected]:
+            handle.write(" ".join(f"{float(value):.16e}" for value in row) + "\n")
+
+
+def read_thermo(path: Path) -> Dict[int, Dict[str, float]]:
+    rows: Dict[int, Dict[str, float]] = {}
+    header: List[str] | None = None
+    with Path(path).open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            tokens = line.split()
+            if tokens and tokens[0] == "Step" and "Time" in tokens:
+                header = tokens
+                continue
+            if header is None or len(tokens) != len(header):
+                continue
+            try:
+                values = [float(value) for value in tokens]
+            except ValueError:
+                continue
+            row = dict(zip(header, values))
+            step = int(round(row["Step"]))
+            rows[step] = row
+    require(rows, f"no thermo rows: {path}")
+    return rows
+
+
+def dump_frames(path: Path):
+    with Path(path).open(encoding="utf-8") as handle:
+        while True:
+            marker = handle.readline()
+            if not marker:
+                return
+            require(marker.startswith("ITEM: TIMESTEP"), f"bad dump marker: {path}")
+            step = int(handle.readline().strip())
+            require(handle.readline().startswith("ITEM: NUMBER OF ATOMS"), f"bad atom count: {path}")
+            atoms = int(handle.readline().strip())
+            require(handle.readline().startswith("ITEM: BOX BOUNDS"), f"bad box header: {path}")
+            bounds = np.asarray(
+                [[float(value) for value in handle.readline().split()[:2]] for _ in range(3)]
+            )
+            atom_header = handle.readline().split()[2:]
+            required = [atom_header.index(name) for name in ("id", "type", "x", "y", "z")]
+            values = np.empty((atoms, len(atom_header)), dtype=float)
+            for atom in range(atoms):
+                tokens = handle.readline().split()
+                require(len(tokens) == len(atom_header), f"bad atom row: {path}")
+                values[atom] = [float(value) for value in tokens]
+            ids = values[:, required[0]].astype(int)
+            order = np.argsort(ids)
+            types = values[order, required[1]].astype(int)
+            positions = values[order][:, required[2:5]]
+            yield step, bounds, ids[order], types, positions
+
+
+def ring_polymer_spread(
+    paths: Sequence[Path], selected_steps: Sequence[int], type_labels: Mapping[int, str]
+) -> List[Dict[str, float]]:
+    wanted = {int(step) for step in selected_steps}
+    require(bool(wanted), "no requested trajectory steps")
+    first_step = min(wanted)
+    last_step = max(wanted)
+    generators = [dump_frames(path) for path in paths]
+    output: List[Dict[str, float]] = []
+    while True:
+        frames = []
+        for generator in generators:
+            try:
+                frames.append(next(generator))
+            except StopIteration:
+                frames = []
+                break
+        if not frames:
+            break
+        steps = {frame[0] for frame in frames}
+        require(len(steps) == 1, "trajectory timestep mismatch")
+        step = frames[0][0]
+        require(all(np.array_equal(frame[2], frames[0][2]) for frame in frames), "atom order mismatch")
+        require(all(np.array_equal(frame[3], frames[0][3]) for frame in frames), "atom type mismatch")
+        if step < int(first_step):
+            continue
+        if step > int(last_step):
+            break
+        if step not in wanted:
+            continue
+        box = frames[0][1][:, 1] - frames[0][1][:, 0]
+        positions = np.asarray([frame[4] for frame in frames])
+        reference = positions[0]
+        delta = positions - reference[None, :, :]
+        delta -= box[None, None, :] * np.rint(delta / box[None, None, :])
+        unwrapped = reference[None, :, :] + delta
+        centroid = np.mean(unwrapped, axis=0)
+        rg2 = np.mean(np.sum((unwrapped - centroid[None, :, :]) ** 2, axis=2), axis=0)
+        row: Dict[str, float] = {
+            "step": float(step),
+            "rg_all_A": float(math.sqrt(float(np.mean(rg2)))),
+            "rg_p95_A": float(math.sqrt(float(np.percentile(rg2, 95.0)))),
+            "rg_max_A": float(math.sqrt(float(np.max(rg2)))),
+        }
+        types = frames[0][3]
+        for atom_type, label in sorted(type_labels.items()):
+            mask = types == int(atom_type)
+            require(bool(np.any(mask)), f"atom type absent from trajectory: {atom_type}")
+            row[f"rg_{label}_A"] = float(math.sqrt(float(np.mean(rg2[mask]))))
+        output.append(row)
+    observed = {int(row["step"]) for row in output}
+    require(observed == wanted, "selected trajectory steps missing")
+    return output
+
+
+def soft_voronoi_occupancies(
+    positions: np.ndarray,
+    types: np.ndarray,
+    box: np.ndarray,
+    center_type: int,
+    assigned_type: int,
+    kappa: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    positions = np.asarray(positions, dtype=float)
+    types = np.asarray(types, dtype=int)
+    box = np.asarray(box, dtype=float)
+    require(positions.ndim == 2 and positions.shape[1] == 3, "position shape mismatch")
+    require(types.shape == (positions.shape[0],), "type shape mismatch")
+    require(box.shape == (3,) and np.all(box > 0.0), "invalid periodic box")
+    require(float(kappa) > 0.0, "kappa must be positive")
+    centers = positions[types == int(center_type)]
+    assigned = positions[types == int(assigned_type)]
+    require(len(centers) > 0 and len(assigned) > 0, "center or assigned atoms missing")
+    delta = assigned[None, :, :] - centers[:, None, :]
+    delta -= box[None, None, :] * np.rint(delta / box[None, None, :])
+    distances = np.linalg.norm(delta, axis=2)
+    shifted = distances - np.min(distances, axis=0, keepdims=True)
+    weights = np.exp(-float(kappa) * shifted)
+    weights /= np.sum(weights, axis=0, keepdims=True)
+    occupancies = np.sum(weights, axis=1)
+    nearest_counts = np.bincount(
+        np.argmin(distances, axis=0), minlength=len(centers)
+    )
+    return occupancies, nearest_counts
+
+
+def ionization_candidate_details(
+    paths: Sequence[Path],
+    selected_steps: np.ndarray,
+    time_ps: np.ndarray,
+    centroid_values: np.ndarray,
+    bead_values: np.ndarray,
+    type_labels: Mapping[int, str],
+    *,
+    kappa: float,
+    reference: float,
+    minimum_score: float,
+    reconstruction_tolerance: float | None,
+    sampling_representation: str = "centroid",
+) -> List[Dict[str, object]]:
+    require(bead_values.shape == (len(selected_steps), len(paths)), "candidate bead shape mismatch")
+    center_types = [key for key, value in type_labels.items() if value == "O"]
+    assigned_types = [key for key, value in type_labels.items() if value == "H"]
+    require(len(center_types) == 1 and len(assigned_types) == 1, "unique H/O type labels required")
+    step_to_index = {int(step): index for index, step in enumerate(selected_steps)}
+    wanted = {
+        int(selected_steps[index])
+        for index in range(len(selected_steps))
+        if centroid_values[index] >= minimum_score
+        or np.any(bead_values[index] >= minimum_score)
+    }
+    generators = [dump_frames(path) for path in paths]
+    output: List[Dict[str, object]] = []
+    while wanted:
+        frames = []
+        for generator in generators:
+            try:
+                frames.append(next(generator))
+            except StopIteration:
+                frames = []
+                break
+        if not frames:
+            break
+        steps = {frame[0] for frame in frames}
+        require(len(steps) == 1, "candidate trajectory timestep mismatch")
+        step = int(frames[0][0])
+        if step not in wanted:
+            continue
+        index = step_to_index[step]
+        require(all(np.array_equal(frame[2], frames[0][2]) for frame in frames), "candidate atom order mismatch")
+        require(all(np.array_equal(frame[3], frames[0][3]) for frame in frames), "candidate atom type mismatch")
+        ids = frames[0][2]
+        types = frames[0][3]
+        box = frames[0][1][:, 1] - frames[0][1][:, 0]
+        positions = np.asarray([frame[4] for frame in frames])
+        reference_positions = positions[0]
+        delta = positions - reference_positions[None, :, :]
+        delta -= box[None, None, :] * np.rint(delta / box[None, None, :])
+        centroid_positions = reference_positions + np.mean(delta, axis=0)
+        representations = []
+        if sampling_representation == "centroid":
+            representations.append(
+                (sampling_representation, 0, centroid_values[index], centroid_positions)
+            )
+        representations.extend(
+            (f"bead_{bead + 1}", bead + 1, bead_values[index, bead], positions[bead])
+            for bead in range(len(paths))
+        )
+        center_ids = ids[types == int(center_types[0])]
+        for label, bead, recorded, current_positions in representations:
+            if float(recorded) < float(minimum_score):
+                continue
+            occupancies, hard_counts = soft_voronoi_occupancies(
+                current_positions, types, box, center_types[0], assigned_types[0], kappa
+            )
+            score = float(np.sum((occupancies - float(reference)) ** 2))
+            error = abs(score - float(recorded))
+            require(
+                reconstruction_within_tolerance(error, reconstruction_tolerance),
+                f"ionization reconstruction mismatch at step {step} {label}",
+            )
+            minimum = int(np.argmin(occupancies))
+            maximum = int(np.argmax(occupancies))
+            output.append(
+                {
+                    "time_ps": float(time_ps[index]),
+                    "step": step,
+                    "representation": label,
+                    "bead": bead,
+                    "recorded_score": float(recorded),
+                    "reconstructed_score": score,
+                    "absolute_reconstruction_error": error,
+                    "minimum_soft_occupancy": float(occupancies[minimum]),
+                    "minimum_soft_occupancy_O_id": int(center_ids[minimum]),
+                    "maximum_soft_occupancy": float(occupancies[maximum]),
+                    "maximum_soft_occupancy_O_id": int(center_ids[maximum]),
+                    "minimum_hard_H_count": int(np.min(hard_counts)),
+                    "maximum_hard_H_count": int(np.max(hard_counts)),
+                    "hard_undercoordinated_centers": int(np.count_nonzero(hard_counts <= 1)),
+                    "hard_overcoordinated_centers": int(np.count_nonzero(hard_counts >= 3)),
+                    "hard_pair_like": int(
+                        np.any(hard_counts <= 1) and np.any(hard_counts >= 3)
+                    ),
+                }
+            )
+        wanted.remove(step)
+    require(not wanted, "candidate trajectory frames missing")
+    return output
+
+
+def threshold_run_rows(
+    time_ps: np.ndarray,
+    series: Mapping[str, np.ndarray],
+    thresholds: Sequence[float],
+) -> List[Dict[str, object]]:
+    stride_ps = float(np.median(np.diff(time_ps)))
+    rows: List[Dict[str, object]] = []
+    for label, values in series.items():
+        values = np.asarray(values, dtype=float)
+        for threshold in thresholds:
+            mask = values >= float(threshold)
+            runs: List[Tuple[int, int]] = []
+            start: int | None = None
+            for index, active in enumerate(mask):
+                if active and start is None:
+                    start = index
+                if start is not None and (not active or index == len(mask) - 1):
+                    stop = index if active and index == len(mask) - 1 else index - 1
+                    runs.append((start, stop))
+                    start = None
+            longest = max((stop - start + 1 for start, stop in runs), default=0)
+            rows.append(
+                {
+                    "representation": label,
+                    "threshold": float(threshold),
+                    "frames_at_or_above": int(np.count_nonzero(mask)),
+                    "fraction_frames": float(np.mean(mask)),
+                    "contiguous_runs": len(runs),
+                    "longest_run_frames": longest,
+                    "longest_run_ps": longest * stride_ps,
+                }
+            )
+    return rows
+
+
+def _matplotlib():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    return plt, TwoSlopeNorm
+
+
+def save_figure(fig, stem: Path) -> None:
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(stem.with_suffix(".png"), dpi=240, bbox_inches="tight")
+
+
+def plot_fes2d(
+    output: Path,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    surfaces_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    max_kcal: float,
+    cv_labels: Sequence[str],
+    *,
+    zoom: Sequence[Sequence[float]] | None = None,
+    suffix: str = "",
+    sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
+    protocol_label: str = "bias",
+    bead_count: int | None = None,
+) -> None:
+    plt, _ = _matplotlib()
+    from matplotlib.colors import LinearSegmentedColormap
+
+    max_kj = float(max_kcal) * KCAL_TO_KJ_MOL
+    levels = np.linspace(0.0, max_kj, len(FES_COLORS) + 1)
+    colors = [tuple(channel / 255.0 for channel in color) for color in FES_COLORS]
+    cmap = LinearSegmentedColormap.from_list("molsimflow_fes", colors, N=len(FES_COLORS))
+    fig, axes = plt.subplots(
+        1, 3, figsize=(14.5, 4.2), sharex=True, sharey=True, constrained_layout=True
+    )
+    estimator_labels = estimator_plot_labels(bias_mode)
+    labels = (
+        ("centroid", sampling_label),
+        ("probability_mean", estimator_labels["probability_mean"]),
+        ("free_energy_mean", estimator_labels["free_energy_mean"]),
+    )
+    image = None
+    for axis, (name, title) in zip(axes, labels):
+        values = np.ma.masked_where(
+            ~np.asarray(supports[name], dtype=bool),
+            np.asarray(surfaces_kcal[name]) * KCAL_TO_KJ_MOL,
+        )
+        if np.any(supports[name]):
+            image = axis.contourf(
+                x_grid, y_grid, values, levels=levels, cmap=cmap, extend="max"
+            )
+            axis.contour(
+                x_grid, y_grid, values, levels=levels[1:-1], colors="black",
+                linewidths=0.4, alpha=0.55,
+            )
+        else:
+            axis.text(0.5, 0.5, "Insufficient support", transform=axis.transAxes,
+                      ha="center", va="center")
+        axis.set_title(title)
+        axis.set_xlabel(cv_labels[0])
+    axes[0].set_ylabel(cv_labels[1])
+    if zoom is not None:
+        for axis in axes:
+            axis.set_xlim(*zoom[0])
+            axis.set_ylim(*zoom[1])
+    fig.colorbar(
+        image, ax=axes, orientation="horizontal", label="Free energy (kJ/mol)",
+        pad=0.13, shrink=0.72, ticks=levels[::2],
+    )
+    bead_prefix = f"P={bead_count} " if bead_count is not None else ""
+    fig.suptitle(f"{bead_prefix}reweighted free-energy comparison")
+    save_figure(fig, output / "figures" / f"fes2d-comparison{suffix}")
+    plt.close(fig)
+
+
+def plot_fes_differences(
+    output: Path,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    surfaces_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    max_abs_kcal: float,
+    cv_labels: Sequence[str],
+    *,
+    zoom: Sequence[Sequence[float]] | None = None,
+    suffix: str = "",
+    sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
+) -> None:
+    plt, TwoSlopeNorm = _matplotlib()
+    fig, axes = plt.subplots(
+        1, 3, figsize=(14.5, 4.2), sharex=True, sharey=True, constrained_layout=True
+    )
+    estimator_labels = estimator_plot_labels(bias_mode)
+    probability_label = estimator_labels["probability_mean"]
+    diagnostic_label = estimator_labels["free_energy_mean"]
+    panels = (
+        (
+            surfaces_kcal["probability_mean"] - surfaces_kcal["centroid"],
+            supports["sampling_probability_common"],
+            f"{probability_label} - {sampling_label}",
+        ),
+        (
+            surfaces_kcal["free_energy_mean"] - surfaces_kcal["centroid"],
+            supports["sampling_free_energy_common"],
+            f"{diagnostic_label} - {sampling_label}",
+        ),
+        (
+            surfaces_kcal["free_energy_mean"] - surfaces_kcal["probability_mean"],
+            supports["estimator_common"],
+            f"{diagnostic_label} - {probability_label}",
+        ),
+    )
+    image = None
+    norm = TwoSlopeNorm(vmin=-max_abs_kcal, vcenter=0.0, vmax=max_abs_kcal)
+    for axis, (values, support, title) in zip(axes, panels):
+        image = axis.pcolormesh(
+            x_grid, y_grid, np.where(support, values, np.nan), shading="auto", cmap="coolwarm", norm=norm
+        )
+        axis.set_title(title)
+        axis.set_xlabel(cv_labels[0])
+    axes[0].set_ylabel(cv_labels[1])
+    if zoom is not None:
+        for axis in axes:
+            axis.set_xlim(*zoom[0])
+            axis.set_ylim(*zoom[1])
+    fig.colorbar(
+        image, ax=axes, label="Free-energy difference (kcal/mol)", pad=0.02, shrink=0.9
+    )
+    fig.suptitle("Reweighted 2D free-energy differences on common support")
+    save_figure(fig, output / "figures" / f"fes2d-differences{suffix}")
+    plt.close(fig)
+
+
+def plot_fes1d(
+    output: Path,
+    name: str,
+    grid: np.ndarray,
+    curves_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    max_kcal: float,
+    cv_label: str,
+    *,
+    sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
+) -> None:
+    plt, _ = _matplotlib()
+    fig, axis = plt.subplots(figsize=(7.2, 4.8))
+    estimator_labels = estimator_plot_labels(bias_mode)
+    styles = {
+        "centroid": (f"{sampling_label} FES", "#d97706", "-"),
+        "probability_mean": (estimator_labels["probability_mean"], "#2563eb", "-"),
+        "free_energy_mean": (estimator_labels["free_energy_mean"], "#b91c1c", "-"),
+    }
+    for key in ("centroid", "probability_mean", "free_energy_mean"):
+        label, color, linestyle = styles[key]
+        axis.plot(
+            grid,
+            np.where(supports[key], np.asarray(curves_kcal[key]) * KCAL_TO_KJ_MOL, np.nan),
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            linewidth=2.1,
+        )
+    visible = np.any(
+        np.stack([np.where(supports[key], curves_kcal[key], np.inf)
+                  for key in ("centroid", "probability_mean", "free_energy_mean")])
+        <= float(max_kcal),
+        axis=0,
+    )
+    if np.any(visible):
+        selected = grid[visible]
+        padding = 0.03 * max(float(selected[-1] - selected[0]), float(grid[1] - grid[0]))
+        axis.set_xlim(max(float(grid[0]), float(selected[0] - padding)),
+                      min(float(grid[-1]), float(selected[-1] + padding)))
+    axis.set_xlabel(cv_label)
+    axis.set_ylabel("Free energy (kJ/mol)")
+    axis.set_ylim(0.0, float(max_kcal) * KCAL_TO_KJ_MOL)
+    axis.set_title("Reweighted 1D free-energy comparison")
+    axis.legend(frameon=False, fontsize=8)
+    axis.grid(color="#d1d5db", linewidth=0.6, alpha=0.7)
+    save_figure(fig, output / "figures" / f"fes1d-{name}")
+    plt.close(fig)
+
+
+def scatter_norm(values: np.ndarray):
+    _, TwoSlopeNorm = _matplotlib()
+    low = float(np.min(values))
+    high = float(np.max(values))
+    if low < 0.0 < high:
+        return TwoSlopeNorm(vmin=low, vcenter=0.0, vmax=high)
+    return None
+
+
+def plot_bead_cv_bias(
+    output: Path,
+    time_ps: np.ndarray,
+    centroid: np.ndarray,
+    beads: np.ndarray,
+    bias_kcal: np.ndarray,
+    cv_labels: Sequence[str],
+    plot_stride: int,
+    *,
+    sampling_label: str = "Centroid",
+    sampling_slug: str = "centroid",
+    protocol_label: str = "bias",
+) -> None:
+    plt, _ = _matplotlib()
+    stride = max(1, int(plot_stride))
+    norm = scatter_norm(bias_kcal)
+    fig, axes = plt.subplots(
+        beads.shape[1], 2, figsize=(12.5, 2.6 * beads.shape[1]), sharex=True, sharey="col",
+        squeeze=False,
+        constrained_layout=True,
+    )
+    image = None
+    for bead in range(beads.shape[1]):
+        for component, name in enumerate(cv_labels):
+            axis = axes[bead, component]
+            image = axis.scatter(
+                time_ps[::stride], beads[::stride, bead, component], c=bias_kcal[::stride],
+                s=5, cmap="coolwarm", norm=norm, rasterized=True
+            )
+            axis.set_ylabel(f"Bead {bead + 1}\n{name}")
+            axis.grid(color="#e5e7eb", linewidth=0.4)
+    for axis in axes[-1]:
+        axis.set_xlabel("Time (ps)")
+    fig.colorbar(
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01, shrink=0.9
+    )
+    fig.suptitle(
+        f"{beads.shape[1]}-bead CV trajectories colored by the "
+        f"{sampling_label.lower()} {protocol_label}"
+    )
+    save_figure(fig, output / "figures" / "bead-cv-time-bias")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(
+        2, 1, figsize=(12.5, 6.8), sharex=True, constrained_layout=True
+    )
+    image = None
+    for component, (axis, name) in enumerate(zip(axes, cv_labels)):
+        image = axis.scatter(
+            time_ps[::stride],
+            centroid[::stride, component],
+            c=bias_kcal[::stride],
+            s=7,
+            cmap="coolwarm",
+            norm=norm,
+            rasterized=True,
+        )
+        axis.set_ylabel(name)
+        axis.grid(color="#e5e7eb", linewidth=0.4)
+    axes[-1].set_xlabel("Time (ps)")
+    fig.colorbar(
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01,
+        shrink=0.9,
+    )
+    fig.suptitle(
+        f"{sampling_label} CV trajectories colored by the applied {protocol_label}"
+    )
+    save_figure(fig, output / "figures" / f"{sampling_slug}-cv-time-bias")
+    plt.close(fig)
+
+    columns = min(2, beads.shape[1])
+    rows = math.ceil(beads.shape[1] / columns)
+    fig, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(5.25 * columns, 4.25 * rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for bead, axis in enumerate(axes.ravel()[: beads.shape[1]]):
+        image = axis.scatter(
+            beads[::stride, bead, 0], beads[::stride, bead, 1], c=bias_kcal[::stride],
+            s=6, cmap="coolwarm", norm=norm, rasterized=True
+        )
+        axis.set_title(f"Bead {bead + 1}")
+        axis.set_xlabel(cv_labels[0])
+        axis.set_ylabel(cv_labels[1])
+    for axis in axes.ravel()[beads.shape[1] :]:
+        axis.remove()
+    fig.colorbar(
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)", pad=0.01, shrink=0.9
+    )
+    fig.suptitle(
+        f"{beads.shape[1]}-bead CV sampling colored by the shared "
+        f"{sampling_label.lower()} {protocol_label}"
+    )
+    save_figure(fig, output / "figures" / "bead-cv2d-bias")
+    plt.close(fig)
+
+    fig, axis = plt.subplots(figsize=(7.2, 5.8), constrained_layout=True)
+    image = axis.scatter(
+        centroid[::stride, 0], centroid[::stride, 1], c=bias_kcal[::stride],
+        s=8, cmap="coolwarm", norm=norm, rasterized=True,
+    )
+    axis.set_xlabel(cv_labels[0])
+    axis.set_ylabel(cv_labels[1])
+    axis.set_title(
+        f"{sampling_label} CV sampling colored by the applied {protocol_label}"
+    )
+    axis.grid(color="#e5e7eb", linewidth=0.4)
+    fig.colorbar(
+        image,
+        ax=axis,
+        label=f"{sampling_label} {protocol_label} (kcal/mol)",
+        pad=0.02,
+    )
+    save_figure(fig, output / "figures" / f"{sampling_slug}-cv2d-bias")
+    plt.close(fig)
+
+
+def plot_cv_spread(output: Path, time_ps: np.ndarray, beads: np.ndarray, names: Sequence[str]) -> None:
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(
+        len(names), 1, figsize=(9.5, 3.4 * len(names)), sharex=True, squeeze=False
+    )
+    for component, (axis, name) in enumerate(zip(axes[:, 0], names)):
+        axis.plot(time_ps, np.std(beads[:, :, component], axis=1), color="#2563eb", linewidth=0.8)
+        axis.set_ylabel(f"Std. across beads\n{name}")
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    axes[-1, 0].set_xlabel("Time (ps)")
+    fig.suptitle(f"Instantaneous spread of the {beads.shape[1]} bead CVs")
+    save_figure(fig, output / "figures" / "bead-cv-spread")
+    plt.close(fig)
+
+
+def plot_cv_time_series(
+    output: Path,
+    time_ps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    cv_labels: Sequence[str],
+    sampling_label: str,
+) -> None:
+    """Plot arbitrary one- or two-dimensional CV trajectories without case assumptions."""
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(
+        len(cv_labels),
+        1,
+        figsize=(10.0, 3.6 * len(cv_labels)),
+        sharex=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for component, (axis, label) in enumerate(zip(axes[:, 0], cv_labels)):
+        for bead in range(beads.shape[1]):
+            axis.plot(
+                time_ps,
+                beads[:, bead, component],
+                linewidth=0.55,
+                alpha=0.6,
+                label=f"Bead {bead + 1}",
+            )
+        axis.plot(
+            time_ps,
+            sampling[:, component],
+            color="#111827",
+            linewidth=1.2,
+            label=sampling_label,
+        )
+        axis.set_ylabel(label)
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    axes[0, 0].legend(frameon=False, ncol=min(beads.shape[1] + 1, 5), fontsize=8)
+    axes[-1, 0].set_xlabel("Time (ps)")
+    fig.suptitle("Sampling and bead-local CV trajectories")
+    save_figure(fig, output / "figures" / "cv-time-series")
+    plt.close(fig)
+
+
+def plot_diagnostic_cv_bias(
+    output: Path,
+    time_ps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    bias_kcal: np.ndarray,
+    label: str,
+    sampling_label: str,
+    plot_stride: int,
+    protocol_label: str = "bias",
+) -> None:
+    plt, _ = _matplotlib()
+    stride = max(1, int(plot_stride))
+    norm = scatter_norm(bias_kcal)
+    fig, axes = plt.subplots(2, 1, figsize=(11.5, 7.2), sharex=True, constrained_layout=True)
+    image = axes[0].scatter(
+        time_ps[::stride], sampling[::stride], c=bias_kcal[::stride],
+        s=7, cmap="coolwarm", norm=norm, rasterized=True,
+    )
+    axes[0].set_ylabel(label)
+    axes[0].set_title(f"{sampling_label} diagnostic CV")
+    for bead in range(beads.shape[1]):
+        axes[1].scatter(
+            time_ps[::stride], beads[::stride, bead], c=bias_kcal[::stride],
+            s=4, cmap="coolwarm", norm=norm, alpha=0.45, rasterized=True,
+        )
+    axes[1].set_ylabel(f"Bead-local {label}")
+    axes[1].set_xlabel("Time (ps)")
+    axes[1].set_title(f"{beads.shape[1]} bead-local diagnostic CVs")
+    for axis in axes:
+        axis.grid(color="#e5e7eb", linewidth=0.4)
+    fig.colorbar(
+        image, ax=axes, label=f"{sampling_label} {protocol_label} (kcal/mol)",
+        pad=0.01, shrink=0.9,
+    )
+    fig.suptitle("Directly printed diagnostic CV; no independent FES bandwidth assigned")
+    save_figure(fig, output / "figures" / "iondistance-time-bias")
+    plt.close(fig)
+
+
+def plot_opes(
+    output: Path,
+    time_ps: np.ndarray,
+    bias_kcal: np.ndarray,
+    rct_kcal: np.ndarray,
+    zed: np.ndarray,
+    neff: np.ndarray,
+    nker: np.ndarray,
+    weights: np.ndarray,
+    kernel_time_ps: np.ndarray,
+    sigma_x: np.ndarray,
+    sigma_y: np.ndarray,
+    *,
+    weights_are_log: bool = False,
+) -> None:
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 7.6), sharex=False)
+    stride = max(1, int(math.ceil(len(time_ps) / 4000)))
+    axes[0, 0].scatter(
+        time_ps[::stride],
+        bias_kcal[::stride],
+        label="bias samples",
+        color="#d97706",
+        s=4,
+        alpha=0.25,
+        edgecolors="none",
+        rasterized=True,
+    )
+    axes[0, 0].plot(time_ps, rct_kcal, label="rct (diagnostic only)", color="#4b5563", linewidth=0.9)
+    axes[0, 0].set_ylabel("Energy (kcal/mol)")
+    axes[0, 0].set_xlabel("Time (ps)")
+    axes[0, 0].set_title("Bias samples and reweighting offset")
+    axes[0, 0].legend(frameon=False)
+    axes[0, 1].plot(
+        time_ps,
+        zed,
+        label="opes.zed",
+        color="#059669",
+        linestyle="--",
+        linewidth=0.9,
+    )
+    axes[0, 1].step(
+        time_ps,
+        nker,
+        label="opes.nker",
+        color="#d97706",
+        where="post",
+        linewidth=0.9,
+    )
+    axes[0, 1].set_yscale("log")
+    twin = axes[0, 1].twinx()
+    twin.plot(time_ps, neff, label="opes.neff", color="#2563eb", linewidth=0.9)
+    axes[0, 1].set_ylabel("OPES zed / kernel count (log scale)")
+    twin.set_ylabel("OPES neff")
+    handles, labels = axes[0, 1].get_legend_handles_labels()
+    twin_handles, twin_labels = twin.get_legend_handles_labels()
+    axes[0, 1].legend(
+        handles + twin_handles,
+        labels + twin_labels,
+        frameon=False,
+        loc="best",
+    )
+    axes[0, 1].set_xlabel("Time (ps)")
+    axes[0, 1].set_title("Adaptive OPES state")
+    ess_fraction, maximum_share = cumulative_weight_diagnostics(
+        weights, log_weights=weights_are_log
+    )
+    axes[1, 0].plot(
+        time_ps,
+        ess_fraction,
+        label="cumulative Kish ESS fraction",
+        color="#7c3aed",
+        linewidth=1.0,
+    )
+    weight_axis = axes[1, 0].twinx()
+    weight_axis.plot(
+        time_ps,
+        maximum_share,
+        label="maximum cumulative weight share",
+        color="#dc2626",
+        linewidth=0.9,
+    )
+    weight_axis.set_yscale("log")
+    axes[1, 0].set_ylim(0.0, 1.05)
+    axes[1, 0].set_ylabel("Cumulative Kish ESS fraction")
+    weight_axis.set_ylabel("Maximum weight share (log scale)")
+    axes[1, 0].set_xlabel("Time (ps)")
+    handles, labels = axes[1, 0].get_legend_handles_labels()
+    weight_handles, weight_labels = weight_axis.get_legend_handles_labels()
+    axes[1, 0].legend(
+        handles + weight_handles,
+        labels + weight_labels,
+        frameon=False,
+        loc="best",
+    )
+    axes[1, 0].set_title("Cumulative reweighting quality")
+    axes[1, 1].plot(kernel_time_ps, sigma_x, label="sigma_logdistance", color="#2563eb")
+    axes[1, 1].plot(kernel_time_ps, sigma_y, label="sigma_ionization", color="#d97706")
+    axes[1, 1].set_yscale("log")
+    axes[1, 1].set_ylabel("OPES kernel sigma")
+    axes[1, 1].set_xlabel("Time (ps)")
+    axes[1, 1].set_title("Adaptive kernel widths")
+    axes[1, 1].legend(frameon=False)
+    for axis in axes.ravel():
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    fig.suptitle("OPES bias, reweighting, and adaptive-kernel diagnostics")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    save_figure(fig, output / "figures" / "opes-diagnostics")
+    plt.close(fig)
+
+
+def plot_thermo(
+    output: Path,
+    time_ps: np.ndarray,
+    temperatures: np.ndarray,
+    potential: np.ndarray,
+    global_values: Mapping[str, np.ndarray],
+    beads: int,
+    target_temperature: float,
+) -> None:
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 7.8), sharex=True)
+    for bead in range(beads):
+        axes[0, 0].plot(time_ps, temperatures[:, bead] / beads, linewidth=0.55, alpha=0.55)
+    axes[0, 0].plot(time_ps, np.mean(temperatures, axis=1) / beads, color="#111827", linewidth=1.0, label="bead mean / P")
+    axes[0, 0].axhline(target_temperature, color="#b91c1c", linestyle="--", label="target")
+    axes[0, 0].set_ylabel("Scaled kinetic temperature (K)")
+    axes[0, 0].legend(frameon=False)
+    mean_potential = np.mean(potential, axis=1) * EV_TO_KCAL_MOL
+    axes[0, 1].plot(time_ps, mean_potential - np.mean(mean_potential), color="#2563eb", linewidth=0.8)
+    axes[0, 1].set_ylabel("Mean bead potential - mean (kcal/mol)")
+    axes[1, 0].plot(time_ps, global_values["f_fpimd[5]"] * EV_TO_KCAL_MOL, label="primitive", color="#d97706", linewidth=0.8)
+    axes[1, 0].plot(time_ps, global_values["f_fpimd[7]"] * EV_TO_KCAL_MOL, label="centroid virial", color="#2563eb", linewidth=0.8)
+    axes[1, 0].set_ylabel("Kinetic-energy estimator (kcal/mol)")
+    axes[1, 0].legend(frameon=False)
+    spring = np.sum(global_values["spring_per_bead"], axis=1) * EV_TO_KCAL_MOL
+    axes[1, 1].plot(time_ps, spring, color="#7c3aed", linewidth=0.8)
+    axes[1, 1].set_ylabel("Total ring-polymer spring energy (kcal/mol)")
+    for axis in axes[-1]:
+        axis.set_xlabel("Time (ps)")
+    for axis in axes.ravel():
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    fig.suptitle("PIMD thermostat and energy-estimator diagnostics")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    save_figure(fig, output / "figures" / "pimd-thermo-energy")
+    plt.close(fig)
+
+
+def plot_ring_spread(output: Path, rows: Sequence[Mapping[str, float]], timestep_fs: float) -> None:
+    plt, _ = _matplotlib()
+    time_ps = np.asarray([row["step"] * timestep_fs / 1000.0 for row in rows])
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 7.0), sharex=True)
+    for name, color in (("rg_H_A", "#d97706"), ("rg_O_A", "#2563eb"), ("rg_all_A", "#111827")):
+        if name in rows[0]:
+            axes[0].plot(time_ps, [row[name] for row in rows], label=name.replace("rg_", "").replace("_A", ""), color=color, linewidth=0.8)
+    axes[0].set_ylabel("Ring-polymer RMS spread (A)")
+    axes[0].legend(frameon=False)
+    axes[1].plot(time_ps, [row["rg_p95_A"] for row in rows], label="95th percentile", color="#7c3aed", linewidth=0.8)
+    axes[1].plot(time_ps, [row["rg_max_A"] for row in rows], label="maximum atom", color="#b91c1c", linewidth=0.6, alpha=0.8)
+    axes[1].set_ylabel("Atomic bead spread (A)")
+    axes[1].set_xlabel("Time (ps)")
+    axes[1].legend(frameon=False)
+    for axis in axes:
+        axis.grid(color="#e5e7eb", linewidth=0.5)
+    fig.suptitle("Ring-polymer spatial spread")
+    save_figure(fig, output / "figures" / "ring-polymer-spread")
+    plt.close(fig)
+
+
+def plot_ionization_events(
+    output: Path,
+    time_ps: np.ndarray,
+    centroid: np.ndarray,
+    beads: np.ndarray,
+    bias_kcal: np.ndarray,
+    thresholds: Sequence[float],
+    ideal_pair_score: float,
+    *,
+    sampling_label: str = "Centroid",
+    protocol_label: str = "bias",
+) -> None:
+    plt, _ = _matplotlib()
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), constrained_layout=True)
+    bead_colors = ("#93c5fd", "#60a5fa", "#3b82f6", "#1d4ed8")
+    for bead, color in enumerate(bead_colors):
+        axes[0].plot(
+            time_ps, beads[:, bead], color=color, linewidth=0.45, alpha=0.55,
+            label=f"Bead {bead + 1}",
+        )
+    axes[0].plot(time_ps, centroid, color="#111827", linewidth=1.0, label=sampling_label)
+    axes[0].axhline(
+        float(ideal_pair_score), color="#b45309", linestyle="--", linewidth=1.4,
+        label=f"Ideal localized ion-pair score ({ideal_pair_score:g})",
+    )
+    axes[0].set_xlabel("Time (ps)")
+    axes[0].set_ylabel("Ionization defect score")
+    axes[0].set_title(f"{sampling_label} and bead ionization scores")
+    axes[0].legend(frameon=False, ncol=2, fontsize=8)
+    axes[0].grid(color="#e5e7eb", linewidth=0.5)
+
+    stride = 5
+    maximum_bead = np.max(beads, axis=1)
+    image = axes[1].scatter(
+        centroid[::stride], maximum_bead[::stride], c=bias_kcal[::stride],
+        s=9, cmap="coolwarm", norm=scatter_norm(bias_kcal), rasterized=True,
+    )
+    upper = max(float(ideal_pair_score), float(np.max(maximum_bead))) * 1.04
+    axes[1].plot([0.0, upper], [0.0, upper], color="#6b7280", linestyle=":", linewidth=1.0)
+    for threshold in thresholds:
+        axes[1].axvline(float(threshold), color="#9ca3af", linewidth=0.5, alpha=0.5)
+        axes[1].axhline(float(threshold), color="#9ca3af", linewidth=0.5, alpha=0.5)
+    axes[1].set_xlim(0.0, upper)
+    axes[1].set_ylim(0.0, upper)
+    axes[1].set_xlabel(f"{sampling_label} ionization score")
+    axes[1].set_ylabel("Maximum bead ionization score")
+    axes[1].set_title(f"Bead-local excursions versus {sampling_label.lower()} response")
+    axes[1].grid(color="#e5e7eb", linewidth=0.5)
+    fig.colorbar(
+        image,
+        ax=axes[1],
+        label=f"{sampling_label} {protocol_label} (kcal/mol)",
+        pad=0.02,
+    )
+    fig.suptitle("Water ionization diagnostic; an ideal localized H3O+/OH- pair scores about 2")
+    save_figure(fig, output / "figures" / "ionization-event-diagnostics")
+    plt.close(fig)
+
+
+def run_reference(
+    config: Mapping[str, object],
+    filtered_colvar: Path,
+    output: Path,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    centroid_kcal: np.ndarray,
+    support: np.ndarray,
+    kbt_ev: float,
+    bandwidth: Sequence[float],
+    cv_columns: Sequence[str] = ("logdistance", "ionization"),
+    bias_column: str = "opes.bias",
+) -> Dict[str, object]:
+    driver = Path(str(config["driver"]))
+    require(driver.is_file(), f"reference driver missing: {driver}")
+    driver_source = driver.read_text(encoding="utf-8")
+    adapted_driver = output / "qc" / "FES_from_Reweighting.non-square-grid-compatible.py"
+    adapted_driver.write_text(adapt_reference_source(driver_source), encoding="utf-8")
+
+    def command_for(reference: Path, blocks: int) -> List[str]:
+        return [
+            sys.executable,
+            str(adapted_driver),
+            "--outfile",
+            str(reference),
+            "--colvar",
+            str(filtered_colvar),
+            "--sigma",
+            ",".join(str(float(value)) for value in bandwidth),
+            "--kt",
+            str(float(kbt_ev)),
+            "--cv",
+            ",".join(str(value) for value in cv_columns),
+            "--bias",
+            str(bias_column),
+            f"--min={float(x_grid[0])},{float(y_grid[0])}",
+            f"--max={float(x_grid[-1])},{float(y_grid[-1])}",
+            f"--bin={len(x_grid) - 1},{len(y_grid) - 1}",
+            "--fmt=%.16e",
+            "--blocks",
+            str(int(blocks)),
+        ]
+
+    def execute(command: Sequence[str], log_path: Path) -> None:
+        completed = subprocess.run(command, check=False, text=True, capture_output=True)
+        log_path.write_text(completed.stdout + completed.stderr, encoding="utf-8")
+        require(completed.returncode == 0, f"reference driver failed; see {log_path}")
+
+    def load_surface(reference: Path) -> np.ndarray:
+        values = np.loadtxt(reference, comments="#")
+        require(values.shape[0] == len(x_grid) * len(y_grid), "reference grid size mismatch")
+        surface = values[:, 2].reshape(len(x_grid), len(y_grid)).T * EV_TO_KCAL_MOL
+        return surface - np.nanmin(surface)
+
+    exact_reference = output / "qc" / "fes-from-reweighting-centroid-exact-eV.dat"
+    exact_command = command_for(exact_reference, 1)
+    execute(exact_command, output / "qc" / "fes-from-reweighting-exact.log")
+    exact_kcal = load_surface(exact_reference)
+    exact_difference = np.abs(exact_kcal - centroid_kcal)
+
+    requested_blocks = int(config.get("blocks", 10))
+    block_reference = output / "qc" / f"fes-from-reweighting-centroid-blocks{requested_blocks}-eV.dat"
+    block_command = command_for(block_reference, requested_blocks)
+    execute(block_command, output / "qc" / "fes-from-reweighting-blocks.log")
+    block_kcal = load_surface(block_reference)
+    block_difference = np.abs(block_kcal - exact_kcal)
+    portable_command = [portable_artifact_path(value, output) for value in exact_command]
+    portable_block_command = [portable_artifact_path(value, output) for value in block_command]
+    return {
+        "original_driver": str(driver),
+        "original_driver_sha256": sha256(driver),
+        "adapted_driver": portable_artifact_path(adapted_driver, output),
+        "adapted_driver_sha256": sha256(adapted_driver),
+        "compatibility_patch": "np.meshgrid(..., indexing='ij') for non-square 2D grids",
+        "bin_semantics": "contract point counts converted to legacy driver interval counts",
+        "command": portable_command,
+        "max_abs_difference_kcal_mol": float(np.max(exact_difference[support])),
+        "rmse_difference_kcal_mol": float(np.sqrt(np.mean(exact_difference[support] ** 2))),
+        "reference_file": portable_artifact_path(exact_reference, output),
+        "blocks": requested_blocks,
+        "block_command": portable_block_command,
+        "block_reference_file": portable_artifact_path(block_reference, output),
+        "block_vs_exact_max_abs_kcal_mol": float(np.max(block_difference[support])),
+        "block_vs_exact_rmse_kcal_mol": float(np.sqrt(np.mean(block_difference[support] ** 2))),
+    }
+
+
+def write_manifest(output: Path) -> None:
+    records = []
+    for path in sorted((item for item in output.rglob("*") if item.is_file())):
+        if path.name == "OUTPUT-SHA256SUMS":
+            continue
+        records.append(f"{sha256(path)}  {path.relative_to(output)}")
+    (output / "provenance" / "OUTPUT-SHA256SUMS").write_text("\n".join(records) + "\n", encoding="utf-8")
+
+
+def finalize_core_1d(
+    *,
+    contract: Mapping[str, object],
+    output: Path,
+    source: Mapping[str, object],
+    reweight: Mapping[str, object],
+    cv_name: str,
+    cv_label: str,
+    sampling_label: str,
+    sampling_slug: str,
+    bias_mode: str,
+    weight_kind: str,
+    selected_time_ps: np.ndarray,
+    selected_steps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    bias_ev: np.ndarray | None,
+    kbt_ev: float,
+    sampling_restart_duplicates: int,
+    bead_restart_duplicates: Sequence[int],
+) -> Dict[str, object]:
+    """Write the generic one-CV report without OPES or material diagnostics."""
+    require("reference" not in contract, "legacy reference cross-check requires two CVs")
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
+    alternate = alternate_estimator(primary_estimator)
+    grid = np.linspace(*reweight["grid"][cv_name])
+    variants = {
+        str(name): tuple(float(value) for value in values)
+        for name, values in reweight["bandwidth_variants"].items()
+    }
+    require(all(len(value) == 1 for value in variants.values()), "1D bandwidths need one value")
+    primary_name = str(reweight["primary_bandwidth"])
+    require(primary_name in variants, "primary bandwidth absent")
+    require(all(name and Path(name).name == name and name not in {".", ".."}
+                for name in variants), "bandwidth variant names must be basenames")
+    threshold = math.log(float(reweight["relative_density_support"]))
+    curves_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    supports_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    sensitivity_rows: List[Dict[str, object]] = []
+    for variant, bandwidth in variants.items():
+        curves = compute_marginals(
+            beads,
+            sampling,
+            raw_log_weights,
+            grid,
+            bandwidth[0],
+            0,
+            kbt_ev,
+            primary_estimator=primary_estimator,
+        )
+        supports = estimator_support_masks(
+            curves["log_centroid"],
+            curves["log_probability_mean"],
+            curves["log_beads"],
+            threshold,
+        )
+        curves_by_variant[variant] = curves
+        supports_by_variant[variant] = supports
+        sensitivity_rows.append(
+            {
+                "variant": variant,
+                "sigma": bandwidth[0],
+                "primary_estimator": primary_estimator,
+                "primary_support_points": int(np.count_nonzero(supports[primary_estimator])),
+                "probability_mean_support_points": int(np.count_nonzero(supports["probability_mean"])),
+                "free_energy_mean_support_points": int(np.count_nonzero(supports["free_energy_mean"])),
+                "common_support_points": int(np.count_nonzero(supports["common"])),
+            }
+        )
+
+    primary = curves_by_variant[primary_name]
+    primary_supports = supports_by_variant[primary_name]
+    primary_support = primary_supports[primary_estimator]
+    estimator_common_support = primary_supports["estimator_common"]
+    require(
+        np.count_nonzero(primary_support) >= 2,
+        f"empty {primary_estimator} support",
+    )
+    primary_kcal = {
+        key: primary[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")
+    }
+    for row in sensitivity_rows:
+        variant = str(row["variant"])
+        comparison_support = (
+            primary_supports[primary_estimator]
+            & supports_by_variant[variant][primary_estimator]
+        )
+        count, rmse, maximum = optional_surface_difference_metrics(
+            primary_kcal[primary_estimator],
+            curves_by_variant[variant][primary_estimator] * EV_TO_KCAL_MOL,
+            comparison_support,
+        )
+        row["comparison_support_points"] = count
+        row["primary_rmse_vs_selected_bandwidth_kcal_mol"] = rmse
+        row["primary_max_abs_vs_selected_bandwidth_kcal_mol"] = maximum
+    write_csv(
+        output / "qc" / "bandwidth-sensitivity.csv",
+        sensitivity_rows,
+        [
+            "variant",
+            "sigma",
+            "primary_estimator",
+            "primary_support_points",
+            "probability_mean_support_points",
+            "free_energy_mean_support_points",
+            "common_support_points",
+            "comparison_support_points",
+            "primary_rmse_vs_selected_bandwidth_kcal_mol",
+            "primary_max_abs_vs_selected_bandwidth_kcal_mol",
+        ],
+    )
+    write_csv(
+        output / "fes1d" / f"{cv_name}.csv",
+        (
+            {
+                cv_name: value,
+                **fes_table_columns(
+                    primary_kcal, primary_supports, primary_estimator, index
+                ),
+            }
+            for index, value in enumerate(grid)
+        ),
+        [
+            cv_name,
+            *FES_TABLE_FIELDS,
+        ],
+    )
+
+    weights = np.exp(normalized_log_weights(raw_log_weights))
+    frame_rows = []
+    for frame, time_ps in enumerate(selected_time_ps):
+        row: Dict[str, object] = {
+            "time_ps": time_ps,
+            "step": int(selected_steps[frame]),
+            f"{sampling_slug}_{cv_name}": sampling[frame, 0],
+            f"bead_mean_{cv_name}": float(np.mean(beads[frame, :, 0])),
+            f"bead_std_{cv_name}": float(np.std(beads[frame, :, 0])),
+            "log_frame_weight": raw_log_weights[frame],
+            "normalized_weight": weights[frame],
+        }
+        if bias_ev is not None:
+            row["bias_eV"] = bias_ev[frame]
+            row["bias_kcal_mol"] = bias_ev[frame] * EV_TO_KCAL_MOL
+        frame_rows.append(row)
+    write_csv(output / "tables" / "frame-series.csv", frame_rows, list(frame_rows[0]))
+    bead_fields = ["time_ps", "bead", cv_name]
+    write_csv(
+        output / "tables" / "bead-cv-long.csv",
+        (
+            {
+                "time_ps": selected_time_ps[frame],
+                "bead": bead + 1,
+                cv_name: beads[frame, bead, 0],
+            }
+            for frame in range(beads.shape[0])
+            for bead in range(beads.shape[1])
+        ),
+        bead_fields,
+    )
+
+    block_count = int(reweight["blocks"])
+    require(1 <= block_count <= len(selected_time_ps), "invalid block count")
+    block_rows = []
+    for block, indices in enumerate(np.array_split(np.arange(len(selected_time_ps)), block_count)):
+        current = compute_marginals(
+            beads[indices],
+            sampling[indices],
+            raw_log_weights[indices],
+            grid,
+            variants[primary_name][0],
+            0,
+            kbt_ev,
+            primary_estimator=primary_estimator,
+        )
+        current_supports = estimator_support_masks(
+            current["log_centroid"],
+            current["log_probability_mean"],
+            current["log_beads"],
+            threshold,
+        )
+        comparison_support = (
+            primary_supports[primary_estimator]
+            & current_supports[primary_estimator]
+        )
+        count, rmse, maximum = optional_surface_difference_metrics(
+            primary_kcal[primary_estimator],
+            current[primary_estimator] * EV_TO_KCAL_MOL,
+            comparison_support,
+        )
+        block_weights = np.exp(normalized_log_weights(raw_log_weights[indices]))
+        block_rows.append(
+            {
+                "block": block + 1,
+                "first_time_ps": selected_time_ps[indices[0]],
+                "last_time_ps": selected_time_ps[indices[-1]],
+                "frames": len(indices),
+                "ess": 1.0 / float(np.sum(block_weights**2)),
+                "max_weight": float(np.max(block_weights)),
+                "primary_estimator": primary_estimator,
+                "comparison_support_points": count,
+                "primary_rmse_vs_full_kcal_mol": rmse,
+                "primary_max_abs_vs_full_kcal_mol": maximum,
+            }
+        )
+    write_csv(
+        output / "blocks" / "block-diagnostics.csv",
+        block_rows,
+        list(block_rows[0]),
+    )
+
+    plot_fes1d(
+        output,
+        cv_name,
+        grid,
+        primary_kcal,
+        primary_supports,
+        float(reweight["plot_max_kcal_mol"]),
+        cv_label,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
+    plot_cv_time_series(
+        output, selected_time_ps, sampling, beads, [cv_label], sampling_label
+    )
+    plot_cv_spread(output, selected_time_ps, beads, [cv_label])
+
+    labels = estimator_plot_labels(bias_mode)
+    raw_gap = (
+        np.mean(-kbt_ev * primary["log_beads"], axis=0)
+        + kbt_ev * primary["log_probability_mean"]
+    ) * EV_TO_KCAL_MOL
+    diagnostic_gap = primary_kcal["free_energy_mean"] - primary_kcal["probability_mean"]
+    summary: Dict[str, object] = {
+        "schema_version": 3,
+        "status": "PASS",
+        "analysis_profile": "core",
+        "source_job": source.get("job_id"),
+        "sampling_representation": {
+            "label": sampling_label,
+            "slug": sampling_slug,
+            "bias_mode": bias_mode,
+            "sampling_observable_id": source.get("sampling_observable_id"),
+            "logical_cv_names": [cv_name],
+        },
+        "selection": {
+            "first_time_ps": float(selected_time_ps[0]),
+            "last_time_ps": float(selected_time_ps[-1]),
+            "frames": int(len(selected_time_ps)),
+            "beads": int(beads.shape[1]),
+        },
+        "reweighting": {
+            "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
+            "formula": (
+                "precomputed log frame weight"
+                if weight_kind == "precomputed"
+                else "normalized exp(total_bias_energy/kBT)"
+            ),
+            "protocol_label": sampling_protocol_label(reweight),
+            "rct_used": False,
+            "energy_unit": "eV",
+            "target_ensemble": (
+                "defined by the supplied frame weights" if weight_kind == "precomputed"
+                else "declared bias terms removed; undeclared potentials retained"
+            ),
+            "temperature_K": float(reweight["temperature_K"]),
+            "kbt_eV": kbt_ev,
+            "ess": 1.0 / float(np.sum(weights**2)),
+            "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
+            "maximum_normalized_weight": float(np.max(weights)),
+            "bias_range_kcal_mol": (
+                None
+                if bias_ev is None
+                else [
+                    float(np.min(bias_ev) * EV_TO_KCAL_MOL),
+                    float(np.max(bias_ev) * EV_TO_KCAL_MOL),
+                ]
+            ),
+        },
+        "restart_alignment": {
+            "duplicate_policy": str(source.get("restart_duplicate_policy", "keep_first")),
+            "sampling_rows_removed": sampling_restart_duplicates,
+            "bead_rows_removed": list(bead_restart_duplicates),
+        },
+        "fes": {
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate,
+            "target_observable": "bead_density_fes",
+            "target_observable_id": reweight.get("target_observable_id"),
+            "zero_reference": f"{primary_estimator}_minimum",
+            "dimensions": 1,
+            "unit": "kcal/mol",
+            "primary_support_points": int(np.count_nonzero(primary_support)),
+            "primary_bandwidth": list(variants[primary_name]),
+            "primary_bandwidth_name": primary_name,
+            "probability_mean_label": labels["probability_mean"],
+            "free_energy_mean_label": labels["free_energy_mean"],
+            "common_support_points": int(np.count_nonzero(estimator_common_support)),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(estimator_common_support)
+            ),
+            **diagnostic_gap_metrics(diagnostic_gap, estimator_common_support),
+            "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
+        },
+        "reference_crosscheck": None,
+        "gates": {
+            "artifact_output": "PASS",
+            "deterministic_numerical": "PASS",
+            "postprocessing_plumbing": "PASS",
+            "physical": "NOT_ASSESSED",
+            "scientific_fes_convergence": "NOT_ASSESSED",
+        },
+    }
+    require(float(np.min(raw_gap)) >= -1e-10, "bead density Jensen relation failed")
+    (output / "qc" / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "provenance" / "analysis-contract.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    report = [
+        "# PIMD path-bias post-processing",
+        "",
+        "Status: `PASS`",
+        "Analysis profile: `core`",
+        f"CV: `{cv_name}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
+        f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
+        f"Primary estimator: `{labels[primary_estimator]}`",
+        f"Alternate estimator: `{labels[alternate]}`",
+        "",
+        "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, water-ionization diagnostics, or an external reference driver.",
+        "",
+        "This is an engineering and post-processing assessment. Physical interpretation and scientific/FES convergence remain NOT_ASSESSED.",
+    ]
+    (output / "analysis-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_manifest(output)
+    return summary
+
+
+def finalize_core_2d(
+    *,
+    contract: Mapping[str, object],
+    output: Path,
+    source: Mapping[str, object],
+    reweight: Mapping[str, object],
+    cv_names: Sequence[str],
+    cv_labels: Sequence[str],
+    sampling_label: str,
+    sampling_slug: str,
+    bias_mode: str,
+    weight_kind: str,
+    selected_time_ps: np.ndarray,
+    sampling: np.ndarray,
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    bias_ev: np.ndarray | None,
+    kbt_ev: float,
+    primary_name: str,
+    primary: Mapping[str, np.ndarray],
+    primary_kcal: Mapping[str, np.ndarray],
+    primary_supports: Mapping[str, np.ndarray],
+    variants: Mapping[str, Sequence[float]],
+    filtered_colvar: Path,
+    sampling_restart_duplicates: int,
+    bead_restart_duplicates: Sequence[int],
+) -> Dict[str, object]:
+    """Write a generic two-CV report without material-specific diagnostics."""
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
+    alternate = alternate_estimator(primary_estimator)
+    primary_support = primary_supports[primary_estimator]
+    estimator_common_support = primary_supports["estimator_common"]
+    protocol_label = sampling_protocol_label(reweight)
+    plot_fes2d(
+        output,
+        np.linspace(*reweight["grid"][cv_names[0]]),
+        np.linspace(*reweight["grid"][cv_names[1]]),
+        primary_kcal,
+        primary_supports,
+        float(reweight["plot_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+        protocol_label=protocol_label,
+        bead_count=beads.shape[1],
+    )
+    plot_fes_differences(
+        output,
+        np.linspace(*reweight["grid"][cv_names[0]]),
+        np.linspace(*reweight["grid"][cv_names[1]]),
+        primary_kcal,
+        primary_supports,
+        float(reweight["difference_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
+    plot_cv_time_series(
+        output, selected_time_ps, sampling, beads, cv_labels, sampling_label
+    )
+    plot_cv_spread(output, selected_time_ps, beads, cv_labels)
+
+    reference_metrics = None
+    reference_config = contract.get("reference")
+    if reference_config is not None:
+        require(isinstance(reference_config, Mapping), "reference must be an object")
+        require(
+            bias_ev is not None and weight_kind != "precomputed",
+            "legacy reference cross-check requires bias-energy weights",
+        )
+        reference_metrics = run_reference(
+            reference_config,
+            filtered_colvar,
+            output,
+            np.linspace(*reweight["grid"][cv_names[0]]),
+            np.linspace(*reweight["grid"][cv_names[1]]),
+            primary_kcal["centroid"],
+            primary_supports["centroid"],
+            kbt_ev,
+            variants[primary_name],
+            cv_names,
+            bias_column=str(reweight["bias_column"]),
+        )
+        require(
+            float(reference_metrics["max_abs_difference_kcal_mol"])
+            <= float(reference_config["max_abs_difference_kcal_mol"]),
+            "reference FES mismatch",
+        )
+
+    weights = np.exp(normalized_log_weights(raw_log_weights))
+    labels = estimator_plot_labels(bias_mode)
+    raw_gap = (primary["raw_free_energy_mean"] - primary["raw_probability_mean"]) * EV_TO_KCAL_MOL
+    diagnostic_gap = primary_kcal["free_energy_mean"] - primary_kcal["probability_mean"]
+    require(float(np.min(raw_gap)) >= -1e-10, "bead density Jensen relation failed")
+    summary: Dict[str, object] = {
+        "schema_version": 3,
+        "status": "PASS",
+        "analysis_profile": "core",
+        "source_job": source.get("job_id"),
+        "sampling_representation": {
+            "label": sampling_label,
+            "slug": sampling_slug,
+            "bias_mode": bias_mode,
+            "sampling_observable_id": source.get("sampling_observable_id"),
+            "logical_cv_names": list(cv_names),
+        },
+        "selection": {
+            "first_time_ps": float(selected_time_ps[0]),
+            "last_time_ps": float(selected_time_ps[-1]),
+            "frames": int(len(selected_time_ps)),
+            "beads": int(beads.shape[1]),
+        },
+        "reweighting": {
+            "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
+            "formula": (
+                "precomputed log frame weight"
+                if weight_kind == "precomputed"
+                else "normalized exp(total_bias_energy/kBT)"
+            ),
+            "protocol_label": protocol_label,
+            "rct_used": False,
+            "energy_unit": "eV",
+            "target_ensemble": (
+                "defined by the supplied frame weights" if weight_kind == "precomputed"
+                else "declared bias terms removed; undeclared potentials retained"
+            ),
+            "temperature_K": float(reweight["temperature_K"]),
+            "kbt_eV": kbt_ev,
+            "ess": 1.0 / float(np.sum(weights**2)),
+            "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
+            "maximum_normalized_weight": float(np.max(weights)),
+            "bias_range_kcal_mol": (
+                None
+                if bias_ev is None
+                else [
+                    float(np.min(bias_ev) * EV_TO_KCAL_MOL),
+                    float(np.max(bias_ev) * EV_TO_KCAL_MOL),
+                ]
+            ),
+        },
+        "restart_alignment": {
+            "duplicate_policy": str(source.get("restart_duplicate_policy", "keep_first")),
+            "sampling_rows_removed": sampling_restart_duplicates,
+            "bead_rows_removed": list(bead_restart_duplicates),
+        },
+        "fes": {
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate,
+            "target_observable": "bead_density_fes",
+            "target_observable_id": reweight.get("target_observable_id"),
+            "zero_reference": f"{primary_estimator}_minimum",
+            "dimensions": 2,
+            "unit": "kcal/mol",
+            "primary_support_points": int(np.count_nonzero(primary_support)),
+            "primary_bandwidth": list(variants[primary_name]),
+            "primary_bandwidth_name": primary_name,
+            "probability_mean_label": labels["probability_mean"],
+            "free_energy_mean_label": labels["free_energy_mean"],
+            "common_support_points": int(np.count_nonzero(estimator_common_support)),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(estimator_common_support)
+            ),
+            **diagnostic_gap_metrics(diagnostic_gap, estimator_common_support),
+            "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
+        },
+        "reference_crosscheck": reference_metrics,
+        "gates": {
+            "artifact_output": "PASS",
+            "deterministic_numerical": "PASS",
+            "postprocessing_plumbing": "PASS",
+            "physical": "NOT_ASSESSED",
+            "scientific_fes_convergence": "NOT_ASSESSED",
+        },
+    }
+    (output / "qc" / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output / "provenance" / "analysis-contract.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    reference_line = (
+        "External FES_from_Reweighting.py cross-check: `PASS`."
+        if reference_metrics is not None
+        else "External reference cross-check: `NOT_REQUESTED`; the in-package log-space estimator is authoritative."
+    )
+    report = [
+        "# PIMD path-bias post-processing",
+        "",
+        "Status: `PASS`",
+        "Analysis profile: `core`",
+        f"CVs: `{', '.join(cv_names)}`; beads: `{beads.shape[1]}`; frames: `{len(selected_time_ps)}`",
+        f"Weight provider: `{weight_kind}`; ESS: `{summary['reweighting']['ess']:.2f}`",
+        f"Primary estimator: `{labels[primary_estimator]}`",
+        f"Alternate estimator: `{labels[alternate]}`",
+        reference_line,
+        "",
+        "The core profile does not require OPES kernels, PIMD thermo logs, atom trajectories, or water-ionization diagnostics.",
+        "",
+        "This is an engineering and post-processing assessment. Physical interpretation and scientific/FES convergence remain NOT_ASSESSED.",
+    ]
+    (output / "analysis-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_manifest(output)
+    return summary
+
+
+def analyze(contract_path: Path, output: Path) -> Dict[str, object]:
+    contract_path = Path(contract_path)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    profile = analysis_profile(contract)
+    output = Path(output)
+    require(not output.exists(), f"output exists: {output}")
+    for name in ("inputs", "tables", "fes1d", "fes2d", "blocks", "figures", "qc", "provenance"):
+        (output / name).mkdir(parents=True, exist_ok=False)
+
+    source = contract["source"]
+    selection = contract["selection"]
+    reweight = contract["reweight"]
+    # Resolve names before mode-specific admission, preserving the input contract
+    # and sampling labels verbatim in provenance and output filenames.
+    sampling_mode = source.get("sampling_slug", "centroid")
+    inferred_bias_mode = {
+        "centroid": "centroid_coord",
+        "bead_density": "bead_density_shared",
+    }.get(sampling_mode, sampling_mode)
+    bias_mode = validate_bias_mode(str(reweight.get("bias_mode", inferred_bias_mode)))
+    if bias_mode == "contracted_bead_mean":
+        from molsimflow.postprocess.path_contraction import validate_contraction_metadata
+
+        metadata = reweight.get("path_contraction")
+        validate_contraction_metadata(metadata)
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "contracted bead mean currently requires stationary frozen-bias records")
+        require(bool(reweight.get("bias_column")), "contracted bead mean requires total bias energy")
+        require(reweight.get("bias_mode") is not None
+                and validate_bias_mode(str(source.get("sampling_slug"))) == bias_mode
+                and bool(source.get("sampling_label")), "explicit contracted-bead-mean labels are required")
+        require(bool(reweight.get("bead_cv_names")), "declare the original real-bead CV columns")
+        (output / "qc" / "path-contraction.json").write_text(
+            json.dumps({"status": "METADATA_VALIDATED", **metadata}, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+    probability_spec = None
+    probability_modes = {"bead_probability_mixture", "centroid_probability_mixture"}
+    if bias_mode in probability_modes:
+        probability_spec = reweight.get("probability_mixture")
+        require(profile == "core" and len(reweight["cv_names"]) == 1,
+                "probability mixtures currently require the one-dimensional core profile")
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "probability mixtures require stationary frozen-bias records")
+        require(isinstance(probability_spec, dict), "probability_mixture manifest specification is required")
+        require(bool(reweight.get("bias_column")) and not reweight.get("extra_bias_columns"),
+                "probability mixtures require one complete-path total-bias column")
+        require(reweight.get("bias_mode") is not None
+                and validate_bias_mode(str(source.get("sampling_slug"))) == bias_mode
+                and bool(source.get("sampling_label")), "explicit probability-mixture labels are required")
+    conditional_spec = None
+    if bias_mode == "centroid_conditioned":
+        conditional_spec = reweight.get("conditional_path")
+        require(profile == "core" and len(reweight["cv_names"]) == 1,
+                "centroid_conditioned currently requires the one-dimensional core profile")
+        require(reweight.get("weight_kind") == "fixed_bias",
+                "centroid_conditioned requires a stationary frozen-bias record")
+        require(isinstance(conditional_spec, dict) and conditional_spec.get("frozen") is True,
+                "conditional_path must declare a frozen model")
+        require(bool(reweight.get("bias_column")) and not reweight.get("extra_bias_columns"),
+                "centroid_conditioned requires one total-bias column without extra biases")
+        require(source.get("sampling_slug") == "centroid_conditioned"
+                and bool(source.get("sampling_label")), "explicit conditional-path labels are required")
+    primary_estimator = validate_primary_estimator(
+        str(reweight.get("primary_estimator", "probability_mean"))
+    )
+    require(not (contract.get("reference") is not None
+                 and reweight.get("weight_kind") == "precomputed"),
+            "legacy reference cross-check requires bias-energy weights")
+    if profile == "water_ionization_opes":
+        require(bool(reweight.get("bias_column")), "water-ionization diagnostics require bias_column")
+    for config, key in ((source, "sampling_observable_id"), (reweight, "target_observable_id")):
+        value = config.get(key)
+        require(value is None or (isinstance(value, str) and bool(value.strip())),
+                f"{key} must be a nonempty string")
+    sampling_time_scale_to_fs = time_scale_to_fs(
+        source.get("sampling_time_scale_to_fs", 1.0),
+        "sampling_time_scale_to_fs",
+    )
+    bead_time_scale_to_fs = time_scale_to_fs(
+        source.get("bead_time_scale_to_fs", 1.0),
+        "bead_time_scale_to_fs",
+    )
+    kernel_time_scale_to_fs = time_scale_to_fs(
+        source.get("kernel_time_scale_to_fs", sampling_time_scale_to_fs),
+        "kernel_time_scale_to_fs",
+    )
+    bead_offset_fs = float(source.get("bead_time_offset_fs", 0.0))
+    require(np.isfinite(bead_offset_fs), "invalid bead_time_offset_fs")
+    run_root = Path(source["run_root"])
+    require(run_root.is_dir(), f"run root missing: {run_root}")
+    raw_manifest = run_root / source["raw_manifest"]
+    require(sha256(raw_manifest) == source["raw_manifest_sha256"], "raw manifest hash mismatch")
+
+    sampling_colvar = source.get("sampling_colvar")
+    if sampling_colvar is None:
+        sampling_colvar = source["centroid_colvar"]
+    centroid_path = run_root / str(sampling_colvar)
+    bead_paths = [run_root / value for value in source["bead_colvars"]]
+    require(bool(bead_paths), "bead_colvars must contain a complete path")
+    if "expected_beads" in source:
+        expected_beads = source["expected_beads"]
+        require(isinstance(expected_beads, int) and not isinstance(expected_beads, bool)
+                and expected_beads > 0, "expected_beads must be a positive integer")
+        require(len(bead_paths) == expected_beads, "bead input count differs from expected_beads")
+    if profile == "water_ionization_opes":
+        for key in ("thermo_logs", "trajectories"):
+            require(len(source[key]) == len(bead_paths), f"{key} must contain one file per bead")
+    # Resolve filesystem identity, including symlinks and hard links, without
+    # rejecting distinct files whose bead observations happen to be identical.
+    bead_stats = [path.stat() for path in bead_paths]
+    require(
+        len({(stat.st_dev, stat.st_ino) for stat in bead_stats}) == len(bead_paths),
+        "duplicate bead input file",
+    )
+    consumed_paths = [centroid_path, *bead_paths]
+    conditional_model = None
+    if conditional_spec is not None:
+        from molsimflow.postprocess.conditional_path import load_model
+        model_path = run_root / conditional_spec["model_file"]
+        conditional_model = load_model(model_path, expected_sha256=conditional_spec["model_sha256"])
+        consumed_paths.append(model_path)
+    probability_model = None
+    if probability_spec is not None:
+        from molsimflow.postprocess.probability_mixture import load_manifest
+        model_path = run_root / probability_spec["manifest_file"]
+        probability_model = load_manifest(model_path, expected_sha256=probability_spec["manifest_sha256"])
+        require(probability_model["mode"] == bias_mode, "probability mixture mode mismatch")
+        require(probability_model["expected_beads"] == len(bead_paths), "probability mixture bead count mismatch")
+        require(probability_model["energy_unit"] == "eV", "probability mixture field must use eV")
+        consumed_paths.append(model_path)
+        field_keys = ["field"]
+        if probability_model["mode"] == "centroid_probability_mixture":
+            field_keys = (["field"] if probability_model["coupling"] > 0 else []) + ["centroid_field"]
+        for key in field_keys:
+            input_path = run_root / probability_spec[key + "_file"]
+            require(sha256(input_path) == probability_model[key + "_sha256"],
+                    "probability mixture frozen field hash mismatch")
+            consumed_paths.append(input_path)
+    if profile == "water_ionization_opes":
+        consumed_paths.append(run_root / source["kernels"])
+        consumed_paths.extend(run_root / name for name in source["thermo_logs"])
+        consumed_paths.extend(run_root / name for name in source["trajectories"])
+    verified_inputs = verify_manifest_inputs(raw_manifest, run_root, consumed_paths)
+    (output / "provenance" / "verified-inputs.json").write_text(
+        json.dumps({"scope": "consumed inputs", "sha256": verified_inputs}, indent=2)
+        + "\n", encoding="utf-8",
+    )
+    fields, centroid_data = read_plumed(centroid_path)
+    bead_tables = [read_plumed(path) for path in bead_paths]
+    require(
+        all(table_fields == fields[:4] or "time" in table_fields for table_fields, _ in bead_tables),
+        "invalid bead table headers",
+    )
+    restart_policy = str(source.get("restart_duplicate_policy", "keep_first"))
+    centroid_keep, centroid_restart_duplicates = restart_unique_indices(
+        field(centroid_data, fields, "time"), policy=restart_policy
+    )
+    centroid_data = centroid_data[centroid_keep]
+    deduplicated_bead_tables = []
+    bead_restart_duplicates = []
+    for bead_fields, bead_data in bead_tables:
+        bead_keep, duplicate_count = restart_unique_indices(
+            field(bead_data, bead_fields, "time"), policy=restart_policy
+        )
+        deduplicated_bead_tables.append((bead_fields, bead_data[bead_keep]))
+        bead_restart_duplicates.append(duplicate_count)
+    bead_tables = deduplicated_bead_tables
+    time_fs = time_values_to_fs(field(centroid_data, fields, "time"), sampling_time_scale_to_fs)
+    first_time_fs = float(selection["first_time_ps"]) * 1000.0
+    last_time_fs = float(selection["last_time_ps"]) * 1000.0
+    all_steps = np.rint(time_fs / float(selection["timestep_fs"])).astype(int)
+    selected_mask = (time_fs >= first_time_fs - 1e-9) & (time_fs <= last_time_fs + 1e-9)
+    sample_stride_steps = int(selection.get("sample_stride_steps", 1))
+    require(sample_stride_steps > 0, "sample_stride_steps must be positive")
+    sample_phase_step = int(selection.get("sample_phase_step", 0))
+    selected_mask &= (all_steps - sample_phase_step) % sample_stride_steps == 0
+    selected = np.flatnonzero(selected_mask)
+    require(selected.size == int(selection["expected_frames"]), "selected frame count mismatch")
+    selected_time_ps = time_fs[selected] / 1000.0
+    selected_steps = np.rint(
+        time_fs[selected] / float(selection["timestep_fs"])
+    ).astype(int)
+    cv_names = tuple(reweight["cv_names"])
+    require(
+        len(cv_names) in ({1, 2} if profile == "core" else {2}),
+        "core analysis supports one or two CVs; water-ionization diagnostics require two",
+    )
+    sampling_cv_names = cv_column_names(reweight, "sampling_cv_names", cv_names)
+    bead_cv_names = cv_column_names(reweight, "bead_cv_names", cv_names)
+    sampling_label = str(source.get("sampling_label", "Centroid"))
+    sampling_slug = str(source.get("sampling_slug", "centroid"))
+    require(bool(sampling_slug) and Path(sampling_slug).name == sampling_slug, "invalid sampling_slug")
+    derived_spec = piecewise_derived_coordinate_spec(
+        contract.get("derived_coordinate"), cv_names
+    )
+    require(
+        derived_spec is None
+        or (
+            profile == "water_ionization_opes"
+            and len(cv_names) == 2
+            and bias_mode != "bead_density_shared"
+        ),
+        "derived_coordinate is available only in the two-CV water-ionization profile",
+    )
+    configured_labels = contract["plots"].get("cv_labels", {})
+    cv_labels = tuple(
+        str(configured_labels.get(name, default_cv_label(name))) for name in cv_names
+    )
+    centroid = np.column_stack([field(centroid_data, fields, name)[selected] for name in sampling_cv_names])
+    bead_arrays = []
+    bead_selections = []
+    for bead_fields, bead_data in bead_tables:
+        bead_time_fs = time_values_to_fs(
+            field(bead_data, bead_fields, "time"), bead_time_scale_to_fs
+        )
+        bead_selected = aligned_time_indices(
+            bead_time_fs + bead_offset_fs, time_fs[selected]
+        )
+        bead_selections.append(bead_selected)
+        bead_arrays.append(
+            np.column_stack(
+                [
+                    field(bead_data, bead_fields, name)[bead_selected]
+                    for name in bead_cv_names
+                ]
+            )
+        )
+    beads = np.stack(bead_arrays, axis=1)
+    if bias_mode == "bead_density_shared":
+        centroid = np.mean(beads, axis=1)
+
+    def selected_bead_field(column: str) -> np.ndarray:
+        return np.stack(
+            [
+                field(bead_data, bead_fields, column)[bead_selected]
+                for (bead_fields, bead_data), bead_selected in zip(
+                    bead_tables, bead_selections
+                )
+            ],
+            axis=1,
+        )
+
+    diagnostic_spec = diagnostic_cv_spec(contract.get("diagnostic_cv"))
+    diagnostic_sampling = None
+    diagnostic_beads = None
+    diagnostic_mean_error = None
+    if diagnostic_spec is not None:
+        diagnostic_beads = selected_bead_field(str(diagnostic_spec["bead_column"]))
+        if bias_mode == "bead_density_shared":
+            diagnostic_sampling = np.mean(diagnostic_beads, axis=1)
+            diagnostic_mean_error = 0.0
+        else:
+            diagnostic_sampling = field(
+                centroid_data, fields, str(diagnostic_spec["sampling_column"])
+            )[selected]
+            diagnostic_mean_error = float(
+                np.max(np.abs(diagnostic_sampling - np.mean(diagnostic_beads, axis=1)))
+            )
+            require(
+                diagnostic_mean_error <= float(diagnostic_spec["mean_tolerance"]),
+                "printed diagnostic bead mean mismatch",
+            )
+
+    derived_centroid = None
+    derived_beads = None
+    derived_validation = None
+    if derived_spec is not None:
+        source_name = str(derived_spec["source"])
+        printed_column = str(derived_spec["printed_column"])
+        sampling_printed_column = str(
+            derived_spec.get("sampling_printed_column", printed_column)
+        )
+        bead_printed_column = str(derived_spec.get("bead_printed_column", printed_column))
+        source_component = cv_names.index(source_name)
+        derived_centroid = field(centroid_data, fields, sampling_printed_column)[selected]
+        derived_beads = np.stack(
+            [
+                field(bead_data, bead_fields, bead_printed_column)[bead_selected]
+                for (bead_fields, bead_data), bead_selected in zip(
+                    bead_tables, bead_selections
+                )
+            ],
+            axis=1,
+        )
+        transform_options = {
+            "switch": float(derived_spec["switch"]),
+            "offset": float(derived_spec["offset"]),
+            "linear_shift": float(derived_spec["linear_shift"]),
+            "log_scale": float(derived_spec["log_scale"]),
+            "log_reference": float(derived_spec["log_reference"]),
+        }
+        centroid_validation = validate_piecewise_logdistance_printed(
+            centroid[:, source_component],
+            derived_centroid,
+            tolerance=float(derived_spec["printed_transform_tolerance"]),
+            **transform_options,
+        )
+        bead_validations = [
+            validate_piecewise_logdistance_printed(
+                beads[:, bead, source_component],
+                derived_beads[:, bead],
+                tolerance=float(derived_spec["printed_transform_tolerance"]),
+                **transform_options,
+            )
+            for bead in range(beads.shape[1])
+        ]
+        derived_validation = {
+            "centroid": centroid_validation,
+            "bead_maximum_absolute_error": max(
+                value["maximum_absolute_error"] for value in bead_validations
+            ),
+            "all_maximum_absolute_error": max(
+                [centroid_validation["maximum_absolute_error"]]
+                + [value["maximum_absolute_error"] for value in bead_validations]
+            ),
+        }
+
+    weight_kind = str(reweight.get("weight_kind", "quasi_static_opes"))
+    bias_column_value = reweight.get("bias_column")
+    bias_column = None if bias_column_value is None else str(bias_column_value)
+    bias_ev = None
+    shared_diagnostic_max_deltas: Dict[str, float] = {}
+    if bias_column is not None:
+        if bias_mode == "bead_density_shared":
+            bias_ev = total_bias_energy(
+                bias_mode,
+                bead_bias_energies=selected_bead_field(bias_column),
+            )
+        else:
+            bias_ev = total_bias_energy(
+                bias_mode,
+                sampling_bias_energy=field(centroid_data, fields, bias_column)[selected],
+            )
+    opes_bias_ev = bias_ev
+    extra_bias_columns = reweight.get("extra_bias_columns", [])
+    require(isinstance(extra_bias_columns, list), "extra_bias_columns must be a list")
+    require(all(isinstance(name, str) and name for name in extra_bias_columns),
+            "invalid extra bias column")
+    require(len(set(extra_bias_columns)) == len(extra_bias_columns), "duplicate extra bias column")
+    require(bias_column not in extra_bias_columns, "primary bias repeated in extra_bias_columns")
+    require(not extra_bias_columns or bias_ev is not None, "extra biases require bias_column")
+    for name in extra_bias_columns:
+        if bias_mode == "bead_density_shared":
+            extra = total_bias_energy(bias_mode, bead_bias_energies=selected_bead_field(name))
+        else:
+            extra = total_bias_energy(
+                bias_mode, sampling_bias_energy=field(centroid_data, fields, name)[selected])
+        bias_ev = bias_ev + extra
+    require(
+        profile == "core" or bias_ev is not None,
+        "water-ionization diagnostics require bias_column",
+    )
+
+    rct_ev = zed = neff = nker = None
+    if profile == "water_ionization_opes":
+        diagnostic_columns = {
+            "rct": str(reweight["rct_column"]),
+            "zed": str(reweight.get("zed_column", "opes.zed")),
+            "neff": str(reweight.get("neff_column", "opes.neff")),
+            "nker": str(reweight.get("nker_column", "opes.nker")),
+        }
+        if bias_mode == "bead_density_shared":
+            diagnostics = {}
+            tolerance = float(reweight.get("shared_diagnostic_tolerance", 1e-9))
+            require(tolerance >= 0.0, "shared diagnostic tolerance must be nonnegative")
+            for name, column in diagnostic_columns.items():
+                values = selected_bead_field(column)
+                delta = float(np.max(np.max(values, axis=1) - np.min(values, axis=1)))
+                require(delta <= tolerance, f"shared OPES diagnostic mismatch: {column}")
+                shared_diagnostic_max_deltas[column] = delta
+                diagnostics[name] = np.mean(values, axis=1)
+            rct_ev, zed, neff, nker = (
+                diagnostics["rct"],
+                diagnostics["zed"],
+                diagnostics["neff"],
+                diagnostics["nker"],
+            )
+        else:
+            rct_ev = field(centroid_data, fields, diagnostic_columns["rct"])[selected]
+            zed = field(centroid_data, fields, diagnostic_columns["zed"])[selected]
+            neff = field(centroid_data, fields, diagnostic_columns["neff"])[selected]
+            nker = field(centroid_data, fields, diagnostic_columns["nker"])[selected]
+    kbt_ev = float(reweight["kbt_eV"])
+    temperature = float(reweight["temperature_K"])
+    require(np.isfinite(temperature) and temperature > 0.0, "temperature_K must be finite and positive")
+    require(np.isfinite(kbt_ev) and kbt_ev > 0.0, "kbt_eV must be finite and positive")
+    require(reweight.get("energy_unit", "eV") == "eV", "energy_unit must be eV; convert energy columns before analysis")
+    expected_kbt = KB_EV_PER_K * temperature
+    require(abs(kbt_ev - expected_kbt) <= 1e-12, "kBT/temperature mismatch")
+    if conditional_spec is not None:
+        from molsimflow.postprocess.conditional_path import audit_record
+        audit = audit_record(
+            conditional_model, centroid[:, 0],
+            selected_bead_field(conditional_spec["bead_region_column"]),
+            field(centroid_data, fields, conditional_spec["log_normalizer_column"])[selected],
+            field(centroid_data, fields, conditional_spec["centroid_bias_column"])[selected],
+            bias_ev, coupling=conditional_spec["coupling"], kbt=kbt_ev,
+            energy_atol=conditional_spec["energy_atol_eV"],
+            normalizer_atol=conditional_spec["log_normalizer_atol"],
+        )
+        audit["model_sha256"] = conditional_spec["model_sha256"]
+        (output / "qc" / "conditional-path.json").write_text(
+            json.dumps(audit, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    if probability_spec is not None:
+        from molsimflow.postprocess.probability_mixture import audit_record
+        require(abs(probability_model["kbt"] - kbt_ev) <= 1e-12,
+                "probability mixture kBT mismatch")
+        centroid_bias = None
+        if probability_model["mode"] == "centroid_probability_mixture":
+            centroid_bias = field(centroid_data, fields, probability_spec["centroid_bias_column"])[selected]
+        audit = audit_record(
+            probability_model,
+            None if probability_model["mode"] == "centroid_probability_mixture"
+            and probability_model["coupling"] == 0
+            else selected_bead_field(probability_spec["bead_bias_column"]),
+            bias_ev, field_sha256=probability_model["field_sha256"],
+            centroid_bias=centroid_bias, energy_atol=probability_spec["energy_atol_eV"],
+        )
+        audit["manifest_sha256"] = probability_spec["manifest_sha256"]
+        (output / "qc" / "probability-mixture.json").write_text(
+            json.dumps(audit, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    quasi_static_declared = reweight.get("quasi_static") is True
+    if weight_kind == "precomputed":
+        require(not extra_bias_columns, "precomputed weights cannot also use extra bias columns")
+        log_weight_column = str(reweight["log_weight_column"])
+        raw_log_weights = frame_log_weights(
+            weight_kind,
+            precomputed=field(centroid_data, fields, log_weight_column)[selected],
+        )
+    else:
+        require(bias_ev is not None, f"{weight_kind} requires bias_column")
+        raw_log_weights = frame_log_weights(
+            weight_kind,
+            bias_energy=bias_ev,
+            kbt=kbt_ev,
+            quasi_static=quasi_static_declared,
+        )
+    log_weights = normalized_log_weights(raw_log_weights)
+    weights = np.exp(log_weights)
+    require(abs(float(np.sum(weights)) - 1.0) <= 1e-12, "weight normalization failed")
+
+    write_kde_uncertainty(output, reweight, cv_names, beads, raw_log_weights, kbt_ev)
+
+    if len(cv_names) == 1:
+        return finalize_core_1d(
+            contract=contract,
+            output=output,
+            source=source,
+            reweight=reweight,
+            cv_name=str(cv_names[0]),
+            cv_label=str(cv_labels[0]),
+            sampling_label=sampling_label,
+            sampling_slug=sampling_slug,
+            bias_mode=bias_mode,
+            weight_kind=weight_kind,
+            selected_time_ps=selected_time_ps,
+            selected_steps=selected_steps,
+            sampling=centroid,
+            beads=beads,
+            raw_log_weights=raw_log_weights,
+            bias_ev=bias_ev,
+            kbt_ev=kbt_ev,
+            sampling_restart_duplicates=centroid_restart_duplicates,
+            bead_restart_duplicates=bead_restart_duplicates,
+        )
+
+    x_grid = np.linspace(*reweight["grid"][cv_names[0]])
+    y_grid = np.linspace(*reweight["grid"][cv_names[1]])
+    variants = {name: tuple(values) for name, values in reweight["bandwidth_variants"].items()}
+    primary_name = str(reweight["primary_bandwidth"])
+    require(primary_name in variants, "primary bandwidth absent")
+    require(all(name and Path(name).name == name and name not in {".", ".."}
+                for name in variants), "bandwidth variant names must be basenames")
+    surfaces_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    supports_by_variant: Dict[str, Dict[str, np.ndarray]] = {}
+    sensitivity_rows: List[Dict[str, object]] = []
+    for variant, bandwidth in variants.items():
+        surfaces = compute_surfaces(
+            beads,
+            centroid,
+            raw_log_weights,
+            x_grid,
+            y_grid,
+            bandwidth,
+            kbt_ev,
+            primary_estimator=primary_estimator,
+        )
+        surfaces_by_variant[variant] = surfaces
+        log_threshold = math.log(float(reweight["relative_density_support"]))
+        supports = estimator_support_masks(
+            surfaces["log_centroid"],
+            surfaces["log_probability_mean"],
+            surfaces["log_beads"],
+            log_threshold,
+        )
+        supports_by_variant[variant] = supports
+        kcal = {key: surfaces[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")}
+        rows = []
+        for iy, y_value in enumerate(y_grid):
+            for ix, x_value in enumerate(x_grid):
+                rows.append(
+                    {
+                        cv_names[0]: x_value,
+                        cv_names[1]: y_value,
+                        **fes_table_columns(
+                            kcal, supports, primary_estimator, (iy, ix)
+                        ),
+                    }
+                )
+        write_csv(
+            output / "fes2d" / f"{variant}.csv", rows,
+            [cv_names[0], cv_names[1], *FES_TABLE_FIELDS],
+        )
+        sensitivity_rows.append(
+            {
+                "variant": variant,
+                "sigma_x": bandwidth[0],
+                "sigma_y": bandwidth[1],
+                "primary_estimator": primary_estimator,
+                "primary_support_points": int(np.count_nonzero(supports[primary_estimator])),
+                "probability_mean_support_points": int(np.count_nonzero(supports["probability_mean"])),
+                "free_energy_mean_support_points": int(np.count_nonzero(supports["free_energy_mean"])),
+                "common_support_points": int(np.count_nonzero(supports["common"])),
+            }
+        )
+    primary_supports = supports_by_variant[primary_name]
+    primary_support = primary_supports[primary_estimator]
+    require(
+        np.count_nonzero(primary_support) >= 2,
+        f"empty {primary_estimator} support",
+    )
+    primary = surfaces_by_variant[primary_name]
+    primary_kcal = {key: primary[key] * EV_TO_KCAL_MOL for key in ("centroid", "probability_mean", "free_energy_mean")}
+    for row in sensitivity_rows:
+        variant = str(row["variant"])
+        current = surfaces_by_variant[variant][primary_estimator] * EV_TO_KCAL_MOL
+        comparison_support = (
+            primary_supports[primary_estimator]
+            & supports_by_variant[variant][primary_estimator]
+        )
+        try:
+            count, rmse, maximum = optional_surface_difference_metrics(
+                primary_kcal[primary_estimator], current, comparison_support
+            )
+        except ValueError as exc:
+            raise ValueError(f"bandwidth comparison failed for {variant}: {exc}") from exc
+        row["comparison_support_points"] = count
+        row["primary_rmse_vs_selected_bandwidth_kcal_mol"] = rmse
+        row["primary_max_abs_vs_selected_bandwidth_kcal_mol"] = maximum
+    write_csv(
+        output / "qc" / "bandwidth-sensitivity.csv", sensitivity_rows,
+        [
+            "variant", "sigma_x", "sigma_y", "primary_estimator",
+            "primary_support_points", "probability_mean_support_points",
+            "free_energy_mean_support_points", "common_support_points",
+            "comparison_support_points",
+            "primary_rmse_vs_selected_bandwidth_kcal_mol",
+            "primary_max_abs_vs_selected_bandwidth_kcal_mol",
+        ],
+    )
+
+    marginal_tables: Dict[str, Dict[str, np.ndarray]] = {}
+    for component, name in enumerate(cv_names):
+        grid = x_grid if component == 0 else y_grid
+        curves = compute_marginals(
+            beads,
+            centroid,
+            raw_log_weights,
+            grid,
+            variants[primary_name][component],
+            component,
+            kbt_ev,
+            primary_estimator=primary_estimator,
+        )
+        curves_kcal = {key: values * EV_TO_KCAL_MOL for key, values in curves.items()}
+        log_threshold = math.log(float(reweight["relative_density_support"]))
+        supports = estimator_support_masks(
+            curves["log_centroid"],
+            curves["log_probability_mean"],
+            curves["log_beads"],
+            log_threshold,
+        )
+        marginal_tables[name] = {
+            **{key: curves_kcal[key] for key in ("centroid", "probability_mean", "free_energy_mean")},
+            **{f"{key}_support": value for key, value in supports.items()},
+        }
+        write_csv(
+            output / "fes1d" / f"{name}.csv",
+            (
+                {
+                    name: value,
+                    **fes_table_columns(
+                        curves_kcal, supports, primary_estimator, index
+                    ),
+                }
+                for index, value in enumerate(grid)
+            ),
+            [name, *FES_TABLE_FIELDS],
+        )
+        plot_fes1d(
+            output, name, grid, curves_kcal, supports,
+            float(reweight["plot_max_kcal_mol"]), cv_labels[component],
+            sampling_label=sampling_label,
+            bias_mode=bias_mode,
+        )
+
+    derived_coordinate_summary = None
+    if derived_spec is not None:
+        require(derived_validation is not None, "derived-coordinate validation absent")
+        source_name = str(derived_spec["source"])
+        target_name = str(derived_spec["target"])
+        source_component = cv_names.index(source_name)
+        source_grid = x_grid if source_component == 0 else y_grid
+        transform_options = {
+            "switch": float(derived_spec["switch"]),
+            "offset": float(derived_spec["offset"]),
+            "linear_shift": float(derived_spec["linear_shift"]),
+            "log_scale": float(derived_spec["log_scale"]),
+            "log_reference": float(derived_spec["log_reference"]),
+        }
+        source_marginals = marginal_tables[source_name]
+        derived_curves_kcal: Dict[str, np.ndarray] = {}
+        target_grid = None
+        density_jacobian = None
+        for key in ("centroid", "probability_mean", "free_energy_mean"):
+            current_grid, current_jacobian, current_curve = (
+                transform_piecewise_logdistance_fes(
+                    source_grid,
+                    source_marginals[key],
+                    kbt_ev * EV_TO_KCAL_MOL,
+                    zero_minimum=False,
+                    **transform_options,
+                )
+            )
+            if target_grid is None:
+                target_grid = current_grid
+                density_jacobian = current_jacobian
+            else:
+                require(np.array_equal(current_grid, target_grid), "derived grids differ")
+                require(
+                    np.array_equal(current_jacobian, density_jacobian),
+                    "derived Jacobians differ",
+                )
+            derived_curves_kcal[key] = current_curve
+        require(target_grid is not None and density_jacobian is not None, "derived grid absent")
+        primary_zero = np.min(
+            derived_curves_kcal[primary_estimator][
+                source_marginals[f"{primary_estimator}_support"]
+            ]
+        )
+        for key in ("probability_mean", "free_energy_mean"):
+            derived_curves_kcal[key] -= primary_zero
+        derived_curves_kcal["centroid"] -= np.min(
+            derived_curves_kcal["centroid"][source_marginals["centroid_support"]])
+        derived_marginal_supports = {
+            key: np.asarray(source_marginals[f"{key}_support"], dtype=bool).copy()
+            for key in (
+                "centroid",
+                "probability_mean",
+                "free_energy_mean",
+                "common",
+                "estimator_common",
+                "all_common",
+                "sampling_probability_common",
+                "sampling_free_energy_common",
+            )
+        }
+        require(
+            all(
+                np.array_equal(
+                    derived_marginal_supports[key],
+                    source_marginals[f"{key}_support"],
+                )
+                for key in derived_marginal_supports
+            ),
+            "derived marginal support changed",
+        )
+        jacobian_name = f"d{source_name}_d{target_name}"
+        write_csv(
+            output / "fes1d" / f"{target_name}.csv",
+            (
+                {
+                    target_name: target_grid[index],
+                    source_name: source_grid[index],
+                    jacobian_name: density_jacobian[index],
+                    **fes_table_columns(
+                        derived_curves_kcal,
+                        derived_marginal_supports,
+                        primary_estimator,
+                        index,
+                    ),
+                }
+                for index in range(len(target_grid))
+            ),
+            [
+                target_name,
+                source_name,
+                jacobian_name,
+                *FES_TABLE_FIELDS,
+            ],
+        )
+        plot_fes1d(
+            output,
+            target_name,
+            target_grid,
+            derived_curves_kcal,
+            derived_marginal_supports,
+            float(reweight["plot_max_kcal_mol"]),
+            str(derived_spec["label"]),
+            sampling_label=sampling_label,
+            bias_mode=bias_mode,
+        )
+
+        surface_axis = 1 if source_component == 0 else 0
+        derived_surfaces_kcal: Dict[str, np.ndarray] = {}
+        for key in ("centroid", "probability_mean", "free_energy_mean"):
+            current_grid, current_jacobian, current_surface = (
+                transform_piecewise_logdistance_fes(
+                    source_grid,
+                    primary_kcal[key],
+                    kbt_ev * EV_TO_KCAL_MOL,
+                    axis=surface_axis,
+                    zero_minimum=False,
+                    **transform_options,
+                )
+            )
+            require(np.array_equal(current_grid, target_grid), "derived 1D/2D grids differ")
+            require(
+                np.array_equal(current_jacobian, density_jacobian),
+                "derived 1D/2D Jacobians differ",
+            )
+            derived_surfaces_kcal[key] = current_surface
+        primary_zero = np.min(
+            derived_surfaces_kcal[primary_estimator][
+                primary_supports[primary_estimator]
+            ]
+        )
+        for key in ("probability_mean", "free_energy_mean"):
+            derived_surfaces_kcal[key] -= primary_zero
+        derived_surfaces_kcal["centroid"] -= np.min(
+            derived_surfaces_kcal["centroid"][primary_supports["centroid"]])
+        derived_supports = {
+            key: np.asarray(primary_supports[key], dtype=bool).copy()
+            for key in (
+                "centroid",
+                "probability_mean",
+                "free_energy_mean",
+                "common",
+                "estimator_common",
+                "all_common",
+                "sampling_probability_common",
+                "sampling_free_energy_common",
+            )
+        }
+        require(
+            all(
+                np.array_equal(derived_supports[key], primary_supports[key])
+                for key in derived_supports
+            ),
+            "derived 2D support changed",
+        )
+        derived_names = list(cv_names)
+        derived_names[source_component] = target_name
+        derived_labels = list(cv_labels)
+        derived_labels[source_component] = str(derived_spec["label"])
+        derived_x_grid = target_grid if source_component == 0 else x_grid
+        derived_y_grid = y_grid if source_component == 0 else target_grid
+        derived_rows = []
+        for iy, y_value in enumerate(derived_y_grid):
+            for ix, x_value in enumerate(derived_x_grid):
+                source_index = ix if source_component == 0 else iy
+                derived_rows.append(
+                    {
+                        derived_names[0]: x_value,
+                        derived_names[1]: y_value,
+                        source_name: source_grid[source_index],
+                        jacobian_name: density_jacobian[source_index],
+                        **fes_table_columns(
+                            derived_surfaces_kcal,
+                            derived_supports,
+                            primary_estimator,
+                            (iy, ix),
+                        ),
+                    }
+                )
+        derived_surface_name = f"{primary_name}-{'-'.join(derived_names)}"
+        write_csv(
+            output / "fes2d" / f"{derived_surface_name}.csv",
+            derived_rows,
+            [
+                derived_names[0],
+                derived_names[1],
+                source_name,
+                jacobian_name,
+                *FES_TABLE_FIELDS,
+            ],
+        )
+        plot_fes2d(
+            output,
+            derived_x_grid,
+            derived_y_grid,
+            derived_surfaces_kcal,
+            derived_supports,
+            float(reweight["plot_max_kcal_mol"]),
+            derived_labels,
+            suffix=f"-{derived_surface_name}",
+            sampling_label=sampling_label,
+            bias_mode=bias_mode,
+            protocol_label=sampling_protocol_label(reweight),
+            bead_count=beads.shape[1],
+        )
+        source_zoom = contract["plots"].get("fes_zoom")
+        derived_zoom = None
+        if source_zoom is not None:
+            derived_zoom = [list(bounds) for bounds in source_zoom]
+            derived_zoom[source_component] = list(
+                inverse_piecewise_logdistance(
+                    source_zoom[source_component], **transform_options
+                )
+            )
+            plot_fes2d(
+                output,
+                derived_x_grid,
+                derived_y_grid,
+                derived_surfaces_kcal,
+                derived_supports,
+                float(reweight["plot_max_kcal_mol"]),
+                derived_labels,
+                zoom=derived_zoom,
+                suffix=f"-{derived_surface_name}-sampled-region",
+                sampling_label=sampling_label,
+                bias_mode=bias_mode,
+                protocol_label=sampling_protocol_label(reweight),
+                bead_count=beads.shape[1],
+            )
+        derived_coordinate_summary = {
+            "kind": str(derived_spec["kind"]),
+            "source": source_name,
+            "target": target_name,
+            "printed_column": str(derived_spec["printed_column"]),
+            "printed_transform_tolerance": float(
+                derived_spec["printed_transform_tolerance"]
+            ),
+            "printed_transform_validation": derived_validation,
+            "density_jacobian": jacobian_name,
+            "sampling_support_unchanged": True,
+            "weighting_unchanged": True,
+            "independent_cv": False,
+            "fes1d": f"fes1d/{target_name}.csv",
+            "fes2d": f"fes2d/{derived_surface_name}.csv",
+            "figure": f"figures/fes2d-comparison-{derived_surface_name}.png",
+            "sampled_region_figure": (
+                f"figures/fes2d-comparison-{derived_surface_name}-sampled-region.png"
+                if derived_zoom is not None
+                else None
+            ),
+        }
+
+    block_rows = []
+    for block, indices in enumerate(np.array_split(np.arange(len(selected)), int(reweight["blocks"]))):
+        block_surface = compute_surfaces(
+            beads[indices], centroid[indices], raw_log_weights[indices], x_grid, y_grid,
+            variants[primary_name], kbt_ev, primary_estimator=primary_estimator,
+        )
+        block_weights = block_surface["weights"]
+        block_supports = estimator_support_masks(
+            block_surface["log_centroid"],
+            block_surface["log_probability_mean"],
+            block_surface["log_beads"],
+            math.log(float(reweight["relative_density_support"])),
+        )
+        block_comparison_support = (
+            primary_supports[primary_estimator]
+            & block_supports[primary_estimator]
+        )
+        comparison_count, block_rmse, block_maximum = optional_surface_difference_metrics(
+            primary[primary_estimator] * EV_TO_KCAL_MOL,
+            block_surface[primary_estimator] * EV_TO_KCAL_MOL,
+            block_comparison_support,
+        )
+        block_rows.append(
+            {
+                "block": block + 1,
+                "first_time_ps": selected_time_ps[indices[0]],
+                "last_time_ps": selected_time_ps[indices[-1]],
+                "frames": len(indices),
+                "ess": 1.0 / float(np.sum(block_weights**2)),
+                "max_weight": float(np.max(block_weights)),
+                "primary_estimator": primary_estimator,
+                "comparison_support_points": comparison_count,
+                "primary_rmse_vs_full_kcal_mol": block_rmse,
+                "primary_max_abs_vs_full_kcal_mol": block_maximum,
+            }
+        )
+    write_csv(
+        output / "blocks" / "block-diagnostics.csv", block_rows,
+        [
+            "block", "first_time_ps", "last_time_ps", "frames", "ess",
+            "max_weight", "primary_estimator", "comparison_support_points",
+            "primary_rmse_vs_full_kcal_mol",
+            "primary_max_abs_vs_full_kcal_mol",
+        ],
+    )
+
+    frame_rows = []
+    for local, source_index in enumerate(selected):
+        row = {
+            "time_ps": selected_time_ps[local],
+            "step": int(round(time_fs[source_index] / float(selection["timestep_fs"]))),
+            "log_frame_weight": raw_log_weights[local],
+            "normalized_weight": weights[local],
+        }
+        if bias_ev is not None:
+            row["bias_eV"] = bias_ev[local]
+            row["bias_kcal_mol"] = bias_ev[local] * EV_TO_KCAL_MOL
+        if rct_ev is not None and zed is not None and neff is not None and nker is not None:
+            row.update(
+                {
+                    "rct_eV": rct_ev[local],
+                    "rct_kcal_mol": rct_ev[local] * EV_TO_KCAL_MOL,
+                    "opes_zed": zed[local],
+                    "opes_neff": neff[local],
+                    "opes_nker": nker[local],
+                }
+            )
+        for component, name in enumerate(cv_names):
+            row[f"{sampling_slug}_{name}"] = centroid[local, component]
+            row[f"bead_mean_{name}"] = float(np.mean(beads[local, :, component]))
+            row[f"bead_std_{name}"] = float(np.std(beads[local, :, component]))
+        if derived_spec is not None:
+            require(
+                derived_centroid is not None and derived_beads is not None,
+                "derived-coordinate values absent",
+            )
+            target_name = str(derived_spec["target"])
+            row[f"{sampling_slug}_{target_name}"] = derived_centroid[local]
+            row[f"bead_mean_{target_name}"] = float(
+                np.mean(derived_beads[local, :])
+            )
+            row[f"bead_std_{target_name}"] = float(
+                np.std(derived_beads[local, :])
+            )
+        if diagnostic_spec is not None:
+            require(
+                diagnostic_sampling is not None and diagnostic_beads is not None,
+                "diagnostic CV values absent",
+            )
+            diagnostic_name = str(diagnostic_spec["name"])
+            row[f"{sampling_slug}_{diagnostic_name}"] = diagnostic_sampling[local]
+            row[f"bead_mean_{diagnostic_name}"] = float(
+                np.mean(diagnostic_beads[local, :])
+            )
+            row[f"bead_std_{diagnostic_name}"] = float(
+                np.std(diagnostic_beads[local, :])
+            )
+        frame_rows.append(row)
+    frame_fields = list(frame_rows[0])
+    write_csv(output / "tables" / "frame-series.csv", frame_rows, frame_fields)
+    bead_cv_fields = ["time_ps", "bead"]
+    if bias_ev is not None:
+        bead_cv_fields.append("bias_kcal_mol")
+    bead_cv_fields.extend([cv_names[0], cv_names[1]])
+    if derived_spec is not None:
+        bead_cv_fields.append(str(derived_spec["target"]))
+    if diagnostic_spec is not None:
+        bead_cv_fields.append(str(diagnostic_spec["name"]))
+    write_csv(
+        output / "tables" / "bead-cv-long.csv",
+        (
+            {
+                "time_ps": selected_time_ps[frame],
+                "bead": bead + 1,
+                **(
+                    {"bias_kcal_mol": bias_ev[frame] * EV_TO_KCAL_MOL}
+                    if bias_ev is not None
+                    else {}
+                ),
+                cv_names[0]: beads[frame, bead, 0],
+                cv_names[1]: beads[frame, bead, 1],
+                **(
+                    {
+                        str(derived_spec["target"]): derived_beads[frame, bead]
+                    }
+                    if derived_spec is not None and derived_beads is not None
+                    else {}
+                ),
+                **(
+                    {
+                        str(diagnostic_spec["name"]): diagnostic_beads[frame, bead]
+                    }
+                    if diagnostic_spec is not None and diagnostic_beads is not None
+                    else {}
+                ),
+            }
+            for frame in range(beads.shape[0])
+            for bead in range(beads.shape[1])
+        ),
+        bead_cv_fields,
+    )
+    filtered_colvar = output / "inputs" / artifact_basename(
+        selection, "filtered_colvar_name", "COLVAR.after-50ps"
+    )
+    filtered_data = centroid_data
+    if bias_mode == "bead_density_shared":
+        filtered_data = centroid_data.copy()
+        for component, column in enumerate(sampling_cv_names):
+            filtered_data[selected, tuple(fields).index(column)] = centroid[:, component]
+        if bias_column is not None and bias_ev is not None:
+            filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
+    if extra_bias_columns:
+        filtered_data = filtered_data.copy()
+        filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
+    write_filtered_colvar(filtered_colvar, fields, filtered_data, selected)
+
+    if profile == "core":
+        return finalize_core_2d(
+            contract=contract,
+            output=output,
+            source=source,
+            reweight=reweight,
+            cv_names=cv_names,
+            cv_labels=cv_labels,
+            sampling_label=sampling_label,
+            sampling_slug=sampling_slug,
+            bias_mode=bias_mode,
+            weight_kind=weight_kind,
+            selected_time_ps=selected_time_ps,
+            sampling=centroid,
+            beads=beads,
+            raw_log_weights=raw_log_weights,
+            bias_ev=bias_ev,
+            kbt_ev=kbt_ev,
+            primary_name=primary_name,
+            primary=primary,
+            primary_kcal=primary_kcal,
+            primary_supports=primary_supports,
+            variants=variants,
+            filtered_colvar=filtered_colvar,
+            sampling_restart_duplicates=centroid_restart_duplicates,
+            bead_restart_duplicates=bead_restart_duplicates,
+        )
+
+    kernels_fields, kernels = read_plumed(run_root / source["kernels"])
+    kernel_time_fs = time_values_to_fs(
+        field(kernels, kernels_fields, "time"), kernel_time_scale_to_fs
+    )
+    kernel_mask = time_window_mask(kernel_time_fs, first_time_fs, last_time_fs)
+    require(bool(np.any(kernel_mask)), "no KERNELS rows in selected time window")
+    kernel_time_ps = kernel_time_fs[kernel_mask] / 1000.0
+    sigma_x = field(kernels, kernels_fields, f"sigma_{sampling_cv_names[0]}")[kernel_mask]
+    sigma_y = field(kernels, kernels_fields, f"sigma_{sampling_cv_names[1]}")[kernel_mask]
+
+    thermo_maps = [read_thermo(run_root / value) for value in source["thermo_logs"]]
+    require(all(all(int(step) in rows for step in selected_steps) for rows in thermo_maps), "thermo steps missing")
+    temperatures = np.asarray([[rows[int(step)]["Temp"] for rows in thermo_maps] for step in selected_steps])
+    potential = np.asarray([[rows[int(step)]["PotEng"] for rows in thermo_maps] for step in selected_steps])
+    spring_per_bead = np.asarray([[rows[int(step)]["f_fpimd[2]"] for rows in thermo_maps] for step in selected_steps])
+    global_values = {
+        name: np.asarray([thermo_maps[0][int(step)][name] for step in selected_steps])
+        for name in ("f_fpimd[4]", "f_fpimd[5]", "f_fpimd[6]", "f_fpimd[7]")
+    }
+    global_values["spring_per_bead"] = spring_per_bead
+    write_csv(
+        output / "tables" / "pimd-thermo-long.csv",
+        (
+            {
+                "time_ps": selected_time_ps[frame],
+                "bead": bead + 1,
+                "temperature_raw_K": temperatures[frame, bead],
+                "temperature_scaled_by_P_K": temperatures[frame, bead] / beads.shape[1],
+                "potential_energy_eV": potential[frame, bead],
+                "kinetic_energy_eV": thermo_maps[bead][int(selected_steps[frame])]["f_fpimd[1]"],
+                "spring_energy_eV": spring_per_bead[frame, bead],
+                "primitive_ke_estimator_eV": global_values["f_fpimd[5]"][frame],
+                "virial_ke_estimator_eV": global_values["f_fpimd[6]"][frame],
+                "centroid_virial_ke_estimator_eV": global_values["f_fpimd[7]"][frame],
+            }
+            for frame in range(len(selected_steps))
+            for bead in range(beads.shape[1])
+        ),
+        ["time_ps", "bead", "temperature_raw_K", "temperature_scaled_by_P_K", "potential_energy_eV", "kinetic_energy_eV", "spring_energy_eV", "primitive_ke_estimator_eV", "virial_ke_estimator_eV", "centroid_virial_ke_estimator_eV"],
+    )
+
+    trajectory_paths = [run_root / value for value in source["trajectories"]]
+    type_labels = {int(key): str(value) for key, value in contract["system"]["type_labels"].items()}
+    spread_rows = ring_polymer_spread(
+        trajectory_paths,
+        selected_steps,
+        type_labels,
+    )
+    require(len(spread_rows) == len(selected_steps), "ring-polymer spread frame mismatch")
+    spread_fields = list(spread_rows[0])
+    write_csv(output / "tables" / "ring-polymer-spread.csv", spread_rows, spread_fields)
+
+    ionization_component = cv_names.index("ionization")
+    ionization_config = contract.get("ionization_diagnostic", {})
+    ionization_thresholds = tuple(
+        float(value) for value in ionization_config.get("thresholds", [0.5, 1.0, 1.5, 2.0])
+    )
+    ideal_pair_score = float(ionization_config.get("ideal_localized_pair_score", 2.0))
+    reconstruction_tolerance_value = ionization_config.get(
+        "reconstruction_tolerance", 1e-9
+    )
+    reconstruction_tolerance = (
+        None
+        if reconstruction_tolerance_value is None
+        else float(reconstruction_tolerance_value)
+    )
+    candidate_rows = ionization_candidate_details(
+        trajectory_paths,
+        selected_steps,
+        selected_time_ps,
+        centroid[:, ionization_component],
+        beads[:, :, ionization_component],
+        type_labels,
+        kappa=float(ionization_config.get("kappa", 5.0)),
+        reference=float(ionization_config.get("reference_occupancy", 2.0)),
+        minimum_score=float(ionization_config.get("candidate_minimum_score", 0.25)),
+        reconstruction_tolerance=reconstruction_tolerance,
+        sampling_representation=sampling_slug,
+    )
+    candidate_fields = [
+        "time_ps", "step", "representation", "bead", "recorded_score",
+        "reconstructed_score", "absolute_reconstruction_error",
+        "minimum_soft_occupancy", "minimum_soft_occupancy_O_id",
+        "maximum_soft_occupancy", "maximum_soft_occupancy_O_id",
+        "minimum_hard_H_count", "maximum_hard_H_count",
+        "hard_undercoordinated_centers", "hard_overcoordinated_centers",
+        "hard_pair_like",
+    ]
+    write_csv(
+        output / "tables" / "ionization-candidates.csv", candidate_rows, candidate_fields
+    )
+    ionization_series = {sampling_slug: centroid[:, ionization_component]}
+    ionization_series.update(
+        {
+            f"bead_{bead + 1}": beads[:, bead, ionization_component]
+            for bead in range(beads.shape[1])
+        }
+    )
+    ionization_series["maximum_bead"] = np.max(beads[:, :, ionization_component], axis=1)
+    threshold_rows = threshold_run_rows(
+        selected_time_ps, ionization_series, ionization_thresholds
+    )
+    write_csv(
+        output / "qc" / "ionization-threshold-summary.csv",
+        threshold_rows,
+        [
+            "representation", "threshold", "frames_at_or_above", "fraction_frames",
+            "contiguous_runs", "longest_run_frames", "longest_run_ps",
+        ],
+    )
+
+    primary_supports = supports_by_variant[primary_name]
+    plot_fes2d(
+        output, x_grid, y_grid, primary_kcal, primary_supports,
+        float(reweight["plot_max_kcal_mol"]), cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+        protocol_label=sampling_protocol_label(reweight),
+        bead_count=beads.shape[1],
+    )
+    plot_fes_differences(
+        output,
+        x_grid,
+        y_grid,
+        primary_kcal,
+        primary_supports,
+        float(reweight["difference_max_kcal_mol"]),
+        cv_labels,
+        sampling_label=sampling_label,
+        bias_mode=bias_mode,
+    )
+    zoom = contract["plots"].get("fes_zoom")
+    if zoom is not None:
+        plot_fes2d(
+            output, x_grid, y_grid, primary_kcal, primary_supports,
+            float(reweight["plot_max_kcal_mol"]), cv_labels, zoom=zoom, suffix="-sampled-region",
+            sampling_label=sampling_label,
+            bias_mode=bias_mode,
+            protocol_label=sampling_protocol_label(reweight),
+            bead_count=beads.shape[1],
+        )
+        plot_fes_differences(
+            output, x_grid, y_grid, primary_kcal, primary_supports,
+            float(reweight["difference_max_kcal_mol"]), cv_labels, zoom=zoom, suffix="-sampled-region",
+            sampling_label=sampling_label,
+            bias_mode=bias_mode,
+        )
+    plot_bead_cv_bias(
+        output, selected_time_ps, centroid, beads, opes_bias_ev * EV_TO_KCAL_MOL, cv_labels,
+        int(contract["plots"].get("scatter_stride", 5)),
+        sampling_label=sampling_label,
+        sampling_slug=sampling_slug,
+        protocol_label=sampling_protocol_label(reweight),
+    )
+    plot_cv_spread(output, selected_time_ps, beads, cv_labels)
+    if diagnostic_spec is not None:
+        require(
+            diagnostic_sampling is not None and diagnostic_beads is not None,
+            "diagnostic CV values absent",
+        )
+        plot_diagnostic_cv_bias(
+            output,
+            selected_time_ps,
+            diagnostic_sampling,
+            diagnostic_beads,
+            opes_bias_ev * EV_TO_KCAL_MOL,
+            str(diagnostic_spec["label"]),
+            sampling_label,
+            int(contract["plots"].get("scatter_stride", 5)),
+            protocol_label=sampling_protocol_label(reweight),
+        )
+    plot_opes(
+        output, selected_time_ps, opes_bias_ev * EV_TO_KCAL_MOL, rct_ev * EV_TO_KCAL_MOL,
+        zed, neff, nker, raw_log_weights,
+        kernel_time_ps, sigma_x, sigma_y, weights_are_log=True,
+    )
+    plot_thermo(
+        output, selected_time_ps, temperatures, potential, global_values, beads.shape[1],
+        float(reweight["temperature_K"]),
+    )
+    plot_ring_spread(output, spread_rows, float(selection["timestep_fs"]))
+    plot_ionization_events(
+        output,
+        selected_time_ps,
+        centroid[:, ionization_component],
+        beads[:, :, ionization_component],
+        opes_bias_ev * EV_TO_KCAL_MOL,
+        ionization_thresholds,
+        ideal_pair_score,
+        sampling_label=sampling_label,
+        protocol_label=sampling_protocol_label(reweight),
+    )
+
+    reference_metrics = None
+    reference_config = contract.get("reference")
+    if reference_config is not None:
+        require(isinstance(reference_config, Mapping), "reference must be an object")
+        reference_metrics = run_reference(
+            reference_config,
+            filtered_colvar,
+            output,
+            x_grid,
+            y_grid,
+            primary_kcal["centroid"],
+            primary_supports["centroid"],
+            kbt_ev,
+            variants[primary_name],
+            sampling_cv_names,
+            bias_column=str(bias_column),
+        )
+    raw_gap = (primary["raw_free_energy_mean"] - primary["raw_probability_mean"]) * EV_TO_KCAL_MOL
+    diagnostic_gap = (primary_kcal["free_energy_mean"] - primary_kcal["probability_mean"])
+    centroid_threshold_rows = {
+        float(row["threshold"]): row
+        for row in threshold_rows
+        if row["representation"] == sampling_slug
+    }
+    require(0.5 in centroid_threshold_rows, "ionization thresholds must include 0.5")
+    bead_candidate_rows = [row for row in candidate_rows if int(row["bead"]) > 0]
+    centroid_candidate_rows = [row for row in candidate_rows if int(row["bead"]) == 0]
+    ionization_classification = (
+        f"NO_SUSTAINED_{sampling_slug.upper().replace('-', '_')}_ION_PAIR; BEAD_LOCAL_PROTON_TRANSFER_LIKE_CONFIGURATIONS_PRESENT"
+        if centroid_threshold_rows[0.5]["frames_at_or_above"] == 0
+        and any(int(row["hard_pair_like"]) for row in bead_candidate_rows)
+        else (
+            f"{sampling_slug.upper().replace('-', '_')}_IONIZATION_EXCURSIONS_PRESENT; "
+            "BEAD_LOCAL_PROTON_TRANSFER_LIKE_CONFIGURATIONS_PRESENT; "
+            "SUSTAINED_PHYSICAL_ION_PAIR_NOT_ESTABLISHED"
+            if centroid_threshold_rows[0.5]["frames_at_or_above"] > 0
+            and any(int(row["hard_pair_like"]) for row in bead_candidate_rows)
+            else "REQUIRES_MANUAL_INTERPRETATION"
+        )
+    )
+    maximum_reconstruction_error = max(
+        (float(row["absolute_reconstruction_error"]) for row in candidate_rows),
+        default=0.0,
+    )
+    summary: Dict[str, object] = {
+        "schema_version": 3,
+        "status": "PASS",
+        "source_job": source["job_id"],
+        "analysis_profile": profile,
+        "sampling_representation": {
+            "label": sampling_label,
+            "slug": sampling_slug,
+            "bias_mode": bias_mode,
+            "sampling_observable_id": source.get("sampling_observable_id"),
+            "logical_cv_names": list(cv_names),
+            "sampling_cv_columns": list(sampling_cv_names),
+            "bead_cv_columns": list(bead_cv_names),
+            "sampling_cv_source": (
+                "mean_of_aligned_bead_cv"
+                if bias_mode == "bead_density_shared"
+                else "sampling_colvar"
+            ),
+        },
+        "selection": {
+            "first_time_ps": float(selected_time_ps[0]),
+            "last_time_ps": float(selected_time_ps[-1]),
+            "frames": int(len(selected)),
+            "beads": int(beads.shape[1]),
+            "stride_ps": float(np.median(np.diff(selected_time_ps))),
+        },
+        "reweighting": {
+            "weight_kind": weight_kind,
+            "primary_bias_column": reweight.get("bias_column"),
+            "extra_bias_columns": list(reweight.get("extra_bias_columns", [])),
+            "formula": (
+                "precomputed log frame weight" if weight_kind == "precomputed"
+                else "normalized exp(total_bias_energy/kBT)"
+            ),
+            "bias_columns": ([bias_column] if bias_column is not None else []) + extra_bias_columns,
+            "total_bias_energy": (
+                "mean_b bead_local_bias_energy"
+                if bias_mode == "bead_density_shared"
+                else "sampling_bias_energy"
+            ),
+            "quasi_static_declared": (
+                quasi_static_declared if weight_kind == "quasi_static_opes" else None
+            ),
+            "rct_used": False,
+            "energy_unit": "eV",
+            "target_ensemble": (
+                "defined by the supplied frame weights" if weight_kind == "precomputed"
+                else "declared bias terms removed; undeclared potentials retained"
+            ),
+            "temperature_K": float(reweight["temperature_K"]),
+            "kbt_eV": kbt_ev,
+            "ess": 1.0 / float(np.sum(weights**2)),
+            "ess_fraction": 1.0 / float(np.sum(weights**2)) / len(weights),
+            "maximum_normalized_weight": float(np.max(weights)),
+            "bias_range_kcal_mol": [float(np.min(bias_ev) * EV_TO_KCAL_MOL), float(np.max(bias_ev) * EV_TO_KCAL_MOL)],
+            "shared_diagnostic_max_deltas": shared_diagnostic_max_deltas,
+        },
+        "restart_alignment": {
+            "duplicate_policy": restart_policy,
+            "sampling_rows_removed": centroid_restart_duplicates,
+            "bead_rows_removed": bead_restart_duplicates,
+        },
+        "fes": {
+            "primary_estimator": primary_estimator,
+            "alternate_estimator": alternate_estimator(primary_estimator),
+            "target_observable": "bead_density_fes",
+            "target_observable_id": reweight.get("target_observable_id"),
+            "zero_reference": f"{primary_estimator}_minimum",
+            "unit": "kcal/mol",
+            "primary_support_points": int(np.count_nonzero(primary_support)),
+            "probability_mean_label": estimator_plot_labels(bias_mode)[
+                "probability_mean"
+            ],
+            "free_energy_mean_label": estimator_plot_labels(bias_mode)["free_energy_mean"],
+            "primary_bandwidth": list(variants[primary_name]),
+            "primary_bandwidth_name": primary_name,
+            "common_support_points": int(
+                np.count_nonzero(primary_supports["estimator_common"])
+            ),
+            "estimator_pair_support_points": int(
+                np.count_nonzero(primary_supports["estimator_common"])
+            ),
+            "sampling_support_points": int(np.count_nonzero(primary_supports["centroid"])),
+            "probability_mean_support_points": int(np.count_nonzero(primary_supports["probability_mean"])),
+            "free_energy_mean_support_points": int(np.count_nonzero(primary_supports["free_energy_mean"])),
+            **diagnostic_gap_metrics(
+                diagnostic_gap, primary_supports["estimator_common"]
+            ),
+            "minimum_raw_jensen_gap_kcal_mol": float(np.min(raw_gap)),
+        },
+        "pimd": {
+            "mean_scaled_temperature_K": float(np.mean(temperatures) / beads.shape[1]),
+            "sd_scaled_temperature_K": float(np.std(temperatures / beads.shape[1])),
+            "mean_centroid_virial_ke_eV": float(np.mean(global_values["f_fpimd[7]"])),
+            "sd_centroid_virial_ke_eV": float(np.std(global_values["f_fpimd[7]"])),
+            "mean_ring_spread_H_A": float(np.mean([row.get("rg_H_A", math.nan) for row in spread_rows])),
+            "mean_ring_spread_O_A": float(np.mean([row.get("rg_O_A", math.nan) for row in spread_rows])),
+        },
+        "opes": {
+            "final_zed": float(zed[-1]),
+            "zed_range": [float(np.min(zed)), float(np.max(zed))],
+            "final_neff": float(neff[-1]),
+            "neff_range": [float(np.min(neff)), float(np.max(neff))],
+            "final_nker": float(nker[-1]),
+            "nker_range": [float(np.min(nker)), float(np.max(nker))],
+            "kernel_rows_in_window": int(len(kernel_time_ps)),
+            "kernel_time_window_ps": [
+                float(kernel_time_ps[0]),
+                float(kernel_time_ps[-1]),
+            ],
+            "final_sigma": [float(sigma_x[-1]), float(sigma_y[-1])],
+        },
+        "ionization_diagnostic": {
+            "classification": ionization_classification,
+            "definition": "sum over oxygen centers of squared soft occupancy defects relative to two H",
+            "ideal_localized_H3O_OH_pair_score": ideal_pair_score,
+            "centroid_maximum_score": float(np.max(centroid[:, ionization_component])),
+            "sampling_maximum_score": float(np.max(centroid[:, ionization_component])),
+            "maximum_bead_score": float(np.max(beads[:, :, ionization_component])),
+            "centroid_frames_at_or_above_0_5": int(
+                centroid_threshold_rows[0.5]["frames_at_or_above"]
+            ),
+            "sampling_frames_at_or_above_0_5": int(
+                centroid_threshold_rows[0.5]["frames_at_or_above"]
+            ),
+            "centroid_candidate_hard_pair_like_frames": int(
+                sum(int(row["hard_pair_like"]) for row in centroid_candidate_rows)
+            ),
+            "bead_candidate_hard_pair_like_rows": int(
+                sum(int(row["hard_pair_like"]) for row in bead_candidate_rows)
+            ),
+            "maximum_reconstruction_error": maximum_reconstruction_error,
+            "reconstruction_tolerance": reconstruction_tolerance,
+            "reconstruction_comparison": (
+                "MEASURE_ONLY" if reconstruction_tolerance is None else "ENFORCED"
+            ),
+            "reconstruction_within_tolerance": (
+                None
+                if reconstruction_tolerance is None
+                else reconstruction_within_tolerance(
+                    maximum_reconstruction_error, reconstruction_tolerance
+                )
+            ),
+            "interpretation_boundary": "PIMD beads are imaginary-time configurations, not independent real-time trajectories",
+        },
+        "reference_crosscheck": reference_metrics,
+        "gates": {
+            "artifact_output": "PASS",
+            "deterministic_numerical": "PASS",
+            "nlist_numerical": contract["claims"].get(
+                "nlist_numerical", "NOT_APPLICABLE"
+            ),
+            "postprocessing_plumbing": "PASS",
+            "physical": "NOT_ASSESSED",
+            "scientific_fes_convergence": "NOT_ASSESSED",
+        },
+    }
+    if derived_coordinate_summary is not None:
+        summary["derived_coordinate"] = derived_coordinate_summary
+    if diagnostic_spec is not None:
+        require(
+            diagnostic_sampling is not None
+            and diagnostic_beads is not None
+            and diagnostic_mean_error is not None,
+            "diagnostic CV summary absent",
+        )
+        summary["diagnostic_cv"] = {
+            "name": str(diagnostic_spec["name"]),
+            "label": str(diagnostic_spec["label"]),
+            "sampling_column": str(diagnostic_spec["sampling_column"]),
+            "bead_column": str(diagnostic_spec["bead_column"]),
+            "sampling_range": [
+                float(np.min(diagnostic_sampling)),
+                float(np.max(diagnostic_sampling)),
+            ],
+            "bead_range": [
+                float(np.min(diagnostic_beads)),
+                float(np.max(diagnostic_beads)),
+            ],
+            "maximum_printed_mean_error": diagnostic_mean_error,
+            "fes_assigned": False,
+            "figure": "figures/iondistance-time-bias.png",
+        }
+    if reference_metrics is not None:
+        require(
+            float(reference_metrics["max_abs_difference_kcal_mol"])
+            <= float(reference_config["max_abs_difference_kcal_mol"]),
+            "reference FES mismatch",
+        )
+    require(float(np.min(raw_gap)) >= -1e-10, "Probability/free-energy mean Jensen relation failed")
+    (output / "qc" / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (output / "provenance" / "analysis-contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report = [
+        f"# PIMD {sampling_label.lower()}-biased post-processing",
+        "",
+        "Status: `PASS`",
+        f"Source job: `{source['job_id']}`",
+        f"Window: `{selected_time_ps[0]:.1f}--{selected_time_ps[-1]:.1f} ps` (`{len(selected)}` frames)",
+        f"Reweighting ESS: `{summary['reweighting']['ess']:.2f}` (`{100.0 * summary['reweighting']['ess_fraction']:.1f}%`)",
+        "Probability/free-energy mean diagnostic RMS gap (None = insufficient support): "
+        f"`{summary['fes']['probability_free_energy_mean_rmse_common_support_kcal_mol']} kcal/mol`",
+        f"Mean scaled bead temperature: `{summary['pimd']['mean_scaled_temperature_K']:.2f} K`",
+        f"Mean H/O ring-polymer spread: `{summary['pimd']['mean_ring_spread_H_A']:.4f}` / `{summary['pimd']['mean_ring_spread_O_A']:.4f} A`",
+        f"Ionization diagnostic: `{summary['ionization_diagnostic']['classification']}`",
+        f"{sampling_label} / maximum-bead ionization score: `{summary['ionization_diagnostic']['sampling_maximum_score']:.4f}` / `{summary['ionization_diagnostic']['maximum_bead_score']:.4f}` (ideal localized pair about `{ideal_pair_score:g}`)",
+        f"Maximum exact-reconstruction discrepancy on candidate rows: `{summary['ionization_diagnostic']['maximum_reconstruction_error']:.6g}` (`{summary['ionization_diagnostic']['reconstruction_comparison']}`)",
+    ]
+    if derived_coordinate_summary is not None:
+        report.append(
+            "Derived-coordinate FES: "
+            f"`{derived_coordinate_summary['target']}` from "
+            f"`{derived_coordinate_summary['source']}` with density Jacobian; "
+            "printed transform PASS and sampling support unchanged."
+        )
+    if diagnostic_spec is not None:
+        report.append(
+            "Direct diagnostic CV: "
+            f"`{diagnostic_spec['name']}` uses printed sampling/local columns; "
+            "no independent FES bandwidth was assigned."
+        )
+    report.extend(
+        [
+            "",
+            "All free energies are reported in kcal/mol. The selected analysis window is defined by the contract. `opes.rct` is retained only as a diagnostic and is not part of the weights.",
+            "",
+            "This is an engineering and post-processing assessment. Physical interpretation and scientific/FES convergence remain NOT_ASSESSED.",
+        ]
+    )
+    (output / "analysis-report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    write_manifest(output)
+    return summary
+
+
+def get_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Reweight centroid-, bead-mean-, or bead-density-biased PIMD"
+    )
+    parser.add_argument("--contract", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    return parser.parse_args(argv)
+
+
+def run(argv: Sequence[str] | None = None) -> int:
+    args = get_args(argv)
+    try:
+        summary = analyze(args.contract, args.output)
+    except Exception as exc:
+        print(f"PIMD reweighting failed: {exc}")
+        return 1
+    print(f"PIMD_REWEIGHT_{summary['status']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

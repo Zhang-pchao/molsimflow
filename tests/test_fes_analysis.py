@@ -92,6 +92,15 @@ def test_moving_average_smooth_uses_odd_window():
     assert math.isclose(values[2], 6.0)
 
 
+def test_curve_processing_preserves_missing_points_without_bridging():
+    values = moving_average_smooth([1.0, np.nan, 3.0], window_length=3, passes=1)
+
+    assert np.array_equal(np.isfinite(values), [True, False, True])
+    assert values[0] == 1.0
+    assert np.isnan(values[1])
+    assert values[2] == 3.0
+
+
 def test_analyze_fes_barriers_writes_outputs(tmp_path):
     curve_path = tmp_path / "fes.dat"
     _write_curve(

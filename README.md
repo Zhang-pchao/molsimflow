@@ -67,6 +67,22 @@ molsimflow structure extxyz-to-lammps-data \
   --output model_atomic.data
 ```
 
+Relocate selected oxygen species without breaking O-H connectivity across PBC:
+
+```bash
+molsimflow structure relocate-oxygen-species \
+  --input source.data \
+  --output relocated.data \
+  --selected-oxygen-ids selected_O.ids \
+  --source-anchor lower \
+  --stationary-buffer-A 4 \
+  --high-boundary-buffer-A 20
+```
+
+The atomic-style LAMMPS data writer preserves velocities and all non-coordinate
+sections, moves every H assigned to a selected O within the cutoff, clears image
+flags along the relocation axis, and emits a mapping table plus a JSON gate.
+
 Run generic PLUMED diagnostics for selected collective variables:
 
 ```bash
@@ -77,6 +93,15 @@ molsimflow postprocess plumed-cv-diagnostics \
   --target-cv coordination \
   --plot-column coordination \
   --plot-column distance
+```
+
+Reweight centroid-, bead-mean-, or shared bead-density-biased PIMD trajectories
+into bead-defined quantum free energies using an explicit analysis contract:
+
+```bash
+molsimflow postprocess pimd-reweight \
+  --contract analysis-contract.json \
+  --output pimd-reweight-output
 ```
 
 Describe configured reactive-path frames without embedding case paths in code:
@@ -110,6 +135,49 @@ molsimflow postprocess prepare-trajectory \
   --unwrap-z
 ```
 
+Track sampled surface-H exchange and solution ion candidates in reactive MD:
+
+```bash
+molsimflow postprocess surface-proton-transfer \
+  --trajectory segment_1.lammpstrj \
+  --initial-xyz model.initial.xyz \
+  --surface-range 1:8000 \
+  --water-range 9001:12000 \
+  --contact-line contact_line.csv \
+  --contact-line-points contact_line_points.csv \
+  --surface-z-A 20.0 \
+  --output-dir proton_transfer_results \
+  --font-path Arial.ttf
+```
+
+Resolve local TPCL dwell--jump candidates without embedding a case layout in
+source code:
+
+```bash
+molsimflow postprocess tpcl-pinning-slip \
+  --config case.json \
+  --output-dir tpcl_results \
+  --font-path Arial.ttf
+```
+
+Audit reactive-species, high-Z, wall-approach, and lateral-motion event windows
+from restart-segmented constant-force trajectories:
+
+```bash
+molsimflow postprocess constant-force-events \
+  --contract event-audit.json \
+  --output event_audit_results
+```
+
+Analyze H-bond networks, water order, and morphology-specific residence from
+the same contract-driven trajectory layout:
+
+```bash
+molsimflow postprocess constant-force-water-structure \
+  --contract water-structure.json \
+  --output water_structure_results
+```
+
 Every command accepts `--help` and writes only to paths supplied through its
 arguments or configuration.
 
@@ -119,7 +187,8 @@ arguments or configuration.
 | --- | --- | --- |
 | Structure and I/O | extended XYZ, LAMMPS data, double-bubble slabs | [Configuration](docs/configuration.md) |
 | PLUMED generation | double-bubble and nanobubble inputs | [Nanobubble PLUMED](docs/nanobubble_plumed.md) |
-| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events | [Post-processing](docs/postprocess_migration.md) |
+| Trajectory analysis | interfaces, hydrogen bonds, ion species, transition events, TPCL motion | [Post-processing](docs/postprocess_migration.md), [constant-force events](docs/constant_force_events.md), [constant-force water structure](docs/constant_force_water_structure.md), [TPCL pinning--slip](docs/tpcl_pinning_slip.md), [surface proton transfer](docs/surface_proton_transfer.md) |
+| PIMD free energies | three path-bias modes, probability-mean quantum FES and bead-free-energy diagnostic, fixed/OPES/precomputed weights, 1D/2D core reports | [PIMD quantum-FES reweighting](docs/pimd_reweight.md) |
 | Reactive paths | geometry, water-wire, charge, and spin profiles | [Frame descriptors](docs/reactive_path_frames.md), [electronic profiles](docs/electronic_path_profiles.md) |
 | Model validation and kinetics | CP2K parsing, force errors, coordinate-neighbor checks, Eyring sensitivity | [Validation and media utilities](docs/model_validation_trajectory_media.md) |
 | Trajectory and media preparation | dump selection, Z unwrapping, reference-layer alignment, image-sequence video | [Validation and media utilities](docs/model_validation_trajectory_media.md) |

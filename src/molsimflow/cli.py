@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Optional
 
 from molsimflow.io.extxyz import add_pbc_lattice_to_xyz
 from molsimflow.io.lammps_data import convert_extxyz_to_lammps_atomic_data
@@ -41,6 +40,33 @@ def _cmd_add_extxyz_pbc(args: argparse.Namespace) -> int:
 def _cmd_extxyz_to_lammps_data(args: argparse.Namespace) -> int:
     output = convert_extxyz_to_lammps_atomic_data(args.xyz, args.output)
     print(output)
+    return 0
+
+
+def _cmd_relocate_oxygen_species(args: argparse.Namespace) -> int:
+    from molsimflow.structure.molecular_relocation import relocate_lammps_atomic_data
+
+    periodic = tuple(name in args.periodic_axes for name in "xyz")
+    report = relocate_lammps_atomic_data(
+        args.input,
+        args.output,
+        args.selected_oxygen_ids,
+        mapping_path=args.mapping,
+        report_path=args.report,
+        oxygen_type=args.oxygen_type,
+        hydrogen_type=args.hydrogen_type,
+        oh_cutoff_A=args.oh_cutoff_A,
+        allowed_hydrogen_counts=args.allowed_hydrogen_counts,
+        axis=args.axis,
+        source_anchor=args.source_anchor,
+        stationary_buffer_A=args.stationary_buffer_A,
+        high_boundary_buffer_A=args.high_boundary_buffer_A,
+        periodic=periodic,
+        assignment_chunk_size=args.assignment_chunk_size,
+    )
+    print(report["output"])
+    print(report["mapping"])
+    print(report["report"])
     return 0
 
 
@@ -320,7 +346,7 @@ def _cmd_plumed_n2_com(args: argparse.Namespace) -> int:
     return 0
 
 
-def _plot_common_args(args: argparse.Namespace, kind: str) -> List[str]:
+def _plot_common_args(args: argparse.Namespace, kind: str) -> list[str]:
     workflow_args = [
         kind,
         "--input",
@@ -438,6 +464,58 @@ def _cmd_postprocess_centroids(args: argparse.Namespace) -> int:
     return centroids_main(workflow_args)
 
 
+def _cmd_postprocess_validate_dumps(args: argparse.Namespace) -> int:
+    import json
+
+    from molsimflow.io.lammps_dump import validate_lammps_dump_bundle
+
+    result = validate_lammps_dump_bundle(
+        args.coordinates,
+        args.velocity,
+        args.force,
+        args.start_step,
+        args.expected_final_step,
+        args.coordinate_stride,
+        args.vector_stride,
+    )
+    text = json.dumps(result, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
+def _cmd_postprocess_validate_v3_mechanism_io(args: argparse.Namespace) -> int:
+    import json
+
+    from molsimflow.postprocess.v3_mechanism_io import validate_v3_mechanism_io
+
+    result = validate_v3_mechanism_io(
+        coordinates=args.coordinates,
+        velocity_roi=args.velocity_roi,
+        roi_kinetic=args.roi_kinetic,
+        global_stress=args.global_stress,
+        model_data=args.model_data,
+        final_data=args.final_data,
+        start_step=args.start_step,
+        end_step=args.end_step,
+        natoms=args.natoms,
+        roi_types=tuple(int(value) for value in args.roi_types.split(",") if value),
+        coordinate_every=args.coordinate_every,
+        velocity_every=args.velocity_every,
+        thermo_every=args.thermo_every,
+        kinetic_factor=args.kinetic_factor,
+        final_data_tolerance_A=args.final_data_tolerance_A,
+    )
+    text = json.dumps(result, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(text, encoding="utf-8")
+    else:
+        print(text, end="")
+    return 0
+
+
 def _cmd_postprocess_bubble_surface_distance(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bubble_surface_distance import main as surface_distance_main
 
@@ -473,6 +551,366 @@ def _cmd_postprocess_bubble_surface_distance(args: argparse.Namespace) -> int:
         workflow_args.append("--disable_plot")
 
     return surface_distance_main(workflow_args)
+
+
+def _cmd_postprocess_nanobubble_attachment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanobubble_attachment import main as attachment_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    workflow_args.extend(
+        [
+            "--output-dir", str(args.output_dir),
+            "--output-stem", args.output_stem,
+            "--surface-range", args.surface_range,
+            "--nitrogen-range", args.nitrogen_range,
+            "--surface-z-A", str(args.surface_z_A),
+            "--timestep-fs", str(args.timestep_fs),
+            "--cluster-cutoff-A", str(args.cluster_cutoff_A),
+            "--contact-cutoff-A", str(args.contact_cutoff_A),
+            "--minimum-contact-n2", str(args.minimum_contact_n2),
+            "--persistence-frames", str(args.persistence_frames),
+            "--font-family", args.font_family,
+        ]
+    )
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.font_path is not None:
+        workflow_args.extend(["--font-path", str(args.font_path)])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    return attachment_main(workflow_args)
+
+
+def _cmd_postprocess_nanobubble_ion_distribution(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanobubble_ion_distribution import main as ion_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for max_step in args.trajectory_max_step or []:
+        workflow_args.extend(["--trajectory-max-step", str(max_step)])
+    for stage in args.stage:
+        workflow_args.extend(["--stage", stage])
+    for name in (
+        "output_dir",
+        "reference_structure",
+        "surface_range",
+        "nitrogen_range",
+        "solution_range",
+        "timestep_fs",
+        "hydrogen_type",
+        "oxygen_type",
+        "sodium_type",
+        "chloride_type",
+        "cluster_cutoff_A",
+        "oh_cutoff_A",
+        "ch_cutoff_A",
+        "top_si_window_A",
+        "terminal_surface_z_A",
+        "surface_depth_A",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return ion_main(workflow_args)
+
+
+def _cmd_postprocess_surface_functional_group_orientation(
+    args: argparse.Namespace,
+) -> int:
+    from molsimflow.postprocess.surface_functional_group_orientation import (
+        main as orientation_main,
+    )
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir",
+        "initial_xyz",
+        "surface_range",
+        "water_range",
+        "surface_z_A",
+        "oxygen_type",
+        "hydrogen_type",
+        "surface_depth_A",
+        "oh_cutoff_A",
+        "ch_cutoff_A",
+        "si_terminal_cutoff_A",
+        "local_normal_neighbors",
+        "block_frames",
+        "cosine_bins",
+        "azimuth_bins",
+        "timestep_fs",
+        "minimum_group_integrity_fraction",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    for name in ("font_path", "expected_ch3_sites", "expected_sioh_sites", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return orientation_main(workflow_args)
+
+
+def _cmd_postprocess_nanodroplet_spreading(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.nanodroplet_spreading import main as spreading_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in ("output_dir", "surface_range", "water_range", "surface_z_A", "oxygen_type",
+                 "timestep_fs", "cluster_cutoff_A", "contact_cutoff_A", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.max_frames is not None:
+        workflow_args.extend(["--max-frames", str(args.max_frames)])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return spreading_main(workflow_args)
+
+
+def _cmd_postprocess_planar_motion(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.planar_motion import main as motion_main
+
+    workflow_args = []
+    for name in ("input", "output_dir", "step_column", "x_column", "y_column", "box_x_A",
+                 "box_y_A", "timestep_fs", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return motion_main(workflow_args)
+
+
+def _cmd_postprocess_constant_force_energy(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_energy import main as energy_main
+
+    workflow_args = []
+    for motion in args.motion:
+        workflow_args.extend(["--motion", str(motion)])
+    for thermo in args.thermo:
+        workflow_args.extend(["--thermo", str(thermo)])
+    for name in ("output_dir", "timestep_fs", "block_ns", "font_path"):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return energy_main(workflow_args)
+
+
+def _cmd_postprocess_axisymmetric_contact_angle(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.axisymmetric_contact_angle import main as contact_angle_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "atom_range", "mode", "phase_label", "surface_z_A", "timestep_fs",
+        "start_ns", "end_ns", "minimum_frames", "block_frames", "cluster_cutoff_A", "reference_density_A3",
+        "r_max_A", "z_min_A", "z_max_A", "dr_A", "dz_A",
+        "fit_z_min_A", "fit_z_max_A", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.atom_type is not None:
+        workflow_args.extend(["--atom-type", str(args.atom_type)])
+    if args.surface_range is not None:
+        workflow_args.extend(["--surface-range", args.surface_range])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    for fraction in args.threshold_fraction:
+        workflow_args.extend(["--threshold-fraction", str(fraction)])
+    return contact_angle_main(workflow_args)
+
+
+def _cmd_postprocess_contact_line(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.contact_line import main as contact_line_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "phase_range", "mode", "timestep_fs",
+        "cluster_cutoff_A", "contact_cutoff_A", "block_frames", "jump_sigma",
+        "minimum_jump_A", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    for name in ("atom_type", "start_ns", "end_ns", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return contact_line_main(workflow_args)
+
+
+def _cmd_postprocess_tpcl_pinning_slip(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_pinning_slip import main as tpcl_main
+
+    workflow_args = ["--config", str(args.config), "--output-dir", str(args.output_dir)]
+    for name in ("font_path", "start_ns", "end_ns", "max_frames"):
+        value = getattr(args, name)
+        if value is not None:
+            workflow_args.extend(["--" + name.replace("_", "-"), str(value)])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return tpcl_main(workflow_args)
+
+
+def _cmd_postprocess_tpcl_pinning_slip_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_pinning_slip_compare import main as compare_main
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--output-dir",
+        str(args.output_dir),
+        "--font-path",
+        str(args.font_path),
+        "--block-ps",
+        str(args.block_ps),
+        "--event-half-window-ps",
+        str(args.event_half_window_ps),
+        "--bootstrap-replicates",
+        str(args.bootstrap_replicates),
+        "--seed",
+        str(args.seed),
+    ]
+    return compare_main(workflow_args)
+
+
+def _cmd_postprocess_tpcl_state_diagnostics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.tpcl_state_diagnostics import main as state_main
+
+    workflow_args = [
+        "--sources", str(args.sources),
+        "--output-dir", str(args.output_dir),
+        "--timestep-fs", str(args.timestep_fs),
+        "--block-ps", str(args.block_ps),
+        "--font-path", str(args.font_path),
+    ]
+    for field in args.frame_field:
+        workflow_args.extend(["--frame-field", field])
+    return state_main(workflow_args)
+
+
+def _cmd_postprocess_surface_site_enrichment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.surface_site_enrichment import main as enrichment_main
+
+    workflow_args = []
+    for name in (
+        "initial_xyz", "slab_range", "contact_line", "contact_line_points", "output_dir",
+        "surface_z_A", "surface_depth_A", "bond_cutoff_A", "tpcl_half_width_A",
+        "boundary_proximity_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return enrichment_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_density(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_density import main as density_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "water_range", "surface_range", "oxygen_type", "contact_line", "contact_line_points",
+        "surface_z_A", "tpcl_half_width_A", "area_grid_A", "z_min_A", "z_max_A",
+        "dz_A", "hydration_z_max_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if args.reference_structure is not None:
+        workflow_args.extend(["--reference-structure", str(args.reference_structure)])
+    return density_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_orientation(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_orientation import main as orientation_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "water_range", "oxygen_type", "hydrogen_type",
+        "contact_line", "contact_line_points", "surface_z_A", "reference_structure",
+        "tpcl_half_width_A", "bond_cutoff_A", "z_min_A", "z_max_A", "cosine_bins",
+        "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return orientation_main(workflow_args)
+
+
+def _cmd_postprocess_contact_angle_line_alignment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.contact_angle_line_alignment import main as alignment_main
+
+    workflow_args = [
+        "--contact-angle-blocks", str(args.contact_angle_blocks),
+        "--output-dir", str(args.output_dir),
+        "--angle-column", args.angle_column,
+        "--radius-column", args.radius_column,
+        "--radius-stability-A", str(args.radius_stability_A),
+        "--angle-change-deg", str(args.angle_change_deg),
+        "--font-path", str(args.font_path),
+    ]
+    for value in args.contact_line:
+        workflow_args.extend(["--contact-line", value])
+    return alignment_main(workflow_args)
+
+
+def _cmd_postprocess_precontact_n2_enrichment(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.precontact_n2_enrichment import main as enrichment_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "nitrogen_range", "surface_z_A",
+        "reference_structure", "end_ns", "timestep_fs", "cluster_cutoff_A",
+        "near_z_min_A", "near_z_max_A", "z_min_A", "z_max_A", "dz_A",
+        "projection_margin_A", "block_frames", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return enrichment_main(workflow_args)
+
+
+def _cmd_postprocess_interfacial_water_hbond(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.interfacial_water_hbond import main as hbond_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "surface_range", "water_range", "oxygen_type", "hydrogen_type",
+        "contact_line", "contact_line_points", "surface_z_A", "reference_structure",
+        "surface_depth_A", "tpcl_half_width_A", "oh_cutoff_A", "oo_cutoff_A",
+        "angle_cutoff_deg", "z_min_A", "z_max_A", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    return hbond_main(workflow_args)
+
+
+def _cmd_postprocess_surface_proton_transfer(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.surface_proton_transfer import main as transfer_main
+
+    workflow_args = []
+    for trajectory in args.trajectory:
+        workflow_args.extend(["--trajectory", str(trajectory)])
+    for name in (
+        "output_dir", "initial_xyz", "surface_range", "water_range", "oxygen_type",
+        "hydrogen_type", "contact_line", "contact_line_points", "surface_z_A",
+        "surface_depth_A", "tpcl_half_width_A", "oh_cutoff_A", "ch_cutoff_A",
+        "min_persistence_frames", "timestep_fs", "font_path",
+    ):
+        workflow_args.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
+    if not args.drop_first_frame:
+        workflow_args.append("--no-drop-first-frame")
+    return transfer_main(workflow_args)
 
 
 def _cmd_postprocess_coalescence_state(args: argparse.Namespace) -> int:
@@ -665,7 +1103,7 @@ def _cmd_postprocess_bridge_water_dewetting(args: argparse.Namespace) -> int:
     return dewetting_main(workflow_args)
 
 
-def _bridge_water_dynamics_args(args: argparse.Namespace, command: str) -> List[str]:
+def _bridge_water_dynamics_args(args: argparse.Namespace, command: str) -> list[str]:
     workflow_args = [
         command,
         "--output-dir",
@@ -1085,6 +1523,30 @@ def _cmd_postprocess_water_orientation_summary(args: argparse.Namespace) -> int:
     return water_orientation_main(workflow_args)
 
 
+def _cmd_postprocess_dual_interface_water(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_water import main as dual_interface_water_main
+
+    return dual_interface_water_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_ion(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_ion import main as dual_interface_ion_main
+
+    return dual_interface_ion_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_hbond(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_hbond import main as dual_interface_hbond_main
+
+    return dual_interface_hbond_main(args.workflow_args)
+
+
+def _cmd_postprocess_dual_interface_ion3d(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.dual_interface_ion3d import main as dual_interface_ion3d_main
+
+    return dual_interface_ion3d_main(args.workflow_args)
+
+
 def _cmd_postprocess_bridge_film(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.bridge_film import main as bridge_film_main
 
@@ -1295,6 +1757,46 @@ def _cmd_postprocess_fes_reweight(args: argparse.Namespace) -> int:
     return run_fes_reweight(workflow_args)
 
 
+def _cmd_postprocess_pimd_reweight(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.pimd_reweight import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
+def _cmd_postprocess_quantum_path(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.quantum_path_analysis import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
+def _cmd_postprocess_pimd_reweight_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.pimd_reweight_compare import run
+
+    return run(["--contract", str(args.contract), "--output", str(args.output)])
+
+
+def _cmd_postprocess_pimd_bead_convergence(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.pimd_bead_convergence import main as convergence_main
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--output",
+        str(args.output),
+        "--burn-in-ps",
+        str(args.burn_in_ps),
+        "--blocks",
+        str(args.blocks),
+        "--sigma",
+        str(args.sigma),
+    ]
+    for field in args.fields or ["f_pi[7]"]:
+        workflow_args.extend(("--field", field))
+    if args.write_plot:
+        workflow_args.append("--write-plot")
+    return convergence_main(workflow_args)
+
+
 def _cmd_postprocess_fes2d_grid(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.fes_analysis import run_fes2d_grid
 
@@ -1451,8 +1953,6 @@ def _cmd_postprocess_fes_convergence(args: argparse.Namespace) -> int:
         str(args.smooth_window),
         "--smooth-passes",
         str(args.smooth_passes),
-        "--jump-threshold",
-        str(args.jump_threshold),
         "--block-count",
         str(args.block_count),
         "--cumulative-glob",
@@ -1803,6 +2303,28 @@ def _cmd_postprocess_sphere_cv_compare(args: argparse.Namespace) -> int:
     return sphere_cv_compare_main(workflow_args)
 
 
+def _cmd_postprocess_sphere_interface_compare(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.sphere_interface_compare import main as interface_compare_main
+
+    workflow_args = [
+        "--manifest",
+        str(args.manifest),
+        "--kind",
+        args.kind,
+        "--output-dir",
+        str(args.output_dir),
+        "--block-frames",
+        str(args.block_frames),
+        "--dpi",
+        str(args.dpi),
+    ]
+    if args.font_path is not None:
+        workflow_args.extend(["--font-path", str(args.font_path)])
+    if args.no_plots:
+        workflow_args.append("--no-plots")
+    return interface_compare_main(workflow_args)
+
+
 def _cmd_postprocess_sphere_interface_structure(args: argparse.Namespace) -> int:
     from molsimflow.postprocess.sphere_interface_structure import main as interface_main
 
@@ -1854,6 +2376,183 @@ def _cmd_postprocess_sphere_interface_structure(args: argparse.Namespace) -> int
         workflow_args.append("--no-plots")
     return interface_main(workflow_args)
 
+
+def _cmd_postprocess_constant_force_events(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_events import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"events={summary['events']} "
+        f"z_image_crossing_events={summary['z_image_crossing_events']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_kinematics(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_kinematics import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"cases={summary['cases']} "
+        f"block_rows={summary['block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_islands(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_islands import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"tracks={summary['tracks']} "
+        f"split_events={summary['split_events']} "
+        f"merge_events={summary['merge_events']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_layers(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_layers import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"layers={summary['layers']} "
+        f"layer_exchange_rows={summary['layer_exchange_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_species_timeseries(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_species_timeseries import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"case_branches={summary['case_branches']} "
+        f"timeseries_rows={summary['timeseries_rows']} "
+        f"partition_events={summary['partition_events']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_water_structure(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_water_structure import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        "case_branches="
+        f"{summary['case_branches']} "
+        f"frame_region_rows={summary['frame_region_rows']} "
+        f"persistence_rows={summary['persistence_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_aggregate(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_aggregate import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"cases={summary['cases']} "
+        f"branches={summary['branches']} "
+        f"water_region_rows={summary['water_region_rows']} "
+        f"event_summary_rows={summary['event_summary_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_a(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_a import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"mixed275_events={summary['mixed275_selected_events']} "
+        f"oh_layer_blocks={summary['oh_layer_block_rows']} "
+        f"finite_blocks={summary['finite_droplet_block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_b_flux(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_b_flux import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"case_branches={summary['case_branches']} "
+        f"interval_rows={summary['interval_rows']} "
+        f"block_rows={summary['block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_b_layers(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_b_layers import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"case_branches={summary['case_branches']} "
+        f"frame_rows={summary['frame_rows']} "
+        f"block_rows={summary['block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_b_anisotropy(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_b_anisotropy import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"cases={summary['case_count']} "
+        f"branches={summary['branch_count']} "
+        f"response_rows={summary['response_matrix_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_stage_c_synthesis(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_stage_c_synthesis import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"response_rows={summary['response_comparison_rows']} "
+        f"event_blocks={summary['event_conditioned_block_rows']} "
+        f"partition_blocks={summary['partition_layer_block_rows']}"
+    )
+    return 0
+
+
+def _cmd_postprocess_constant_force_estimator_consistency(args: argparse.Namespace) -> int:
+    from molsimflow.postprocess.constant_force_estimator_consistency import run_contract
+
+    summary = run_contract(args.contract, args.output)
+    print(args.output.resolve())
+    print(
+        f"response_rows={summary['response_comparison_rows']} "
+        f"block_rows={summary['response_block_rows']} "
+        f"longitudinal_sign_matches="
+        f"{summary['longitudinal_high_frequency_displacement_sign_matches']}/"
+        f"{summary['longitudinal_high_frequency_displacement_sign_total']}"
+    )
+    return 0
 
 
 def _add_silica_surface_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -2417,6 +3116,26 @@ def _add_fes_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cmap", default="viridis")
 
 
+def _add_pimd_reweight_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--contract", type=Path, required=True, help="Path-explicit PIMD analysis contract")
+    parser.add_argument("--output", type=Path, required=True, help="Fresh output directory")
+
+
+def _add_pimd_bead_convergence_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True, help="CSV with label,beads,log")
+    parser.add_argument("--output", type=Path, required=True, help="Fresh output directory")
+    parser.add_argument(
+        "--field",
+        action="append",
+        dest="fields",
+        help="LAMMPS thermo estimator; repeat to compare several estimators",
+    )
+    parser.add_argument("--burn-in-ps", type=float, default=0.0)
+    parser.add_argument("--blocks", type=int, default=5)
+    parser.add_argument("--sigma", type=float, default=2.0)
+    parser.add_argument("--write-plot", action="store_true")
+
+
 def _add_fes2d_grid_postprocess_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fes-file", type=Path, required=True, help="PLUMED-style 2D FES table")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -2492,9 +3211,8 @@ def _add_fes_convergence_postprocess_args(parser: argparse.ArgumentParser) -> No
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--window-low", type=float, default=20.0)
     parser.add_argument("--window-high", type=float, default=52.0)
-    parser.add_argument("--smooth-window", type=int, default=21)
-    parser.add_argument("--smooth-passes", type=int, default=3)
-    parser.add_argument("--jump-threshold", type=float, default=120.0)
+    parser.add_argument("--smooth-window", type=int, default=1)
+    parser.add_argument("--smooth-passes", type=int, default=1)
     parser.add_argument("--infer-blocks", action="store_true", help="Infer existing PATH stem_1/stem_2/... block files")
     parser.add_argument("--block-count", type=int, default=3)
     parser.add_argument("--cumulative-glob", default="fes-cum_*.dat")
@@ -2568,6 +3286,16 @@ def _add_sphere_cv_compare_postprocess_args(parser: argparse.ArgumentParser) -> 
     parser.add_argument("--cv", action="append", default=[], help="CV column to compare; may be repeated")
     parser.add_argument("--skip-last-data-line", action="store_true")
     parser.add_argument("--dpi", type=int, default=220)
+
+
+def _add_sphere_interface_compare_postprocess_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--kind", choices=("nanodroplet", "nanobubble"), required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--font-path", type=Path)
+    parser.add_argument("--block-frames", type=int, default=10)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--no-plots", action="store_true")
 
 
 def _add_sphere_interface_structure_postprocess_args(parser: argparse.ArgumentParser) -> None:
@@ -2669,6 +3397,35 @@ def build_parser() -> argparse.ArgumentParser:
     to_lammps.add_argument("--xyz", type=Path, required=True, help="Input extended XYZ file")
     to_lammps.add_argument("--output", type=Path, required=True, help="Output LAMMPS data file")
     to_lammps.set_defaults(func=_cmd_extxyz_to_lammps_data)
+
+    relocate_species = structure_subparsers.add_parser(
+        "relocate-oxygen-species",
+        help="Move selected O atoms and their nearest PBC-assigned H atoms",
+    )
+    relocate_species.add_argument("--input", type=Path, required=True)
+    relocate_species.add_argument("--output", type=Path, required=True)
+    relocate_species.add_argument("--selected-oxygen-ids", type=Path, required=True)
+    relocate_species.add_argument("--mapping", type=Path)
+    relocate_species.add_argument("--report", type=Path)
+    relocate_species.add_argument("--oxygen-type", type=int, default=2)
+    relocate_species.add_argument("--hydrogen-type", type=int, default=1)
+    relocate_species.add_argument("--oh-cutoff-A", type=float, default=1.3)
+    relocate_species.add_argument(
+        "--allowed-hydrogen-counts", type=int, nargs="+", default=[1, 2, 3]
+    )
+    relocate_species.add_argument("--axis", choices=("x", "y", "z"), default="z")
+    relocate_species.add_argument(
+        "--source-anchor", choices=("lower", "upper"), default="lower"
+    )
+    relocate_species.add_argument("--stationary-buffer-A", type=float, default=4.0)
+    relocate_species.add_argument("--high-boundary-buffer-A", type=float, default=20.0)
+    relocate_species.add_argument("--assignment-chunk-size", type=int, default=256)
+    relocate_species.add_argument(
+        "--periodic-axes",
+        choices=("x", "y", "z", "xy", "xz", "yz", "xyz"),
+        default="xyz",
+    )
+    relocate_species.set_defaults(func=_cmd_relocate_oxygen_species)
 
     equal_radius = structure_subparsers.add_parser(
         "equal-volume-radius",
@@ -2996,6 +3753,44 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    validate_dumps = postprocess_subparsers.add_parser(
+        "validate-dumps",
+        help="Validate aligned coordinate, velocity, and force LAMMPS dumps",
+    )
+    validate_dumps.add_argument("--coordinates", type=Path, required=True)
+    validate_dumps.add_argument("--velocity", type=Path, required=True)
+    validate_dumps.add_argument("--force", type=Path, required=True)
+    validate_dumps.add_argument("--start-step", type=int, required=True)
+    validate_dumps.add_argument("--expected-final-step", type=int, required=True)
+    validate_dumps.add_argument("--coordinate-stride", type=int, required=True)
+    validate_dumps.add_argument("--vector-stride", type=int, required=True)
+    validate_dumps.add_argument("--output", type=Path)
+    validate_dumps.set_defaults(func=_cmd_postprocess_validate_dumps)
+
+    validate_v3_io = postprocess_subparsers.add_parser(
+        "validate-v3-mechanism-io",
+        help="Validate aligned V3 coordinate, ROI-velocity, and stress outputs",
+    )
+    validate_v3_io.add_argument("--coordinates", type=Path, required=True)
+    validate_v3_io.add_argument("--velocity-roi", type=Path, required=True)
+    validate_v3_io.add_argument("--roi-kinetic", type=Path, required=True)
+    validate_v3_io.add_argument("--global-stress", type=Path, required=True)
+    validate_v3_io.add_argument("--model-data", type=Path, required=True)
+    validate_v3_io.add_argument("--final-data", type=Path, required=True)
+    validate_v3_io.add_argument("--start-step", type=int, required=True)
+    validate_v3_io.add_argument("--end-step", type=int, required=True)
+    validate_v3_io.add_argument("--natoms", type=int, required=True)
+    validate_v3_io.add_argument("--roi-types", required=True)
+    validate_v3_io.add_argument("--coordinate-every", type=int, required=True)
+    validate_v3_io.add_argument("--velocity-every", type=int, required=True)
+    validate_v3_io.add_argument("--thermo-every", type=int, required=True)
+    validate_v3_io.add_argument(
+        "--kinetic-factor", type=float, default=166.053882315, help="metal-unit kinetic factor"
+    )
+    validate_v3_io.add_argument("--final-data-tolerance-A", type=float, default=1.0e-6)
+    validate_v3_io.add_argument("--output", type=Path)
+    validate_v3_io.set_defaults(func=_cmd_postprocess_validate_v3_mechanism_io)
+
     centroids = postprocess_subparsers.add_parser(
         "centroids",
         help="Compute two-bubble centroids from a LAMMPS trajectory",
@@ -3009,6 +3804,397 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_surface_distance_postprocess_args(surface_distance)
     surface_distance.set_defaults(func=_cmd_postprocess_bubble_surface_distance)
+
+    nanobubble_attachment = postprocess_subparsers.add_parser(
+        "nanobubble-attachment",
+        help="Analyze restart-aware PBC nanobubble attachment kinetics",
+    )
+    nanobubble_attachment.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanobubble_attachment.add_argument("--output-dir", type=Path, required=True)
+    nanobubble_attachment.add_argument("--output-stem", default="attachment_kinetics")
+    nanobubble_attachment.add_argument("--surface-range", required=True)
+    nanobubble_attachment.add_argument("--nitrogen-range", required=True)
+    nanobubble_attachment.add_argument("--surface-z-A", type=float, required=True)
+    nanobubble_attachment.add_argument("--reference-structure", type=Path)
+    nanobubble_attachment.add_argument("--timestep-fs", type=float, default=0.5)
+    nanobubble_attachment.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    nanobubble_attachment.add_argument("--contact-cutoff-A", type=float, default=4.0)
+    nanobubble_attachment.add_argument("--minimum-contact-n2", type=int, default=3)
+    nanobubble_attachment.add_argument("--persistence-frames", type=int, default=3)
+    nanobubble_attachment.add_argument("--font-family", default="Arial")
+    nanobubble_attachment.add_argument("--font-path", type=Path)
+    nanobubble_attachment.add_argument("--max-frames", type=int)
+    nanobubble_attachment.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanobubble_attachment.set_defaults(func=_cmd_postprocess_nanobubble_attachment)
+
+    nanobubble_ions = postprocess_subparsers.add_parser(
+        "nanobubble-ion-distribution",
+        help="Sample ions relative to a silica surface and an N2 nanobubble",
+    )
+    nanobubble_ions.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanobubble_ions.add_argument("--trajectory-max-step", type=int, action="append")
+    nanobubble_ions.add_argument("--output-dir", type=Path, required=True)
+    nanobubble_ions.add_argument("--reference-structure", type=Path, required=True)
+    nanobubble_ions.add_argument("--surface-range", required=True)
+    nanobubble_ions.add_argument("--nitrogen-range", required=True)
+    nanobubble_ions.add_argument("--solution-range", required=True)
+    nanobubble_ions.add_argument("--stage", action="append", required=True)
+    nanobubble_ions.add_argument("--timestep-fs", type=float, default=0.5)
+    nanobubble_ions.add_argument("--hydrogen-type", type=int, default=1)
+    nanobubble_ions.add_argument("--oxygen-type", type=int, default=2)
+    nanobubble_ions.add_argument("--sodium-type", type=int, default=4)
+    nanobubble_ions.add_argument("--chloride-type", type=int, default=5)
+    nanobubble_ions.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    nanobubble_ions.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    nanobubble_ions.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    nanobubble_ions.add_argument("--top-si-window-A", type=float, default=1.0)
+    nanobubble_ions.add_argument("--terminal-surface-z-A", type=float, required=True)
+    nanobubble_ions.add_argument("--surface-depth-A", type=float, default=3.0)
+    nanobubble_ions.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanobubble_ions.set_defaults(func=_cmd_postprocess_nanobubble_ion_distribution)
+
+    functional_orientation = postprocess_subparsers.add_parser(
+        "surface-functional-group-orientation",
+        help="Track CH3 and SiOH axes relative to global and local surface normals",
+    )
+    functional_orientation.add_argument(
+        "--trajectory", type=Path, action="append", required=True
+    )
+    functional_orientation.add_argument("--output-dir", type=Path, required=True)
+    functional_orientation.add_argument("--initial-xyz", type=Path, required=True)
+    functional_orientation.add_argument("--surface-range", required=True)
+    functional_orientation.add_argument("--water-range", required=True)
+    functional_orientation.add_argument("--surface-z-A", type=float, required=True)
+    functional_orientation.add_argument("--oxygen-type", type=int, default=2)
+    functional_orientation.add_argument("--hydrogen-type", type=int, default=1)
+    functional_orientation.add_argument("--surface-depth-A", type=float, default=3.0)
+    functional_orientation.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    functional_orientation.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    functional_orientation.add_argument(
+        "--si-terminal-cutoff-A", type=float, default=2.20
+    )
+    functional_orientation.add_argument("--local-normal-neighbors", type=int, default=7)
+    functional_orientation.add_argument("--block-frames", type=int, default=25)
+    functional_orientation.add_argument("--cosine-bins", type=int, default=40)
+    functional_orientation.add_argument("--azimuth-bins", type=int, default=36)
+    functional_orientation.add_argument("--timestep-fs", type=float, default=0.5)
+    functional_orientation.add_argument("--font-path", type=Path)
+    functional_orientation.add_argument("--expected-ch3-sites", type=int)
+    functional_orientation.add_argument("--expected-sioh-sites", type=int)
+    functional_orientation.add_argument(
+        "--minimum-group-integrity-fraction", type=float, default=0.99
+    )
+    functional_orientation.add_argument("--max-frames", type=int)
+    functional_orientation.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    functional_orientation.add_argument("--no-plots", action="store_true")
+    functional_orientation.set_defaults(
+        func=_cmd_postprocess_surface_functional_group_orientation
+    )
+
+    nanodroplet_spreading = postprocess_subparsers.add_parser(
+        "nanodroplet-spreading", help="Analyze restart-aware PBC nanodroplet spreading"
+    )
+    nanodroplet_spreading.add_argument("--trajectory", type=Path, action="append", required=True)
+    nanodroplet_spreading.add_argument("--output-dir", type=Path, required=True)
+    nanodroplet_spreading.add_argument("--surface-range", required=True)
+    nanodroplet_spreading.add_argument("--water-range", required=True)
+    nanodroplet_spreading.add_argument("--surface-z-A", type=float, required=True)
+    nanodroplet_spreading.add_argument("--reference-structure", type=Path)
+    nanodroplet_spreading.add_argument("--oxygen-type", type=int, default=2)
+    nanodroplet_spreading.add_argument("--timestep-fs", type=float, default=0.5)
+    nanodroplet_spreading.add_argument("--cluster-cutoff-A", type=float, default=3.5)
+    nanodroplet_spreading.add_argument("--contact-cutoff-A", type=float, default=3.5)
+    nanodroplet_spreading.add_argument("--font-path", type=Path, required=True)
+    nanodroplet_spreading.add_argument("--max-frames", type=int)
+    nanodroplet_spreading.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    nanodroplet_spreading.set_defaults(func=_cmd_postprocess_nanodroplet_spreading)
+
+    planar_motion = postprocess_subparsers.add_parser(
+        "planar-motion", help="Compute PBC-unwrapped planar displacement and MSD from CSV"
+    )
+    planar_motion.add_argument("--input", type=Path, required=True)
+    planar_motion.add_argument("--output-dir", type=Path, required=True)
+    planar_motion.add_argument("--step-column", default="step")
+    planar_motion.add_argument("--x-column", required=True)
+    planar_motion.add_argument("--y-column", required=True)
+    planar_motion.add_argument("--box-x-A", type=float, required=True)
+    planar_motion.add_argument("--box-y-A", type=float, required=True)
+    planar_motion.add_argument("--timestep-fs", type=float, default=0.5)
+    planar_motion.add_argument("--font-path", type=Path, required=True)
+    planar_motion.set_defaults(func=_cmd_postprocess_planar_motion)
+
+    constant_force_energy = postprocess_subparsers.add_parser(
+        "constant-force-energy",
+        help="Analyze drive work, thermostat removal, and pressure for constant-force MD",
+    )
+    constant_force_energy.add_argument("--motion", type=Path, action="append", required=True)
+    constant_force_energy.add_argument("--thermo", type=Path, action="append", required=True)
+    constant_force_energy.add_argument("--output-dir", type=Path, required=True)
+    constant_force_energy.add_argument("--timestep-fs", type=float, default=0.5)
+    constant_force_energy.add_argument("--block-ns", type=float, default=1.0)
+    constant_force_energy.add_argument("--font-path", type=Path, required=True)
+    constant_force_energy.set_defaults(func=_cmd_postprocess_constant_force_energy)
+
+    contact_angle = postprocess_subparsers.add_parser(
+        "axisymmetric-contact-angle",
+        help="Build an axisymmetric density field and fit spherical-cap contact angles",
+    )
+    contact_angle.add_argument("--trajectory", type=Path, action="append", required=True)
+    contact_angle.add_argument("--output-dir", type=Path, required=True)
+    contact_angle.add_argument("--atom-range", required=True)
+    contact_angle.add_argument("--mode", choices=("paired-centers", "atom-type"), required=True)
+    contact_angle.add_argument("--atom-type", type=int)
+    contact_angle.add_argument("--phase-label", required=True)
+    contact_angle.add_argument("--surface-z-A", type=float, required=True)
+    contact_angle.add_argument("--surface-range")
+    contact_angle.add_argument("--reference-structure", type=Path)
+    contact_angle.add_argument("--timestep-fs", type=float, default=0.5)
+    contact_angle.add_argument("--start-ns", type=float, required=True)
+    contact_angle.add_argument("--end-ns", type=float, required=True)
+    contact_angle.add_argument("--minimum-frames", type=int, default=100)
+    contact_angle.add_argument("--block-frames", type=int, default=20)
+    contact_angle.add_argument("--cluster-cutoff-A", type=float, required=True)
+    contact_angle.add_argument("--reference-density-A3", type=float, required=True)
+    contact_angle.add_argument("--threshold-fraction", type=float, action="append", default=[])
+    contact_angle.add_argument("--r-max-A", type=float, default=40.0)
+    contact_angle.add_argument("--z-min-A", type=float, default=0.0)
+    contact_angle.add_argument("--z-max-A", type=float, default=60.0)
+    contact_angle.add_argument("--dr-A", type=float, default=1.0)
+    contact_angle.add_argument("--dz-A", type=float, default=1.0)
+    contact_angle.add_argument("--fit-z-min-A", type=float, default=2.0)
+    contact_angle.add_argument("--fit-z-max-A", type=float, default=55.0)
+    contact_angle.add_argument("--font-path", type=Path, required=True)
+    contact_angle.set_defaults(func=_cmd_postprocess_axisymmetric_contact_angle)
+
+    contact_line = postprocess_subparsers.add_parser(
+        "contact-line", help="Analyze particle-level contact-line geometry and jump candidates"
+    )
+    contact_line.add_argument("--trajectory", type=Path, action="append", required=True)
+    contact_line.add_argument("--output-dir", type=Path, required=True)
+    contact_line.add_argument("--surface-range", required=True)
+    contact_line.add_argument("--phase-range", required=True)
+    contact_line.add_argument(
+        "--mode", choices=("paired-centers", "atom-type"), required=True
+    )
+    contact_line.add_argument("--atom-type", type=int)
+    contact_line.add_argument("--timestep-fs", type=float, default=0.5)
+    contact_line.add_argument("--start-ns", type=float)
+    contact_line.add_argument("--end-ns", type=float)
+    contact_line.add_argument("--cluster-cutoff-A", type=float, required=True)
+    contact_line.add_argument("--contact-cutoff-A", type=float, required=True)
+    contact_line.add_argument("--block-frames", type=int, default=20)
+    contact_line.add_argument("--jump-sigma", type=float, default=4.0)
+    contact_line.add_argument("--minimum-jump-A", type=float, default=2.0)
+    contact_line.add_argument("--font-path", type=Path, required=True)
+    contact_line.add_argument("--max-frames", type=int)
+    contact_line.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    contact_line.set_defaults(func=_cmd_postprocess_contact_line)
+
+    tpcl_pinning_slip = postprocess_subparsers.add_parser(
+        "tpcl-pinning-slip",
+        help="Resolve local TPCL dwell--jump candidates and chemistry coupling",
+    )
+    tpcl_pinning_slip.add_argument("--config", type=Path, required=True)
+    tpcl_pinning_slip.add_argument("--output-dir", type=Path, required=True)
+    tpcl_pinning_slip.add_argument("--font-path", type=Path)
+    tpcl_pinning_slip.add_argument("--start-ns", type=float)
+    tpcl_pinning_slip.add_argument("--end-ns", type=float)
+    tpcl_pinning_slip.add_argument("--max-frames", type=int)
+    tpcl_pinning_slip.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    tpcl_pinning_slip.add_argument("--no-plots", action="store_true")
+    tpcl_pinning_slip.set_defaults(func=_cmd_postprocess_tpcl_pinning_slip)
+
+    tpcl_compare = postprocess_subparsers.add_parser(
+        "tpcl-pinning-slip-compare",
+        help="Compare TPCL candidates, local chemistry, and circular-shift nulls",
+    )
+    tpcl_compare.add_argument("--manifest", type=Path, required=True)
+    tpcl_compare.add_argument("--output-dir", type=Path, required=True)
+    tpcl_compare.add_argument("--font-path", type=Path, required=True)
+    tpcl_compare.add_argument("--block-ps", type=float, default=200.0)
+    tpcl_compare.add_argument("--event-half-window-ps", type=float, default=100.0)
+    tpcl_compare.add_argument("--bootstrap-replicates", type=int, default=2000)
+    tpcl_compare.add_argument("--seed", type=int, default=20260830)
+    tpcl_compare.set_defaults(func=_cmd_postprocess_tpcl_pinning_slip_compare)
+
+    tpcl_state = postprocess_subparsers.add_parser(
+        "tpcl-state-diagnostics",
+        help="Summarize LAMMPS thermo, pressure, and TPCL geometry in fixed blocks",
+    )
+    tpcl_state.add_argument("--sources", type=Path, required=True)
+    tpcl_state.add_argument("--output-dir", type=Path, required=True)
+    tpcl_state.add_argument("--timestep-fs", type=float, required=True)
+    tpcl_state.add_argument("--block-ps", type=float, default=500.0)
+    tpcl_state.add_argument("--font-path", type=Path, required=True)
+    tpcl_state.add_argument("--frame-field", action="append", default=[])
+    tpcl_state.set_defaults(func=_cmd_postprocess_tpcl_state_diagnostics)
+
+    site_enrichment = postprocess_subparsers.add_parser(
+        "surface-site-enrichment",
+        help="Map footprint and TPCL regions onto initial CH3 and SiOH sites",
+    )
+    site_enrichment.add_argument("--initial-xyz", type=Path, required=True)
+    site_enrichment.add_argument("--slab-range", required=True)
+    site_enrichment.add_argument("--contact-line", type=Path, required=True)
+    site_enrichment.add_argument("--contact-line-points", type=Path, required=True)
+    site_enrichment.add_argument("--output-dir", type=Path, required=True)
+    site_enrichment.add_argument("--surface-z-A", type=float, required=True)
+    site_enrichment.add_argument("--surface-depth-A", type=float, default=3.0)
+    site_enrichment.add_argument("--bond-cutoff-A", type=float, default=1.25)
+    site_enrichment.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    site_enrichment.add_argument("--boundary-proximity-A", type=float, default=2.0)
+    site_enrichment.add_argument("--timestep-fs", type=float, default=0.5)
+    site_enrichment.add_argument("--font-path", type=Path, required=True)
+    site_enrichment.set_defaults(func=_cmd_postprocess_surface_site_enrichment)
+
+    water_density = postprocess_subparsers.add_parser(
+        "interfacial-water-density",
+        help="Compute water-oxygen density in footprint, TPCL, and far-field regions",
+    )
+    water_density.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_density.add_argument("--output-dir", type=Path, required=True)
+    water_density.add_argument("--water-range", required=True)
+    water_density.add_argument("--surface-range", required=True)
+    water_density.add_argument("--oxygen-type", type=int, default=2)
+    water_density.add_argument("--contact-line", type=Path, required=True)
+    water_density.add_argument("--contact-line-points", type=Path, required=True)
+    water_density.add_argument("--surface-z-A", type=float, required=True)
+    water_density.add_argument("--reference-structure", type=Path)
+    water_density.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_density.add_argument("--area-grid-A", type=float, default=1.0)
+    water_density.add_argument("--z-min-A", type=float, default=0.0)
+    water_density.add_argument("--z-max-A", type=float, default=15.0)
+    water_density.add_argument("--dz-A", type=float, default=0.5)
+    water_density.add_argument("--hydration-z-max-A", type=float, default=6.0)
+    water_density.add_argument("--timestep-fs", type=float, default=0.5)
+    water_density.add_argument("--font-path", type=Path, required=True)
+    water_density.set_defaults(func=_cmd_postprocess_interfacial_water_density)
+
+    water_orientation = postprocess_subparsers.add_parser(
+        "interfacial-water-orientation",
+        help="Compute first-layer water dipole and O-H orientation by surface region",
+    )
+    water_orientation.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_orientation.add_argument("--output-dir", type=Path, required=True)
+    water_orientation.add_argument("--surface-range", required=True)
+    water_orientation.add_argument("--water-range", required=True)
+    water_orientation.add_argument("--oxygen-type", type=int, default=2)
+    water_orientation.add_argument("--hydrogen-type", type=int, default=1)
+    water_orientation.add_argument("--contact-line", type=Path, required=True)
+    water_orientation.add_argument("--contact-line-points", type=Path, required=True)
+    water_orientation.add_argument("--surface-z-A", type=float, required=True)
+    water_orientation.add_argument("--reference-structure", type=Path, required=True)
+    water_orientation.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_orientation.add_argument("--bond-cutoff-A", type=float, default=1.25)
+    water_orientation.add_argument("--z-min-A", type=float, default=0.0)
+    water_orientation.add_argument("--z-max-A", type=float, default=6.0)
+    water_orientation.add_argument("--cosine-bins", type=int, default=40)
+    water_orientation.add_argument("--timestep-fs", type=float, default=0.5)
+    water_orientation.add_argument("--font-path", type=Path, required=True)
+    water_orientation.set_defaults(func=_cmd_postprocess_interfacial_water_orientation)
+
+    angle_line = postprocess_subparsers.add_parser(
+        "contact-angle-line-alignment",
+        help="Align contact angles and contact-line radii on identical step blocks",
+    )
+    angle_line.add_argument("--contact-angle-blocks", type=Path, required=True)
+    angle_line.add_argument("--contact-line", action="append", required=True, metavar="LABEL=PATH")
+    angle_line.add_argument("--output-dir", type=Path, required=True)
+    angle_line.add_argument("--angle-column", default="dense_phase_contact_angle_deg")
+    angle_line.add_argument("--radius-column", default="contact_line_equivalent_radius_A")
+    angle_line.add_argument("--radius-stability-A", type=float, default=1.0)
+    angle_line.add_argument("--angle-change-deg", type=float, default=3.0)
+    angle_line.add_argument("--font-path", type=Path, required=True)
+    angle_line.set_defaults(func=_cmd_postprocess_contact_angle_line_alignment)
+
+    precontact_n2 = postprocess_subparsers.add_parser(
+        "precontact-n2-enrichment",
+        help="Separate main-bubble and disconnected N2 z distributions before attachment",
+    )
+    precontact_n2.add_argument("--trajectory", type=Path, action="append", required=True)
+    precontact_n2.add_argument("--output-dir", type=Path, required=True)
+    precontact_n2.add_argument("--surface-range", required=True)
+    precontact_n2.add_argument("--nitrogen-range", required=True)
+    precontact_n2.add_argument("--surface-z-A", type=float, required=True)
+    precontact_n2.add_argument("--reference-structure", type=Path, required=True)
+    precontact_n2.add_argument("--end-ns", type=float, required=True)
+    precontact_n2.add_argument("--timestep-fs", type=float, default=0.5)
+    precontact_n2.add_argument("--cluster-cutoff-A", type=float, default=5.5)
+    precontact_n2.add_argument("--near-z-min-A", type=float, default=0.0)
+    precontact_n2.add_argument("--near-z-max-A", type=float, default=10.0)
+    precontact_n2.add_argument("--projection-margin-A", type=float, default=5.0)
+    precontact_n2.add_argument("--z-min-A", type=float, default=0.0)
+    precontact_n2.add_argument("--z-max-A", type=float, default=80.0)
+    precontact_n2.add_argument("--dz-A", type=float, default=1.0)
+    precontact_n2.add_argument("--block-frames", type=int, default=50)
+    precontact_n2.add_argument("--font-path", type=Path, required=True)
+    precontact_n2.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    precontact_n2.set_defaults(func=_cmd_postprocess_precontact_n2_enrichment)
+
+    water_hbond = postprocess_subparsers.add_parser(
+        "interfacial-water-hbond",
+        help="Count snapshot first-layer water-water and SiOH-water hydrogen bonds",
+    )
+    water_hbond.add_argument("--trajectory", type=Path, action="append", required=True)
+    water_hbond.add_argument("--output-dir", type=Path, required=True)
+    water_hbond.add_argument("--surface-range", required=True)
+    water_hbond.add_argument("--water-range", required=True)
+    water_hbond.add_argument("--oxygen-type", type=int, default=2)
+    water_hbond.add_argument("--hydrogen-type", type=int, default=1)
+    water_hbond.add_argument("--contact-line", type=Path, required=True)
+    water_hbond.add_argument("--contact-line-points", type=Path, required=True)
+    water_hbond.add_argument("--surface-z-A", type=float, required=True)
+    water_hbond.add_argument("--reference-structure", type=Path, required=True)
+    water_hbond.add_argument("--surface-depth-A", type=float, default=3.0)
+    water_hbond.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    water_hbond.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    water_hbond.add_argument("--oo-cutoff-A", type=float, default=3.5)
+    water_hbond.add_argument("--angle-cutoff-deg", type=float, default=30.0)
+    water_hbond.add_argument("--z-min-A", type=float, default=0.0)
+    water_hbond.add_argument("--z-max-A", type=float, default=6.0)
+    water_hbond.add_argument("--timestep-fs", type=float, default=0.5)
+    water_hbond.add_argument("--font-path", type=Path, required=True)
+    water_hbond.set_defaults(func=_cmd_postprocess_interfacial_water_hbond)
+
+    proton_transfer = postprocess_subparsers.add_parser(
+        "surface-proton-transfer",
+        help="Track sampled surface-H exchange and solution ion candidates",
+    )
+    proton_transfer.add_argument("--trajectory", type=Path, action="append", required=True)
+    proton_transfer.add_argument("--output-dir", type=Path, required=True)
+    proton_transfer.add_argument("--initial-xyz", type=Path, required=True)
+    proton_transfer.add_argument("--surface-range", required=True)
+    proton_transfer.add_argument("--water-range", required=True)
+    proton_transfer.add_argument("--oxygen-type", type=int, default=2)
+    proton_transfer.add_argument("--hydrogen-type", type=int, default=1)
+    proton_transfer.add_argument("--contact-line", type=Path, required=True)
+    proton_transfer.add_argument("--contact-line-points", type=Path, required=True)
+    proton_transfer.add_argument("--surface-z-A", type=float, required=True)
+    proton_transfer.add_argument("--surface-depth-A", type=float, default=3.0)
+    proton_transfer.add_argument("--tpcl-half-width-A", type=float, default=4.0)
+    proton_transfer.add_argument("--oh-cutoff-A", type=float, default=1.25)
+    proton_transfer.add_argument("--ch-cutoff-A", type=float, default=1.30)
+    proton_transfer.add_argument("--min-persistence-frames", type=int, default=2)
+    proton_transfer.add_argument("--timestep-fs", type=float, default=0.5)
+    proton_transfer.add_argument("--font-path", type=Path, required=True)
+    proton_transfer.add_argument(
+        "--drop-first-frame", action=argparse.BooleanOptionalAction, default=True
+    )
+    proton_transfer.set_defaults(func=_cmd_postprocess_surface_proton_transfer)
 
     coalescence_state = postprocess_subparsers.add_parser(
         "coalescence-state",
@@ -3207,6 +4393,34 @@ def build_parser() -> argparse.ArgumentParser:
     _add_water_orientation_summary_postprocess_args(water_orientation)
     water_orientation.set_defaults(func=_cmd_postprocess_water_orientation_summary)
 
+    dual_interface_water = postprocess_subparsers.add_parser(
+        "dual-interface-water",
+        help="Build matched-gap dual-interface water-density and dipole maps",
+    )
+    dual_interface_water.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_water.set_defaults(func=_cmd_postprocess_dual_interface_water)
+
+    dual_interface_ion = postprocess_subparsers.add_parser(
+        "dual-interface-ion",
+        help="Analyze matched-gap formal-charge and ionic-field proxies",
+    )
+    dual_interface_ion.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_ion.set_defaults(func=_cmd_postprocess_dual_interface_ion)
+
+    dual_interface_hbond = postprocess_subparsers.add_parser(
+        "dual-interface-hbond",
+        help="Analyze matched-gap water H-bond spanning connectivity",
+    )
+    dual_interface_hbond.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_hbond.set_defaults(func=_cmd_postprocess_dual_interface_hbond)
+
+    dual_interface_ion3d = postprocess_subparsers.add_parser(
+        "dual-interface-ion3d",
+        help="Analyze three-dimensional ion organization in a dual-bubble frame",
+    )
+    dual_interface_ion3d.add_argument("workflow_args", nargs=argparse.REMAINDER)
+    dual_interface_ion3d.set_defaults(func=_cmd_postprocess_dual_interface_ion3d)
+
     bridge_film = postprocess_subparsers.add_parser(
         "bridge-film",
         help="Summarize bridge liquid-film states from frame tables",
@@ -3241,6 +4455,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fes_reweight_postprocess_args(fes_reweight)
     fes_reweight.set_defaults(func=_cmd_postprocess_fes_reweight)
+
+    pimd_reweight = postprocess_subparsers.add_parser(
+        "pimd-reweight",
+        help="Reweight centroid-, bead-mean-, or shared-bead-density-biased PIMD",
+    )
+    _add_pimd_reweight_postprocess_args(pimd_reweight)
+    pimd_reweight.set_defaults(func=_cmd_postprocess_pimd_reweight)
+
+    quantum_path = postprocess_subparsers.add_parser(
+        "quantum-path",
+        help="Extract quantum-path descriptors and whole-frame conditional diagnostics",
+    )
+    _add_pimd_reweight_postprocess_args(quantum_path)
+    quantum_path.set_defaults(func=_cmd_postprocess_quantum_path)
+
+    pimd_reweight_compare = postprocess_subparsers.add_parser(
+        "pimd-reweight-compare",
+        help="Compare two completed PIMD reweighting analyses",
+    )
+    _add_pimd_reweight_postprocess_args(pimd_reweight_compare)
+    pimd_reweight_compare.set_defaults(func=_cmd_postprocess_pimd_reweight_compare)
+
+    pimd_bead_convergence = postprocess_subparsers.add_parser(
+        "pimd-bead-convergence",
+        help="Compare a LAMMPS PIMD thermo estimator across bead counts",
+    )
+    _add_pimd_bead_convergence_args(pimd_bead_convergence)
+    pimd_bead_convergence.set_defaults(func=_cmd_postprocess_pimd_bead_convergence)
 
     fes2d_grid = postprocess_subparsers.add_parser(
         "fes2d-grid",
@@ -3291,6 +4533,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_sphere_cv_compare_postprocess_args(sphere_cv_compare)
     sphere_cv_compare.set_defaults(func=_cmd_postprocess_sphere_cv_compare)
 
+    sphere_interface_compare = postprocess_subparsers.add_parser(
+        "sphere-interface-compare",
+        help="Compare existing droplet or bubble interface analyses across surface terminations",
+    )
+    _add_sphere_interface_compare_postprocess_args(sphere_interface_compare)
+    sphere_interface_compare.set_defaults(func=_cmd_postprocess_sphere_interface_compare)
+
     sphere_interface_structure = postprocess_subparsers.add_parser(
         "sphere-interface-structure",
         help="Analyze SiO2 topology, terminal motion, interfacial water, and H-bond networks",
@@ -3298,10 +4547,130 @@ def build_parser() -> argparse.ArgumentParser:
     _add_sphere_interface_structure_postprocess_args(sphere_interface_structure)
     sphere_interface_structure.set_defaults(func=_cmd_postprocess_sphere_interface_structure)
 
+    constant_force_events = postprocess_subparsers.add_parser(
+        "constant-force-events",
+        help="Audit reactive-species, high-z, wall, and motion event windows",
+    )
+    constant_force_events.add_argument("--contract", type=Path, required=True)
+    constant_force_events.add_argument("--output", type=Path, required=True)
+    constant_force_events.set_defaults(func=_cmd_postprocess_constant_force_events)
+
+    constant_force_kinematics = postprocess_subparsers.add_parser(
+        "constant-force-kinematics",
+        help="Analyze block velocities, baseline response, and velocity autocorrelation",
+    )
+    constant_force_kinematics.add_argument("--contract", type=Path, required=True)
+    constant_force_kinematics.add_argument("--output", type=Path, required=True)
+    constant_force_kinematics.set_defaults(func=_cmd_postprocess_constant_force_kinematics)
+
+    constant_force_islands = postprocess_subparsers.add_parser(
+        "constant-force-islands",
+        help="Track water-island identities, exchange, splitting, merging, and velocity",
+    )
+    constant_force_islands.add_argument("--contract", type=Path, required=True)
+    constant_force_islands.add_argument("--output", type=Path, required=True)
+    constant_force_islands.set_defaults(func=_cmd_postprocess_constant_force_islands)
+
+    constant_force_layers = postprocess_subparsers.add_parser(
+        "constant-force-layers",
+        help="Analyze height-layer velocity, flux, exchange, residence, and density modes",
+    )
+    constant_force_layers.add_argument("--contract", type=Path, required=True)
+    constant_force_layers.add_argument("--output", type=Path, required=True)
+    constant_force_layers.set_defaults(func=_cmd_postprocess_constant_force_layers)
+
+    constant_force_species_timeseries = postprocess_subparsers.add_parser(
+        "constant-force-species-timeseries",
+        help="Audit geometric water/surface proton partition through time",
+    )
+    constant_force_species_timeseries.add_argument("--contract", type=Path, required=True)
+    constant_force_species_timeseries.add_argument("--output", type=Path, required=True)
+    constant_force_species_timeseries.set_defaults(
+        func=_cmd_postprocess_constant_force_species_timeseries
+    )
+
+    constant_force_water_structure = postprocess_subparsers.add_parser(
+        "constant-force-water-structure",
+        help="Analyze morphology-aware H bonds, water order, turnover, and residence",
+    )
+    constant_force_water_structure.add_argument("--contract", type=Path, required=True)
+    constant_force_water_structure.add_argument("--output", type=Path, required=True)
+    constant_force_water_structure.set_defaults(
+        func=_cmd_postprocess_constant_force_water_structure
+    )
+
+    constant_force_aggregate = postprocess_subparsers.add_parser(
+        "constant-force-aggregate",
+        help="Aggregate validated constant-force transport and mechanism diagnostics",
+    )
+    constant_force_aggregate.add_argument("--contract", type=Path, required=True)
+    constant_force_aggregate.add_argument("--output", type=Path, required=True)
+    constant_force_aggregate.set_defaults(
+        func=_cmd_postprocess_constant_force_aggregate
+    )
+
+    constant_force_stage_a = postprocess_subparsers.add_parser(
+        "constant-force-stage-a",
+        help="Synthesize morphology-specific diagnostics from existing constant-force results",
+    )
+    constant_force_stage_a.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_a.add_argument("--output", type=Path, required=True)
+    constant_force_stage_a.set_defaults(func=_cmd_postprocess_constant_force_stage_a)
+
+    constant_force_stage_b_flux = postprocess_subparsers.add_parser(
+        "constant-force-stage-b-flux",
+        help="Decompose directed water flux into island motion and membership exchange",
+    )
+    constant_force_stage_b_flux.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_b_flux.add_argument("--output", type=Path, required=True)
+    constant_force_stage_b_flux.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_b_flux
+    )
+
+    constant_force_stage_b_layers = postprocess_subparsers.add_parser(
+        "constant-force-stage-b-layers",
+        help="Audit raw and excess layer flux, closure, and drive power",
+    )
+    constant_force_stage_b_layers.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_b_layers.add_argument("--output", type=Path, required=True)
+    constant_force_stage_b_layers.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_b_layers
+    )
+
+    constant_force_stage_b_anisotropy = postprocess_subparsers.add_parser(
+        "constant-force-stage-b-anisotropy",
+        help="Map morphology-aware residence, current, and response anisotropy",
+    )
+    constant_force_stage_b_anisotropy.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_b_anisotropy.add_argument("--output", type=Path, required=True)
+    constant_force_stage_b_anisotropy.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_b_anisotropy
+    )
+
+    constant_force_stage_c_synthesis = postprocess_subparsers.add_parser(
+        "constant-force-stage-c-synthesis",
+        help="Compare replica responses and screen event and species-layer associations",
+    )
+    constant_force_stage_c_synthesis.add_argument("--contract", type=Path, required=True)
+    constant_force_stage_c_synthesis.add_argument("--output", type=Path, required=True)
+    constant_force_stage_c_synthesis.set_defaults(
+        func=_cmd_postprocess_constant_force_stage_c_synthesis
+    )
+
+    constant_force_estimator_consistency = postprocess_subparsers.add_parser(
+        "constant-force-estimator-consistency",
+        help="Compare displacement, dense-velocity, and sparse-snapshot responses",
+    )
+    constant_force_estimator_consistency.add_argument("--contract", type=Path, required=True)
+    constant_force_estimator_consistency.add_argument("--output", type=Path, required=True)
+    constant_force_estimator_consistency.set_defaults(
+        func=_cmd_postprocess_constant_force_estimator_consistency
+    )
+
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Run the command-line interface."""
     parser = build_parser()
     args = parser.parse_args(argv)

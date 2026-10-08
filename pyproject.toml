@@ -23,6 +23,7 @@ analysis = [
   "matplotlib",
   "MDAnalysis",
   "pandas",
+  "scikit-learn",
   "seaborn",
   "scipy",
 ]
@@ -51,6 +52,9 @@ molsimflow = "molsimflow.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+molsimflow = ["workflows/templates/*.lmp", "workflows/templates/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

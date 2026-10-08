@@ -7,6 +7,7 @@ The migrated plotting layer provides generic CSV-driven figure helpers:
 - line plots for processed FES curves and time/gap series;
 - scatter plots for descriptor-barrier relationships;
 - heatmaps for descriptor-delta or correlation matrices.
+- energy/force parity panels with density rendering and adaptive absolute-error histograms.
 
 The legacy scripts contained many publication-specific panel layouts, color
 palettes, annotations, and case-root discovery rules.  Those are not migrated
@@ -70,6 +71,28 @@ paths = output_paths("figure", ["png", "pdf"])
 
 Matplotlib is imported lazily only when `plot_line_table`,
 `plot_scatter_table`, or `plot_heatmap_table` is called.
+
+Model-validation figures can reuse the parity-panel API:
+
+```python
+from molsimflow.plotting.parity import plot_parity_panel
+
+plot_parity_panel(
+    ax,
+    reference,
+    model,
+    metrics,
+    kind="force",
+    title="Compressed DPA4C vs SCAN DFT",
+    reference_symbol=r"\mathrm{SCAN\ DFT}",
+    model_symbol=r"\mathrm{DPA4C}",
+    dense=True,
+)
+```
+
+The inset histogram displays the central 99.5% error range. Its bin count
+scales with the square root of the displayed sample count and is bounded to
+remain legible in a compact panel.
 
 ## Migration Notes
 

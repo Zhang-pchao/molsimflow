@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "run": {
+    "run_id": "synthetic-path-example",
+    "seed_id": "synthetic-seed-1",
+    "initial_path_id": "synthetic-initial-path",
+    "parent_restart_id": null,
+    "bias_mode": "bead_mean",
+    "data_role": "engineering"
+  },
+  "atom_identity": [
+    {"id": 1, "type": 2},
+    {"id": 2, "type": 1},
+    {"id": 3, "type": 2},
+    {"id": 4, "type": 1}
+  ],
+  "beads": [
+    {
+      "bead_id": 0,
+      "path": "bead-0.dump",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "bead_id": 1,
+      "path": "bead-1.dump",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "steps": {"first": 0, "last": 70, "stride": 10, "timestep_fs": 0.25},
+  "geometry": {
+    "center_type": 2,
+    "assigned_type": 1,
+    "kappa": 5.0,
+    "distance_kappa": 8.0,
+    "reference": 1.0,
+    "environment_r0": 3.2,
+    "length_unit": "angstrom"
+  },
+  "weights": {"kind": "uniform_sampler"},
+  "analysis": {
+    "block_frames": 4,
+    "conditioning_fields": ["q_centroid"],
+    "bin_edges": [[0.0, 2.0]],
+    "regions": [
+      {"name": "example-region", "bounds": {"q": [0.4, 2.0], "distance": [0.0, 5.0]}}
+    ]
+  }
+}

@@ -20,6 +20,23 @@ def test_assign_hydrogen_to_nearest_oxygen_periodic():
     assert np.allclose(assignment.hydrogen_distance, [0.4, 0.9, 0.9])
 
 
+def test_assign_hydrogen_can_disable_periodicity_per_axis():
+    oxygen = np.asarray([[0.2, 5.0, 5.0]])
+    hydrogen = np.asarray([[9.8, 5.0, 5.0]])
+    bounds = np.asarray([[0.0, 10.0], [0.0, 10.0], [0.0, 10.0]])
+
+    assignment = assign_hydrogen_to_nearest_oxygen(
+        oxygen,
+        hydrogen,
+        bounds,
+        oh_cutoff=1.1,
+        periodic=(False, True, True),
+    )
+
+    assert assignment.hydrogen_to_oxygen_index.tolist() == [-1]
+    assert np.isinf(assignment.hydrogen_distance[0])
+
+
 def test_classify_oxygen_species_indices_and_counts():
     species = classify_oxygen_species_indices(np.asarray([1, 2, 3, 4, 0]))
     counts = count_oxygen_species(np.asarray([1, 2, 3, 4, 0]))

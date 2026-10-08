@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Union
 
 import numpy as np
 
@@ -19,10 +19,10 @@ class OxygenHydrogenAssignment:
     hydrogen_distance: np.ndarray
 
     @property
-    def hydrogen_indices_by_oxygen(self) -> Dict[int, List[int]]:
+    def hydrogen_indices_by_oxygen(self) -> dict[int, list[int]]:
         """Return local hydrogen indices grouped by local oxygen index."""
 
-        grouped: Dict[int, List[int]] = {}
+        grouped: dict[int, list[int]] = {}
         for h_index, oxygen_index in enumerate(self.hydrogen_to_oxygen_index):
             if int(oxygen_index) < 0:
                 continue
@@ -41,7 +41,9 @@ def bounds_from_box_dims(box_dims: Sequence[float]) -> np.ndarray:
     return np.column_stack([np.zeros(3, dtype=float), lengths])
 
 
-def normalize_bounds(bounds_or_lengths: Union[Sequence[Sequence[float]], Sequence[float]]) -> np.ndarray:
+def normalize_bounds(
+    bounds_or_lengths: Sequence[Sequence[float]] | Sequence[float],
+) -> np.ndarray:
     """Return `(3, 2)` bounds from either LAMMPS bounds or box lengths."""
 
     arr = np.asarray(bounds_or_lengths, dtype=float)
@@ -68,21 +70,24 @@ def wrap_positions_to_box(coords: np.ndarray, bounds: np.ndarray) -> np.ndarray:
 def assign_hydrogen_to_nearest_oxygen(
     oxygen_coords: np.ndarray,
     hydrogen_coords: np.ndarray,
-    bounds_or_lengths: Union[Sequence[Sequence[float]], Sequence[float]],
+    bounds_or_lengths: Sequence[Sequence[float]] | Sequence[float],
     oh_cutoff: float,
     chunk_size: int = 4096,
+    periodic: Sequence[bool] = (True, True, True),
 ) -> OxygenHydrogenAssignment:
     """Assign each hydrogen to its nearest oxygen under periodic boundaries.
 
     This implementation uses NumPy chunking and does not require SciPy.  The
     oxygen and hydrogen arrays are local arrays with shape `(N, 3)`.  The box
     can be passed either as LAMMPS bounds with shape `(3, 2)` or as box lengths
-    with shape `(3,)`.
+    with shape `(3,)`.  ``periodic`` controls which orthorhombic axes use the
+    minimum-image convention.
     """
 
     oxygen = np.asarray(oxygen_coords, dtype=float)
     hydrogen = np.asarray(hydrogen_coords, dtype=float)
     bounds = normalize_bounds(bounds_or_lengths)
+    periodic_mask = np.asarray(periodic, dtype=bool)
 
     if oxygen.ndim != 2 or oxygen.shape[1] != 3:
         raise ValueError("oxygen_coords must have shape (N, 3)")
@@ -92,6 +97,8 @@ def assign_hydrogen_to_nearest_oxygen(
         raise ValueError("No oxygen coordinates provided for O-H assignment")
     if oh_cutoff <= 0.0:
         raise ValueError("oh_cutoff must be positive")
+    if periodic_mask.shape != (3,):
+        raise ValueError("periodic must have shape (3,)")
 
     n_oxygen = oxygen.shape[0]
     n_hydrogen = hydrogen.shape[0]
@@ -103,8 +110,24 @@ def assign_hydrogen_to_nearest_oxygen(
         )
 
     lengths = box_lengths(bounds)
-    oxygen_wrapped = wrap_positions_to_box(oxygen, bounds)
-    hydrogen_wrapped = wrap_positions_to_box(hydrogen, bounds)
+    oxygen_normalized = oxygen.copy()
+    hydrogen_normalized = hydrogen.copy()
+    if np.any(periodic_mask):
+        lo = bounds[:, 0]
+        oxygen_normalized[:, periodic_mask] = (
+            np.mod(
+                oxygen[:, periodic_mask] - lo[periodic_mask],
+                lengths[periodic_mask],
+            )
+            + lo[periodic_mask]
+        )
+        hydrogen_normalized[:, periodic_mask] = (
+            np.mod(
+                hydrogen[:, periodic_mask] - lo[periodic_mask],
+                lengths[periodic_mask],
+            )
+            + lo[periodic_mask]
+        )
 
     nearest_indices = np.full(n_hydrogen, -1, dtype=int)
     nearest_distances = np.full(n_hydrogen, np.inf, dtype=float)
@@ -112,8 +135,14 @@ def assign_hydrogen_to_nearest_oxygen(
     cutoff_sq = float(oh_cutoff) ** 2
     for start in range(0, n_hydrogen, chunk):
         stop = min(start + chunk, n_hydrogen)
-        deltas = hydrogen_wrapped[start:stop, None, :] - oxygen_wrapped[None, :, :]
-        deltas = minimum_image_vectors(deltas, lengths)
+        deltas = (
+            hydrogen_normalized[start:stop, None, :]
+            - oxygen_normalized[None, :, :]
+        )
+        if np.any(periodic_mask):
+            deltas[..., periodic_mask] = minimum_image_vectors(
+                deltas[..., periodic_mask], lengths[periodic_mask]
+            )
         dist_sq = np.einsum("hox,hox->ho", deltas, deltas)
         local_nearest = np.argmin(dist_sq, axis=1)
         local_dist_sq = dist_sq[np.arange(stop - start), local_nearest]
@@ -132,7 +161,7 @@ def assign_hydrogen_to_nearest_oxygen(
     )
 
 
-def classify_oxygen_species_indices(h_count_per_oxygen: np.ndarray) -> Dict[str, np.ndarray]:
+def classify_oxygen_species_indices(h_count_per_oxygen: np.ndarray) -> dict[str, np.ndarray]:
     """Return local oxygen-index arrays grouped by assigned hydrogen count."""
 
     counts = np.asarray(h_count_per_oxygen, dtype=int)
@@ -144,7 +173,7 @@ def classify_oxygen_species_indices(h_count_per_oxygen: np.ndarray) -> Dict[str,
     }
 
 
-def count_oxygen_species(h_count_per_oxygen: np.ndarray) -> Dict[str, int]:
+def count_oxygen_species(h_count_per_oxygen: np.ndarray) -> dict[str, int]:
     """Return oxygen species counts from assigned hydrogen counts."""
 
     grouped = classify_oxygen_species_indices(h_count_per_oxygen)
