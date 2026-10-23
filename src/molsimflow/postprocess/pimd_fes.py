@@ -6,189 +6,25 @@ import math
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
-
-
-BIAS_MODES = {"centroid_coord", "bead_mean", "bead_density_shared", "centroid_conditioned",
-              "bead_probability_mixture", "centroid_probability_mixture", "contracted_bead_mean"}
-# Primary input names resolve to the existing output-schema identifiers.
-BIAS_MODE_ALIASES = {
-    "coordinate_mean": "centroid_coord",
-    "cv_mean": "bead_mean",
-    "bias_mean": "bead_density_shared",
-    "probability_mean": "bead_probability_mixture",
-    "contracted_cv_mean": "contracted_bead_mean",
-}
-BIAS_MODES |= BIAS_MODE_ALIASES.keys()
-WEIGHT_KINDS = {"fixed_bias", "quasi_static_opes", "precomputed"}
-FES_ESTIMATORS = {"probability_mean", "free_energy_mean"}
+from molsimflow.postprocess.pimd.types import (
+    validate_bias_mode,
+    validate_primary_estimator,
+)
+from molsimflow.postprocess.pimd.weights import (
+    normalized_log_weights,
+    total_bias_energy,
+    frame_log_weights,
+)
+from molsimflow.postprocess.pimd.alignment import (
+    restart_unique_indices,
+    assemble_bead_frames,
+)
+from molsimflow.postprocess.pimd.types import BIAS_MODES, BIAS_MODE_ALIASES, WEIGHT_KINDS, FES_ESTIMATORS
 
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
-
-
-def normalized_log_weights(values: Sequence[float] | np.ndarray) -> np.ndarray:
-    """Normalize finite log weights without exponentiating their absolute scale."""
-
-    raw = np.asarray(values, dtype=float)
-    _require(raw.ndim == 1 and raw.size > 0, "log weights must be a nonempty vector")
-    _require(np.isfinite(raw).all(), "log weights must be finite")
-    maximum = float(np.max(raw))
-    shifted = raw - maximum
-    return shifted - math.log(float(np.sum(np.exp(shifted))))
-
-
-def validate_bias_mode(value: str) -> str:
-    """Resolve a bias name to its stable output-schema identifier.
-
-    Both primary names and original input names are accepted. This does not
-    select the FES estimator, which has its own independent contract field.
-    """
-
-    mode = str(value)
-    _require(mode in BIAS_MODES, f"unsupported PIMD bias mode: {mode}")
-    return BIAS_MODE_ALIASES.get(mode, mode)
-
-
-def validate_primary_estimator(value: str) -> str:
-    """Validate the public estimator names accepted as the primary result."""
-
-    estimator = str(value)
-    _require(estimator in FES_ESTIMATORS, f"unsupported primary estimator: {estimator}")
-    return estimator
-
-
-def total_bias_energy(
-    bias_mode: str,
-    *,
-    sampling_bias_energy: Sequence[float] | np.ndarray | None = None,
-    bead_bias_energies: Sequence[Sequence[float]] | np.ndarray | None = None,
-) -> np.ndarray:
-    """Return one complete-path bias energy per ring-polymer frame."""
-
-    mode = validate_bias_mode(bias_mode)
-    if mode == "bead_density_shared":
-        _require(sampling_bias_energy is None, "bead-density bias uses bead-local energies")
-        _require(bead_bias_energies is not None, "bead-density bias energies are required")
-        values = np.asarray(bead_bias_energies, dtype=float)
-        _require(values.ndim == 2 and min(values.shape) > 0, "invalid bead-density bias table")
-        _require(np.isfinite(values).all(), "bead-density bias energies must be finite")
-        return np.mean(values, axis=1)
-
-    _require(bead_bias_energies is None, "this bias mode uses one complete-path sampling energy")
-    _require(sampling_bias_energy is not None, "sampling bias energy is required")
-    values = np.asarray(sampling_bias_energy, dtype=float)
-    _require(values.ndim == 1 and values.size > 0, "sampling bias energy must be a vector")
-    _require(np.isfinite(values).all(), "sampling bias energy must be finite")
-    return values
-
-
-def frame_log_weights(
-    weight_kind: str,
-    *,
-    bias_energy: Sequence[float] | np.ndarray | None = None,
-    kbt: float | None = None,
-    precomputed: Sequence[float] | np.ndarray | None = None,
-    quasi_static: bool | None = None,
-) -> np.ndarray:
-    """Build one log weight per complete ring-polymer frame.
-
-    ``fixed_bias`` and ``quasi_static_opes`` both use ``+U_bias / kBT``.  The
-    distinct names keep their sampling assumptions explicit.  In particular,
-    this function never subtracts an OPES ``rct`` column and does not infer that
-    an adaptive trajectory has reached the quasi-static regime.
-    """
-
-    kind = str(weight_kind)
-    _require(kind in WEIGHT_KINDS, f"unsupported PIMD weight kind: {kind}")
-    if kind == "precomputed":
-        _require(precomputed is not None, "precomputed log weights are required")
-        _require(bias_energy is None, "precomputed weights cannot also use bias energy")
-        raw = np.asarray(precomputed, dtype=float)
-    else:
-        _require(bias_energy is not None, f"bias energy is required for {kind}")
-        _require(precomputed is None, "bias-energy weights cannot also be precomputed")
-        _require(kbt is not None and np.isfinite(kbt) and kbt > 0.0, "kBT must be positive")
-        if kind == "quasi_static_opes":
-            _require(quasi_static is True, "quasi-static OPES must be declared explicitly")
-        raw = np.asarray(bias_energy, dtype=float) / float(kbt)
-    _require(raw.ndim == 1 and raw.size > 0, "frame weights must be a nonempty vector")
-    _require(np.isfinite(raw).all(), "frame weights must be finite")
-    return raw
-
-
-def restart_unique_indices(
-    frame_ids: Sequence[float] | np.ndarray,
-    *,
-    policy: str = "keep_first",
-) -> Tuple[np.ndarray, int]:
-    """Return indices after removing adjacent restart-seam duplicates."""
-
-    ids = np.asarray(frame_ids, dtype=float)
-    _require(ids.ndim == 1 and ids.size > 0, "frame ids must be a nonempty vector")
-    _require(np.isfinite(ids).all(), "frame ids must be finite")
-    _require(np.all(np.diff(ids) >= 0.0), "frame ids decrease across a restart seam")
-    _require(policy in {"error", "keep_first", "keep_last"}, "invalid restart policy")
-    duplicate = np.r_[False, ids[1:] == ids[:-1]]
-    count = int(np.count_nonzero(duplicate))
-    if count == 0:
-        return np.arange(ids.size), 0
-    if policy == "error":
-        raise ValueError("duplicate restart-seam frame ids")
-    if policy == "keep_first":
-        keep = ~duplicate
-    else:
-        keep = ~np.r_[ids[:-1] == ids[1:], False]
-    return np.flatnonzero(keep), count
-
-
-def assemble_bead_frames(
-    frame_ids: Sequence[int] | np.ndarray,
-    bead_ids: Sequence[int] | np.ndarray,
-    values: Sequence[float] | np.ndarray,
-    *,
-    expected_beads: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Assemble a long bead table into complete frame-by-bead arrays."""
-
-    frames = np.asarray(frame_ids)
-    beads = np.asarray(bead_ids)
-    data = np.asarray(values, dtype=float)
-    _require(frames.ndim == beads.ndim == 1, "frame and bead ids must be vectors")
-    _require(data.ndim in {1, 2}, "invalid bead value table")
-    _require(frames.size == beads.size == data.shape[0], "long-table row counts differ")
-    _require(frames.size > 0, "invalid bead value table")
-    _require(np.isfinite(data).all(), "bead values must be finite")
-    _require(
-        isinstance(expected_beads, (int, np.integer))
-        and not isinstance(expected_beads, (bool, np.bool_))
-        and expected_beads > 0,
-        "expected_beads must be a positive integer",
-    )
-
-    ordered_frames = []
-    groups: Dict[object, list[int]] = {}
-    for row, frame in enumerate(frames.tolist()):
-        if frame not in groups:
-            ordered_frames.append(frame)
-            groups[frame] = []
-        groups[frame].append(row)
-
-    first_rows = groups[ordered_frames[0]]
-    bead_labels = np.sort(beads[first_rows])
-    _require(len(bead_labels) == int(expected_beads), "first frame has missing beads")
-    _require(len(np.unique(bead_labels)) == len(bead_labels), "duplicate bead in first frame")
-    assembled = []
-    for frame in ordered_frames:
-        rows = groups[frame]
-        labels = beads[rows]
-        _require(len(rows) == int(expected_beads), f"frame {frame} has missing beads")
-        _require(len(np.unique(labels)) == len(labels), f"frame {frame} has duplicate beads")
-        _require(np.array_equal(np.sort(labels), bead_labels), f"frame {frame} bead ids differ")
-        order = np.argsort(labels)
-        assembled.append(data[np.asarray(rows)[order]])
-    return np.asarray(ordered_frames), bead_labels, np.asarray(assembled)
 
 
 def _histogram_log_mass(

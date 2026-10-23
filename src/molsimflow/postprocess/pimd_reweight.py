@@ -14,6 +14,16 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
+from molsimflow.postprocess.pimd.weights import (
+    cumulative_weight_diagnostics,
+)
+from molsimflow.postprocess.pimd.alignment import (
+    time_window_mask,
+    time_scale_to_fs,
+    time_values_to_fs,
+    aligned_time_indices,
+)
+
 
 from molsimflow.postprocess.pimd_fes import (
     bead_density_estimators,
@@ -293,94 +303,6 @@ def normalized_log_weights(raw: Sequence[float]) -> np.ndarray:
     return _normalized_log_weights(raw)
 
 
-def cumulative_weight_diagnostics(
-    weights: Sequence[float] | np.ndarray,
-    *,
-    log_weights: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Return prefix Kish ESS fraction and maximum share without overflow.
-
-    Supply log weights before exponentiation to preserve prefixes whose linear
-    weights would underflow to zero after full-trajectory normalization.
-    """
-    values = np.asarray(weights, dtype=float)
-    require(values.ndim == 1 and values.size > 0, "empty weights")
-    require(np.isfinite(values).all(), "invalid weights")
-    if not log_weights:
-        require(np.all(values > 0.0), "invalid weights")
-        values = np.log(values)
-    values = values - np.max(values)
-    total = np.logaddexp.accumulate(values)
-    squared_total = np.logaddexp.accumulate(2.0 * values)
-    count = np.arange(1, values.size + 1, dtype=float)
-    ess_fraction = np.exp(2.0 * total - squared_total) / count
-    maximum_share = np.exp(np.maximum.accumulate(values) - total)
-    return ess_fraction, maximum_share
-
-
-def time_window_mask(
-    values: Sequence[float] | np.ndarray,
-    first: float,
-    last: float,
-    *,
-    tolerance: float = 0.0,
-) -> np.ndarray:
-    """Select a finite closed time interval with an explicit tolerance."""
-    times = np.asarray(values, dtype=float)
-    require(times.ndim == 1 and times.size > 0, "invalid time axis")
-    require(np.isfinite(times).all(), "non-finite time axis")
-    require(float(first) <= float(last), "inverted time window")
-    require(float(tolerance) >= 0.0, "negative time-window tolerance")
-    return (times >= float(first) - float(tolerance)) & (
-        times <= float(last) + float(tolerance)
-    )
-
-
-def time_scale_to_fs(value: object, label: str) -> float:
-    """Validate one explicit conversion from an input time column to fs."""
-    try:
-        scale = float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"invalid {label}") from None
-    require(np.isfinite(scale) and scale > 0.0, f"invalid {label}")
-    return scale
-
-
-def time_values_to_fs(values: Sequence[float] | np.ndarray, scale: float) -> np.ndarray:
-    """Apply one validated raw-time conversion scale."""
-    return np.asarray(values, dtype=float) * scale
-
-
-def aligned_time_indices(
-    source: Sequence[float] | np.ndarray,
-    target: Sequence[float] | np.ndarray,
-    *,
-    tolerance: float = 1e-8,
-) -> np.ndarray:
-    """Match each target to one distinct source frame within a finite tolerance.
-
-    Missing or ambiguous matches raise instead of interpolating or reusing data.
-    """
-    source_times = np.asarray(source, dtype=float)
-    target_times = np.asarray(target, dtype=float)
-    require(source_times.ndim == target_times.ndim == 1, "invalid time-grid rank")
-    require(source_times.size > 0 and target_times.size > 0, "empty time grid")
-    require(np.isfinite(source_times).all(), "non-finite source time grid")
-    require(np.isfinite(target_times).all(), "non-finite target time grid")
-    require(np.all(np.diff(source_times) > 0.0), "source time grid is not strictly increasing")
-    require(np.all(np.diff(target_times) > 0.0), "target time grid is not strictly increasing")
-    tolerance = float(tolerance)
-    require(np.isfinite(tolerance) and tolerance >= 0.0, "invalid time-grid tolerance")
-    # Find the entire closed tolerance interval, not just its right neighbour.
-    indices = np.searchsorted(source_times, target_times - tolerance, side="left")
-    stops = np.searchsorted(source_times, target_times + tolerance, side="right")
-    matches = stops - indices
-    require(np.all(matches > 0), "target time is absent from source grid")
-    require(np.all(matches == 1), "ambiguous time-grid match within tolerance")
-    require(np.all(np.diff(indices) > 0), "target times map to the same source frame")
-    return indices
-
-
 def surface_difference_metrics(
     reference: np.ndarray, current: np.ndarray, support: np.ndarray
 ) -> Tuple[int, float, float]:
@@ -391,7 +313,6 @@ def surface_difference_metrics(
     require(count >= 2, "insufficient surface-comparison support")
     selected = difference[mask]
     return count, float(np.sqrt(np.mean(selected**2))), float(np.max(np.abs(selected)))
-
 
 
 def optional_surface_difference_metrics(
@@ -710,7 +631,6 @@ def weighted_log_kde_2d(
         output[start:stop] = np.asarray(logsumexp(exponent, axis=1))
     output -= math.log(2.0 * math.pi * hx * hy)
     return output.reshape(len(y_grid), len(x_grid))
-
 
 
 def quantum_kde_block_jackknife(
