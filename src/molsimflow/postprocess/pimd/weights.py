@@ -157,7 +157,6 @@ def prepare_weights(
     inputs: PreparedInputs,
     aligned: AlignedPaths,
 ) -> WeightedPaths:
-    from .reporting import write_kde_uncertainty
 
     reweight = inputs.reweight
     bias_mode = inputs.bias_mode
@@ -310,7 +309,6 @@ def prepare_weights(
     weights = np.exp(log_weights)
     require(abs(float(np.sum(weights)) - 1.0) <= 1e-12, "weight normalization failed")
 
-    write_kde_uncertainty(output, reweight, cv_names, beads, raw_log_weights, kbt_ev)
     return WeightedPaths(
         weight_kind=weight_kind,
         bias_column=bias_column,

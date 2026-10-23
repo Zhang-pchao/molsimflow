@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+from .kde import resolve_bandwidths
+from .reporting import write_kde_uncertainty
 from pathlib import Path
 from typing import Dict
 
@@ -31,6 +34,17 @@ def analyze(contract_path: Path, output: Path, *, _plotter=None) -> Dict[str, ob
     inputs = prepare_inputs(contract, output, profile)
     aligned = align_inputs(contract, output, profile, inputs)
     weighted = prepare_weights(contract, output, profile, inputs, aligned)
+    if "bandwidth_rule" in inputs.reweight:
+        explicit = bool(inputs.reweight.get("bandwidth_variants"))
+        inputs = replace(inputs, reweight=resolve_bandwidths(inputs.reweight, aligned.beads, weighted.weights))
+        (output / "qc" / "bandwidth-selection.json").write_text(json.dumps({
+            "rule": "weighted_scott", "selection": "explicit" if explicit else "computed",
+            "bandwidth_variants": inputs.reweight["bandwidth_variants"],
+            "scope": "Global frame-Kish rule; not correlation-adjusted or locally adaptive",
+        }, indent=2) + "\n", encoding="utf-8")
+    write_kde_uncertainty(output, inputs.reweight, aligned.cv_names, aligned.beads,
+                          weighted.raw_log_weights, weighted.kbt_ev)
+
     if len(aligned.cv_names) == 1:
         return finalize_core_1d(
             contract=contract,
