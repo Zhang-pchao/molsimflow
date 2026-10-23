@@ -27,7 +27,12 @@ class OpesState:
     counter: int
 
 
-def _build_state(fields: tuple[str, ...], metadata: dict[str, str], rows: list[list[float]], time_scale_to_fs: float) -> OpesState:
+def _build_state(
+    fields: tuple[str, ...],
+    metadata: dict[str, str],
+    rows: list[list[float]],
+    time_scale_to_fs: float,
+) -> OpesState:
     if len(fields) < 4 or fields[0] != "time" or fields[-1] != "height":
         raise ValueError("unsupported OPES STATE fields")
     if (len(fields) - 2) % 2:
@@ -40,7 +45,11 @@ def _build_state(fields: tuple[str, ...], metadata: dict[str, str], rows: list[l
         raise ValueError("expected a nonempty OPES_METAD STATE block")
     if len(set(names)) != len(names):
         raise ValueError("duplicate OPES STATE CV names")
-    if any(metadata.get(prefix + name, "none") != "none" for name in names for prefix in ("min_", "max_")):
+    if any(
+        metadata.get(prefix + name, "none") != "none"
+        for name in names
+        for prefix in ("min_", "max_")
+    ):
         raise ValueError("periodic OPES STATE fields are unsupported")
     values = np.asarray(rows, dtype=float)
     if values.ndim != 2 or values.shape[1] != len(fields) or not np.isfinite(values).all():
@@ -61,13 +70,30 @@ def _build_state(fields: tuple[str, ...], metadata: dict[str, str], rows: list[l
     centers = values[:, 1 : 1 + ncv].copy()
     sigmas = values[:, 1 + ncv : -1].copy()
     heights = values[:, -1].copy()
-    if (not np.isfinite(parameters).all() or biasfactor <= 1 or epsilon <= 0
-            or cutoff <= 0 or zed <= 0 or total <= 0 or counter <= 0
-            or np.any(sigmas <= 0) or np.any(heights < 0)):
+    if (
+        not np.isfinite(parameters).all()
+        or biasfactor <= 1
+        or epsilon <= 0
+        or cutoff <= 0
+        or zed <= 0
+        or total <= 0
+        or counter <= 0
+        or np.any(sigmas <= 0)
+        or np.any(heights < 0)
+    ):
         raise ValueError("invalid OPES STATE parameter or kernel")
     return OpesState(
-        float(time) * time_scale_to_fs, names, centers, sigmas, heights, biasfactor,
-        epsilon, cutoff, zed, total, counter,
+        float(time) * time_scale_to_fs,
+        names,
+        centers,
+        sigmas,
+        heights,
+        biasfactor,
+        epsilon,
+        cutoff,
+        zed,
+        total,
+        counter,
     )
 
 
@@ -106,7 +132,9 @@ def read_opes_states(path: Path, *, time_scale_to_fs: float = 1.0) -> tuple[Opes
                     raise ValueError("invalid OPES STATE numeric row") from exc
     if fields is not None:
         states.append(_build_state(fields, metadata, rows, time_scale_to_fs))
-    if not states or any(next_state.time_fs <= state.time_fs for state, next_state in zip(states, states[1:])):
+    if not states or any(
+        next_state.time_fs <= state.time_fs for state, next_state in zip(states, states[1:])
+    ):
         raise ValueError("OPES STATE blocks must have increasing times")
     if any(state.cv_names != states[0].cv_names for state in states[1:]):
         raise ValueError("OPES STATE CV fields changed")
@@ -114,7 +142,11 @@ def read_opes_states(path: Path, *, time_scale_to_fs: float = 1.0) -> tuple[Opes
 
 
 def evaluate_nonperiodic_opes_state(
-    state: OpesState, points: np.ndarray, *, kbt_eV: float, batch_size: int = 128,
+    state: OpesState,
+    points: np.ndarray,
+    *,
+    kbt_eV: float,
+    batch_size: int = 128,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return frozen OPES energy and negative CV gradient in eV and eV/CV.
 
@@ -124,11 +156,17 @@ def evaluate_nonperiodic_opes_state(
     values = np.asarray(points, dtype=float)
     if values.ndim == 1:
         values = values[None, :]
-    if (values.ndim != 2 or values.shape[1] != len(state.cv_names)
-            or not values.size or not np.isfinite(values).all()
-            or not np.isfinite(kbt_eV) or kbt_eV <= 0
-            or not isinstance(batch_size, int) or isinstance(batch_size, bool)
-            or batch_size <= 0):
+    if (
+        values.ndim != 2
+        or values.shape[1] != len(state.cv_names)
+        or not values.size
+        or not np.isfinite(values).all()
+        or not np.isfinite(kbt_eV)
+        or kbt_eV <= 0
+        or not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or batch_size <= 0
+    ):
         raise ValueError("invalid CV points, kBT, or batch size")
     energy = np.empty(len(values), dtype=float)
     cv_force = np.empty_like(values)
@@ -145,12 +183,15 @@ def evaluate_nonperiodic_opes_state(
         kernel = state.heights[None, :] * np.where(inside, gaussian - cutoff_value, 0.0)
         probability = np.sum(kernel, axis=1) / state.sum_weights
         deriv_kernel = np.where(inside, state.heights[None, :] * gaussian, 0.0)
-        probability_gradient = np.sum(
-            -deriv_kernel[:, :, None] * delta / (state.sigmas[None, :, :] ** 2),
-            axis=1,
-        ) / state.sum_weights
+        probability_gradient = (
+            np.sum(
+                -deriv_kernel[:, :, None] * delta / (state.sigmas[None, :, :] ** 2),
+                axis=1,
+            )
+            / state.sum_weights
+        )
         energy[first:last] = prefactor * np.log(probability / state.zed + state.epsilon)
-        cv_force[first:last] = -prefactor * probability_gradient / (
-            probability[:, None] + state.zed * state.epsilon
+        cv_force[first:last] = (
+            -prefactor * probability_gradient / (probability[:, None] + state.zed * state.epsilon)
         )
     return energy, cv_force

@@ -759,7 +759,7 @@ def plot_ionization_events(
     plt, _ = _matplotlib()
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.8), constrained_layout=True)
     bead_colors = ("#93c5fd", "#60a5fa", "#3b82f6", "#1d4ed8")
-    for bead, color in enumerate(bead_colors[:beads.shape[1]]):
+    for bead, color in enumerate(bead_colors[: beads.shape[1]]):
         axes[0].plot(
             time_ps,
             beads[:, bead],
@@ -816,7 +816,8 @@ def plot_ionization_events(
 
 
 def fes_plot_limit(
-    surfaces: Mapping[str, np.ndarray], supports: Mapping[str, np.ndarray],
+    surfaces: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
     requested: float | None,
 ) -> float:
     """Use an explicit cap or a rounded supported-energy percentile for plots."""
@@ -837,21 +838,39 @@ def fes_plot_limit(
     return float(next(value * order for value in (1, 2, 3, 5, 10) if value * order >= high))
 
 
-
-def plot_fes2d_discrete(output: Path, x_grid: np.ndarray, y_grid: np.ndarray, surfaces_kcal: Mapping[str, np.ndarray], supports: Mapping[str, np.ndarray], max_kcal: float | None, cv_labels: Sequence[str], *, zoom: Sequence[Sequence[float]] | None=None, suffix: str='', sampling_label: str='Centroid', bias_mode: str='centroid_coord', protocol_label: str='bias', bead_count: int | None=None, energy_unit="kJ/mol", _save_figure=None) -> None:
-    _save_figure = save_figure if _save_figure is None else _save_figure
-    require(energy_unit in {"kJ/mol", "kcal/mol"}, "unsupported FES display energy unit")
-    if energy_unit == "kJ/mol":
-        surfaces_kcal = {name: np.asarray(value) * KCAL_TO_KJ_MOL for name, value in surfaces_kcal.items()}
-        max_kcal = None if max_kcal is None else float(max_kcal) * KCAL_TO_KJ_MOL
+def plot_fes2d_discrete(
+    output: Path,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    surfaces_kcal: Mapping[str, np.ndarray],
+    supports: Mapping[str, np.ndarray],
+    max_kcal: float | None,
+    cv_labels: Sequence[str],
+    *,
+    zoom: Sequence[Sequence[float]] | None = None,
+    suffix: str = "",
+    sampling_label: str = "Centroid",
+    bias_mode: str = "centroid_coord",
+    protocol_label: str = "bias",
+    bead_count: int | None = None,
+    energy_unit="kJ/mol",
+    _save_figure=None,
+) -> None:
     """Render supported KDE FES in the discrete comparison style.
 
     The palette and layout are defaults; the color scale follows the supported
     values unless a positive cap is supplied by the contract.
     """
+    _save_figure = save_figure if _save_figure is None else _save_figure
+    require(energy_unit in {"kJ/mol", "kcal/mol"}, "unsupported FES display energy unit")
+    if energy_unit == "kJ/mol":
+        surfaces_kcal = {
+            name: np.asarray(value) * KCAL_TO_KJ_MOL for name, value in surfaces_kcal.items()
+        }
+        max_kcal = None if max_kcal is None else float(max_kcal) * KCAL_TO_KJ_MOL
     plt, _ = _matplotlib()
-    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
     from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
 
     cap = fes_plot_limit(surfaces_kcal, supports, max_kcal)
     levels = np.linspace(0.0, cap, len(FES_COLORS) + 1)
@@ -874,23 +893,34 @@ def plot_fes2d_discrete(output: Path, x_grid: np.ndarray, y_grid: np.ndarray, su
             np.minimum(np.asarray(surfaces_kcal[name], dtype=float), cap),
         )
         if np.any(support):
-            image = axis.contourf(
-                x_grid, y_grid, values, levels=levels, cmap=cmap, norm=norm
-            )
+            image = axis.contourf(x_grid, y_grid, values, levels=levels, cmap=cmap, norm=norm)
             axis.contour(
-                x_grid, y_grid, values, levels=levels, colors="black",
-                linewidths=0.27, alpha=0.58,
+                x_grid,
+                y_grid,
+                values,
+                levels=levels,
+                colors="black",
+                linewidths=0.27,
+                alpha=0.58,
             )
         else:
-            axis.text(0.5, 0.5, "Insufficient support", transform=axis.transAxes,
-                      ha="center", va="center")
+            axis.text(
+                0.5, 0.5, "Insufficient support", transform=axis.transAxes, ha="center", va="center"
+            )
         axis.set_title(title)
         axis.set_xlabel(cv_labels[0])
         axis.tick_params(direction="in", top=True, right=True)
-        axis.text(0.02, 0.96, f"({chr(97 + index)})", transform=axis.transAxes,
-                  ha="left", va="top", fontweight="bold", fontsize=12,
-                  bbox={"facecolor": "white", "edgecolor": "none",
-                        "alpha": 0.78, "pad": 1.5})
+        axis.text(
+            0.02,
+            0.96,
+            f"({chr(97 + index)})",
+            transform=axis.transAxes,
+            ha="left",
+            va="top",
+            fontweight="bold",
+            fontsize=12,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 1.5},
+        )
     axes[0].set_ylabel(cv_labels[1])
     if zoom is not None:
         for axis in axes:
@@ -898,15 +928,19 @@ def plot_fes2d_discrete(output: Path, x_grid: np.ndarray, y_grid: np.ndarray, su
             axis.set_ylim(*zoom[1])
     ticks = np.linspace(0.0, cap, 6)
     colorbar = fig.colorbar(
-        image, ax=axes, orientation="vertical", label=f"Free energy ({energy_unit})",
-        ticks=ticks, fraction=0.025, pad=0.025,
+        image,
+        ax=axes,
+        orientation="vertical",
+        label=f"Free energy ({energy_unit})",
+        ticks=ticks,
+        fraction=0.025,
+        pad=0.025,
     )
     colorbar.ax.set_yticklabels([f"{tick:g}" for tick in ticks[:-1]] + [f">{cap:g}"])
     bead_prefix = f"P={bead_count} " if bead_count is not None else ""
     fig.suptitle(f"{bead_prefix}reweighted free-energy comparison", y=1.03)
     _save_figure(fig, output / "figures" / f"fes2d-comparison{suffix}")
     plt.close(fig)
-
 
 
 class _ConfiguredPlotter:
@@ -918,8 +952,9 @@ class _ConfiguredPlotter:
         return getattr(self.base, name)
 
     def plot_fes2d(self, *args, **kwargs):
-        return plot_fes2d_discrete(*args, **kwargs, energy_unit=self.energy_unit,
-                                   _save_figure=self.base.save_figure)
+        return plot_fes2d_discrete(
+            *args, **kwargs, energy_unit=self.energy_unit, _save_figure=self.base.save_figure
+        )
 
 
 def configure_plotter(base, plots):

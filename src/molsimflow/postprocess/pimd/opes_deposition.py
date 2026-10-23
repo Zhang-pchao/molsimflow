@@ -35,30 +35,44 @@ class OpesDepositionComparison:
 
 
 def _kernel_cv_names(fields: tuple[str, ...]) -> tuple[str, ...]:
-    if (len(fields) < 5 or fields[0] != "time"
-            or fields[-2:] != ("height", "logweight")
-            or (len(fields) - 3) % 2):
+    if (
+        len(fields) < 5
+        or fields[0] != "time"
+        or fields[-2:] != ("height", "logweight")
+        or (len(fields) - 3) % 2
+    ):
         raise ValueError("unsupported OPES_METAD KERNELS fields")
     count = (len(fields) - 3) // 2
     names = fields[1 : 1 + count]
-    if (len(set(names)) != count
-            or fields[1 + count : -2] != tuple(f"sigma_{name}" for name in names)):
+    if len(set(names)) != count or fields[1 + count : -2] != tuple(
+        f"sigma_{name}" for name in names
+    ):
         raise ValueError("KERNELS CV and sigma fields do not match")
     return names
 
 
 def read_opes_kernel_batches(
-    path: Path, selected_times: Sequence[float], *, expected_rows_per_time: int | None = None,
+    path: Path,
+    selected_times: Sequence[float],
+    *,
+    expected_rows_per_time: int | None = None,
 ) -> tuple[OpesKernelBatch, ...]:
     """Stream exact selected deposition times from an append-only KERNELS file."""
     wanted = np.asarray(selected_times, dtype=float)
-    if (wanted.ndim != 1 or wanted.size == 0 or not np.isfinite(wanted).all()
-            or np.any(np.diff(wanted) <= 0)
-            or (expected_rows_per_time is not None and (
+    if (
+        wanted.ndim != 1
+        or wanted.size == 0
+        or not np.isfinite(wanted).all()
+        or np.any(np.diff(wanted) <= 0)
+        or (
+            expected_rows_per_time is not None
+            and (
                 not isinstance(expected_rows_per_time, int)
                 or isinstance(expected_rows_per_time, bool)
                 or expected_rows_per_time <= 0
-            ))):
+            )
+        )
+    ):
         raise ValueError("selected times and expected row count must be valid")
     selected = {float(time): [] for time in wanted}
     fields: tuple[str, ...] | None = None
@@ -97,16 +111,22 @@ def read_opes_kernel_batches(
     result = []
     for time, rows in selected.items():
         data = np.vstack(rows)
-        if (expected_rows_per_time is not None and len(data) != expected_rows_per_time):
+        if expected_rows_per_time is not None and len(data) != expected_rows_per_time:
             raise ValueError("selected KERNELS batch has an unexpected row count")
         sigmas = data[:, 1 + count : -2].copy()
         heights = data[:, -2].copy()
         if np.any(sigmas <= 0) or np.any(heights < 0):
             raise ValueError("invalid KERNELS widths or heights")
-        result.append(OpesKernelBatch(
-            time, names, data[:, 1 : 1 + count].copy(), sigmas,
-            heights, data[:, -1].copy(),
-        ))
+        result.append(
+            OpesKernelBatch(
+                time,
+                names,
+                data[:, 1 : 1 + count].copy(),
+                sigmas,
+                heights,
+                data[:, -1].copy(),
+            )
+        )
     return tuple(result)
 
 
@@ -128,11 +148,17 @@ def compare_opes_deposition_weights(
     points = np.asarray(bead_cv, dtype=float)
     local = np.asarray(local_reference_bias_eV, dtype=float)
     count = len(batch.logweights)
-    if (points.shape != (count, len(batch.cv_names)) or local.shape != (count,)
-            or not np.isfinite(points).all() or not np.isfinite(local).all()
-            or not np.isfinite(common_path_bias_eV)
-            or not np.isfinite(kbt_eV) or kbt_eV <= 0
-            or not np.isfinite(cv_tolerance) or cv_tolerance <= 0):
+    if (
+        points.shape != (count, len(batch.cv_names))
+        or local.shape != (count,)
+        or not np.isfinite(points).all()
+        or not np.isfinite(local).all()
+        or not np.isfinite(common_path_bias_eV)
+        or not np.isfinite(kbt_eV)
+        or kbt_eV <= 0
+        or not np.isfinite(cv_tolerance)
+        or cv_tolerance <= 0
+    ):
         raise ValueError("invalid bead CV, bias, kBT, or matching tolerance")
     error = np.max(np.abs(batch.centers[:, None, :] - points[None, :, :]), axis=2)
     matched = np.argmin(error, axis=1)

@@ -14,9 +14,7 @@ from molsimflow.postprocess.pimd_route_diagnostics import (
 
 def test_distance_fractions_and_deep_split_keep_frame_grain():
     values = np.array([[1.0, 2.4, 2.6, 3.2], [2.4, 2.45, 2.5, 2.55]])
-    result = distance_frame_metrics(
-        values, thresholds=[2.25, 2.5, 2.75], deep_bounds=(2.0, 3.0)
-    )
+    result = distance_frame_metrics(values, thresholds=[2.25, 2.5, 2.75], deep_bounds=(2.0, 3.0))
     np.testing.assert_allclose(result.fraction_ge, [[0.75, 0.5, 0.25], [1.0, 0.5, 0.0]])
     np.testing.assert_array_equal(result.straddles, [[True, True, True], [False, True, False]])
     np.testing.assert_array_equal(result.deep_split, [True, False])
@@ -27,7 +25,8 @@ def test_distance_fractions_and_deep_split_keep_frame_grain():
 def test_episodes_break_at_unsampled_gap_and_inactive_frame():
     result = contiguous_episodes(
         [0, 4000, 8000, 16000, 20000],
-        [True, True, False, True, True], stride=4000,
+        [True, True, False, True, True],
+        stride=4000,
     )
     assert result == [
         {"first_step": 0, "last_step": 4000, "frames": 2},
@@ -52,10 +51,16 @@ def test_region_support_uses_one_weight_per_path():
 
 
 def test_nearest_oxygen_proxy_pair_and_periodic_invariance():
-    xyz = np.array([
-        [1.0, 1, 1], [6.0, 1, 1],
-        [1.9, 1, 1], [5.1, 1, 1], [6.9, 1, 1], [7.2, 1, 1],
-    ])
+    xyz = np.array(
+        [
+            [1.0, 1, 1],
+            [6.0, 1, 1],
+            [1.9, 1, 1],
+            [5.1, 1, 1],
+            [6.9, 1, 1],
+            [7.2, 1, 1],
+        ]
+    )
     types = np.array([2, 2, 1, 1, 1, 1])
     original = nearest_oxygen_proxy(xyz, types, np.full(3, 20.0))
     assert original["single_pair_proxy"]
@@ -82,8 +87,7 @@ def test_invalid_arrays_fail_closed():
 def test_selected_plumed_reader_aligns_and_fails_on_missing_time(tmp_path):
     table = tmp_path / "COLVAR"
     table.write_text(
-        "#! FIELDS time iondistance opes.bias\n"
-        "0 0.1 -0.5\n1000 2.4 -0.3\n2000 2.6 -0.2\n"
+        "#! FIELDS time iondistance opes.bias\n0 0.1 -0.5\n1000 2.4 -0.3\n2000 2.6 -0.2\n"
     )
     data = read_plumed_selected(table, [0, 2000], ["iondistance", "opes.bias"])
     np.testing.assert_allclose(data["iondistance"], [0.1, 2.6])
@@ -93,6 +97,7 @@ def test_selected_plumed_reader_aligns_and_fails_on_missing_time(tmp_path):
 
 def test_selected_reader_rejects_header_drift_and_duplicate_times(tmp_path):
     import pytest
+
     path = tmp_path / "COLVAR"
     path.write_text("#! FIELDS time x\n0 1\n#! FIELDS time y\n1 2\n")
     with pytest.raises(ValueError, match="FIELDS"):

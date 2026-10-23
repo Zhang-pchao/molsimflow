@@ -6,12 +6,12 @@ import math
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
-from .units import EV_TO_KCAL_MOL
 
 from .kde import weighted_log_kde_1d, weighted_log_kde_2d
 from .types import (
     validate_primary_estimator,
 )
+from .units import EV_TO_KCAL_MOL
 from .weights import normalized_log_weights
 
 
@@ -385,7 +385,6 @@ def histogram_edges_for_kde_grid(grid: np.ndarray, sigma: float) -> np.ndarray:
     return np.linspace(values[0], values[-1], bins + 1)
 
 
-
 def weighted_unsmoothed_path_histogram(
     beads: np.ndarray,
     raw_log_weights: np.ndarray,
@@ -421,19 +420,13 @@ def weighted_unsmoothed_path_histogram(
         indices.append(index)
     cell_count = math.prod(shape)
     flat = np.ravel_multi_index(tuple(index[valid] for index in indices), shape)
-    path_logs = np.broadcast_to(
-        log_weights[:, None] - math.log(values.shape[1]), values.shape[:2]
-    )
+    path_logs = np.broadcast_to(log_weights[:, None] - math.log(values.shape[1]), values.shape[:2])
     log_mass = np.full(cell_count, -np.inf, dtype=float)
     np.logaddexp.at(log_mass, flat, path_logs[valid])
     observed_beads = np.bincount(flat, minlength=cell_count)
-    frame_ids = np.broadcast_to(
-        np.arange(values.shape[0])[:, None], values.shape[:2]
-    )
+    frame_ids = np.broadcast_to(np.arange(values.shape[0])[:, None], values.shape[:2])
     frame_cell_pairs = np.unique(frame_ids[valid] * cell_count + flat)
-    observed_frames = np.bincount(
-        frame_cell_pairs % cell_count, minlength=cell_count
-    )
+    observed_frames = np.bincount(frame_cell_pairs % cell_count, minlength=cell_count)
     bin_volume = np.ones(shape, dtype=float)
     for axis, edge in enumerate(bins):
         broadcast_shape = [1] * len(shape)
@@ -454,7 +447,12 @@ def weighted_unsmoothed_path_histogram(
         "out_of_grid_weight_mass": float(max(0.0, 1.0 - np.sum(np.exp(log_mass)))),
     }
     if len(shape) == 2:
-        for key in ("fes_kcal_mol", "support", "weight_mass",
-                    "observed_beads", "observed_complete_frames"):
+        for key in (
+            "fes_kcal_mol",
+            "support",
+            "weight_mass",
+            "observed_beads",
+            "observed_complete_frames",
+        ):
             result[key] = np.asarray(result[key]).T
     return result

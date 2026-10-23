@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from molsimflow.io.lammps_dump import minimum_image_vectors
+
 from .weights import normalized_log_weights
 
 
@@ -44,33 +45,56 @@ def distance_frame_metrics(
     bounds = np.asarray(deep_bounds, dtype=float)
     if values.ndim != 2 or min(values.shape) == 0 or not np.isfinite(values).all():
         raise ValueError("bead_distance must be a nonempty finite frame-by-bead array")
-    if cuts.ndim != 1 or cuts.size == 0 or not np.isfinite(cuts).all() or np.any(np.diff(cuts) <= 0):
+    if (
+        cuts.ndim != 1
+        or cuts.size == 0
+        or not np.isfinite(cuts).all()
+        or np.any(np.diff(cuts) <= 0)
+    ):
         raise ValueError("thresholds must be finite, nonempty, and increasing")
-    if (levels.ndim != 1 or levels.size == 0 or not np.isfinite(levels).all()
-            or np.any((levels < 0) | (levels > 1)) or np.any(np.diff(levels) <= 0)):
+    if (
+        levels.ndim != 1
+        or levels.size == 0
+        or not np.isfinite(levels).all()
+        or np.any((levels < 0) | (levels > 1))
+        or np.any(np.diff(levels) <= 0)
+    ):
         raise ValueError("quantile_levels must increase within [0,1]")
     if bounds.shape != (2,) or not np.isfinite(bounds).all() or bounds[0] >= bounds[1]:
         raise ValueError("deep_bounds must be two increasing finite values")
     fraction = np.mean(values[:, :, None] >= cuts[None, None, :], axis=1)
     return DistanceFrameMetrics(
-        cuts, levels, np.quantile(values, levels, axis=1).T,
-        np.mean(values, axis=1), np.var(values, axis=1), fraction,
+        cuts,
+        levels,
+        np.quantile(values, levels, axis=1).T,
+        np.mean(values, axis=1),
+        np.var(values, axis=1),
+        fraction,
         (fraction > 0) & (fraction < 1),
         (np.min(values, axis=1) < bounds[0]) & (np.max(values, axis=1) >= bounds[1]),
     )
 
 
 def contiguous_episodes(
-    steps: Sequence[int], mask: Sequence[bool], *, stride: int,
+    steps: Sequence[int],
+    mask: Sequence[bool],
+    *,
+    stride: int,
 ) -> list[dict[str, int]]:
     """Group adjacent saved frames; durations are grid spans, not reaction lifetimes."""
     times = np.asarray(steps)
     active = np.asarray(mask)
-    if (times.ndim != 1 or active.shape != times.shape or times.size == 0
-            or not np.issubdtype(times.dtype, np.integer)
-            or not np.issubdtype(active.dtype, np.bool_)
-            or not isinstance(stride, int) or isinstance(stride, bool) or stride <= 0
-            or np.any(np.diff(times) <= 0)):
+    if (
+        times.ndim != 1
+        or active.shape != times.shape
+        or times.size == 0
+        or not np.issubdtype(times.dtype, np.integer)
+        or not np.issubdtype(active.dtype, np.bool_)
+        or not isinstance(stride, int)
+        or isinstance(stride, bool)
+        or stride <= 0
+        or np.any(np.diff(times) <= 0)
+    ):
         raise ValueError("steps/mask must be aligned, increasing integer/bool vectors")
     episodes: list[dict[str, int]] = []
     start = last = None
@@ -93,16 +117,23 @@ def contiguous_episodes(
 
 
 def regional_weight_support(
-    frame_fraction: Sequence[float], log_weights: Sequence[float], block_ids: Sequence[int],
+    frame_fraction: Sequence[float],
+    log_weights: Sequence[float],
+    block_ids: Sequence[int],
 ) -> dict[str, object]:
     """Summarize a region using whole-frame weights and within-frame bead fractions."""
     fraction = np.asarray(frame_fraction, dtype=float)
     raw = np.asarray(log_weights, dtype=float)
     blocks = np.asarray(block_ids)
-    if (fraction.ndim != 1 or raw.shape != fraction.shape or blocks.shape != fraction.shape
-            or fraction.size == 0 or not np.isfinite(fraction).all()
-            or np.any((fraction < 0) | (fraction > 1))
-            or not np.issubdtype(blocks.dtype, np.integer)):
+    if (
+        fraction.ndim != 1
+        or raw.shape != fraction.shape
+        or blocks.shape != fraction.shape
+        or fraction.size == 0
+        or not np.isfinite(fraction).all()
+        or np.any((fraction < 0) | (fraction > 1))
+        or not np.issubdtype(blocks.dtype, np.integer)
+    ):
         raise ValueError("region fractions, log weights, and block IDs must align")
     weights = np.exp(normalized_log_weights(raw))
     contributions = weights * fraction
@@ -127,17 +158,23 @@ def regional_weight_support(
     }
 
 
-
 def read_plumed_selected(
-    path: Path, times_fs: Sequence[int], columns: Sequence[str], *, time_scale_to_fs: float = 1.0,
+    path: Path,
+    times_fs: Sequence[int],
+    columns: Sequence[str],
+    *,
+    time_scale_to_fs: float = 1.0,
 ) -> dict[str, np.ndarray]:
     """Stream exact PLUMED rows for declared times without loading dense COLVAR."""
     if not np.isfinite(time_scale_to_fs) or time_scale_to_fs <= 0:
         raise ValueError("time_scale_to_fs must be finite and positive")
     wanted = np.asarray(times_fs)
-    if (wanted.ndim != 1 or wanted.size == 0
-            or not np.issubdtype(wanted.dtype, np.integer)
-            or np.any(np.diff(wanted) <= 0)):
+    if (
+        wanted.ndim != 1
+        or wanted.size == 0
+        or not np.issubdtype(wanted.dtype, np.integer)
+        or np.any(np.diff(wanted) <= 0)
+    ):
         raise ValueError("times_fs must be a nonempty increasing integer vector")
     names = tuple(columns)
     if not names or len(set(names)) != len(names):
@@ -202,10 +239,17 @@ def nearest_oxygen_proxy(
     xyz = np.asarray(positions, dtype=float)
     types = np.asarray(atom_types)
     lengths = np.asarray(box, dtype=float)
-    if (xyz.ndim != 2 or xyz.shape[1] != 3 or types.shape != (xyz.shape[0],)
-            or lengths.shape != (3,) or not np.isfinite(xyz).all()
-            or not np.isfinite(lengths).all() or np.any(lengths <= 0)
-            or not np.isfinite(ambiguity_gap) or ambiguity_gap <= 0):
+    if (
+        xyz.ndim != 2
+        or xyz.shape[1] != 3
+        or types.shape != (xyz.shape[0],)
+        or lengths.shape != (3,)
+        or not np.isfinite(xyz).all()
+        or not np.isfinite(lengths).all()
+        or np.any(lengths <= 0)
+        or not np.isfinite(ambiguity_gap)
+        or ambiguity_gap <= 0
+    ):
         raise ValueError("invalid positions, types, box, or ambiguity_gap")
     oxygen = xyz[types == oxygen_type]
     hydrogen = xyz[types == hydrogen_type]
@@ -223,18 +267,20 @@ def nearest_oxygen_proxy(
     gaps = next_nearest - nearest
     counts = np.bincount(first, minlength=len(oxygen))
     neutral = bool(np.all(counts == 2))
-    pair = bool(np.count_nonzero(counts == 1) == 1
-                and np.count_nonzero(counts == 3) == 1
-                and np.count_nonzero(counts == 2) == len(oxygen) - 2)
+    pair = bool(
+        np.count_nonzero(counts == 1) == 1
+        and np.count_nonzero(counts == 3) == 1
+        and np.count_nonzero(counts == 2) == len(oxygen) - 2
+    )
     pair_oo = None
     pair_oxygen_indices = None
     if pair:
         anion = int(np.flatnonzero(counts == 1)[0])
         cation = int(np.flatnonzero(counts == 3)[0])
         pair_oxygen_indices = [anion, cation]
-        pair_oo = float(np.linalg.norm(
-            minimum_image_vectors(oxygen[anion] - oxygen[cation], lengths)
-        ))
+        pair_oo = float(
+            np.linalg.norm(minimum_image_vectors(oxygen[anion] - oxygen[cation], lengths))
+        )
     h = int(np.argmin(gaps))
     return {
         "nearest_oxygen_counts": counts.astype(int).tolist(),

@@ -35,8 +35,7 @@ def test_state_blocks_and_nonperiodic_field(tmp_path: Path) -> None:
     r2_0 = 0.3**2 + (-0.2 / 2) ** 2
     r2_1 = ((0.3 - 1) / 2) ** 2 + (-0.2 - 1) ** 2
     probability = (
-        2 * (np.exp(-r2_0 / 2) - np.exp(-4.5))
-        + 3 * (np.exp(-r2_1 / 2) - np.exp(-4.5))
+        2 * (np.exp(-r2_0 / 2) - np.exp(-4.5)) + 3 * (np.exp(-r2_1 / 2) - np.exp(-4.5))
     ) / 5
     expected = 0.025 * (1 - 1 / 20) * np.log(probability / 0.5 + 1e-6)
     assert energy[0] == pytest.approx(expected, abs=1e-15)
@@ -78,5 +77,5 @@ def test_reject_nonmonotonic_and_malformed_states(tmp_path: Path) -> None:
 def test_state_preserves_fractional_time_with_declared_scale(tmp_path):
     path = tmp_path / "STATE"
     path.write_text(_state_text(100).replace("100 ", "0.125 "))
-    state = read_opes_states(path, time_scale_to_fs=1000.)[0]
-    assert state.time_fs == 125.
+    state = read_opes_states(path, time_scale_to_fs=1000.0)[0]
+    assert state.time_fs == 125.0
