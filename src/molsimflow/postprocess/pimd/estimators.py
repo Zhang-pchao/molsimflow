@@ -1,11 +1,17 @@
 """Bead-density estimators and their distinct support and gauge conventions."""
+
 from __future__ import annotations
+
 import math
 from typing import Dict, Sequence, Tuple
+
 import numpy as np
-from .types import validate_primary_estimator
-from .weights import normalized_log_weights
+
 from .kde import weighted_log_kde_1d, weighted_log_kde_2d
+from .types import (
+    validate_primary_estimator,
+)
+from .weights import normalized_log_weights
 
 
 def require(condition: bool, message: str) -> None:
@@ -23,8 +29,10 @@ def _histogram_log_mass(
 
     values = np.asarray(samples, dtype=float)
     logs = np.asarray(log_weights, dtype=float)
-    _require(values.ndim == logs.ndim == 1 and values.shape == logs.shape,
-             "histogram samples and log weights must be matching vectors")
+    _require(
+        values.ndim == logs.ndim == 1 and values.shape == logs.shape,
+        "histogram samples and log weights must be matching vectors",
+    )
     bins = np.searchsorted(edges, values, side="right") - 1
     bins[values == edges[-1]] = len(edges) - 2
     result = np.full(len(edges) - 1, -np.inf)
@@ -33,7 +41,6 @@ def _histogram_log_mass(
         if selected.size:
             result[index] = np.logaddexp.reduce(selected)
     return result
-
 
 
 def quantum_histogram_masses(
@@ -76,7 +83,9 @@ def quantum_histogram_masses(
         log_conditional = log_direct.copy()
         conditional = direct.copy()
     else:
-        _require(conditioning is not None and conditioning_edges is not None, "incomplete conditioning")
+        _require(
+            conditioning is not None and conditioning_edges is not None, "incomplete conditioning"
+        )
         condition = np.asarray(conditioning, dtype=float)
         condition_edges = np.asarray(conditioning_edges, dtype=float)
         _require(condition.shape == log_weights.shape, "conditioning must have one value per frame")
@@ -121,7 +130,6 @@ def quantum_histogram_masses(
     }
 
 
-
 def bead_density_estimators(
     log_bead_density: Sequence[Sequence[float]] | np.ndarray,
     kbt: float,
@@ -161,9 +169,7 @@ def bead_density_estimators(
     probability_support = np.isfinite(raw_probability_mean)
     common_support = probability_support & np.isfinite(raw_free_energy_mean)
     _require(np.any(probability_support), "no finite probability-mean support")
-    raw_primary = (
-        raw_probability_mean if primary == "probability_mean" else raw_free_energy_mean
-    )
+    raw_primary = raw_probability_mean if primary == "probability_mean" else raw_free_energy_mean
     primary_support = np.isfinite(raw_primary)
     _require(np.any(primary_support), f"no finite {primary} support")
     zero = float(np.min(raw_primary[primary_support]))
@@ -180,7 +186,6 @@ def bead_density_estimators(
         "common_support": common_support,
         "zero_reference": zero,
     }
-
 
 
 def quantum_fes_1d(
@@ -202,9 +207,7 @@ def quantum_fes_1d(
     edges = np.asarray(bin_edges, dtype=float)
     masses = quantum_histogram_masses(bead_cv, log_frame_weights, edges)
     log_bead_density = np.asarray(masses["log_per_bead"]) - np.log(np.diff(edges))[None, :]
-    result = bead_density_estimators(
-        log_bead_density, kbt, primary_estimator=primary_estimator
-    )
+    result = bead_density_estimators(log_bead_density, kbt, primary_estimator=primary_estimator)
     return {
         **result,
         # Compatibility aliases; equation numbers do not define the estimator.
@@ -216,13 +219,11 @@ def quantum_fes_1d(
     }
 
 
-
 def alternate_estimator(primary_estimator: str) -> str:
     """Return the estimator reported alongside the selected primary result."""
 
     primary = validate_primary_estimator(primary_estimator)
     return "free_energy_mean" if primary == "probability_mean" else "probability_mean"
-
 
 
 def estimator_support_masks(
@@ -236,9 +237,13 @@ def estimator_support_masks(
     sampling = np.asarray(log_sampling_density, dtype=float)
     probability = np.asarray(log_probability_mean, dtype=float)
     beads = np.asarray(log_bead_density, dtype=float)
-    require(beads.shape[1:] == sampling.shape == probability.shape, "support density shape mismatch")
-    require(np.isfinite(sampling).all() and np.isfinite(probability).all()
-            and np.isfinite(beads).all(), "non-finite KDE density")
+    require(
+        beads.shape[1:] == sampling.shape == probability.shape, "support density shape mismatch"
+    )
+    require(
+        np.isfinite(sampling).all() and np.isfinite(probability).all() and np.isfinite(beads).all(),
+        "non-finite KDE density",
+    )
     sampling_support = sampling - np.max(sampling) >= log_relative_threshold
     probability_support = probability - np.max(probability) >= log_relative_threshold
     bead_axes = tuple(range(1, beads.ndim))
@@ -256,7 +261,6 @@ def estimator_support_masks(
         "sampling_probability_common": sampling_support & probability_support,
         "sampling_free_energy_common": sampling_support & free_energy_support,
     }
-
 
 
 def compute_surfaces(
@@ -281,12 +285,8 @@ def compute_surfaces(
             for bead in range(beads.shape[1])
         ]
     )
-    log_centroid = weighted_log_kde_2d(
-        centroid, log_weights, x_grid, y_grid, bandwidth
-    )
-    estimators = bead_density_estimators(
-        log_beads, kbt_ev, primary_estimator=primary_estimator
-    )
+    log_centroid = weighted_log_kde_2d(centroid, log_weights, x_grid, y_grid, bandwidth)
+    estimators = bead_density_estimators(log_beads, kbt_ev, primary_estimator=primary_estimator)
     raw_sampling = -float(kbt_ev) * log_centroid
     return {
         "log_weights": log_weights,
@@ -301,7 +301,6 @@ def compute_surfaces(
         "probability_mean": estimators["probability_mean"],
         "free_energy_mean": estimators["free_energy_mean"],
     }
-
 
 
 def compute_marginals(
@@ -321,12 +320,8 @@ def compute_marginals(
             for bead in range(beads.shape[1])
         ]
     )
-    log_centroid = weighted_log_kde_1d(
-        centroid[:, component], log_weights, grid, bandwidth
-    )
-    estimators = bead_density_estimators(
-        log_beads, kbt_ev, primary_estimator=primary_estimator
-    )
+    log_centroid = weighted_log_kde_1d(centroid[:, component], log_weights, grid, bandwidth)
+    estimators = bead_density_estimators(log_beads, kbt_ev, primary_estimator=primary_estimator)
     sampling_f = -float(kbt_ev) * log_centroid
     return {
         "centroid": sampling_f - np.min(sampling_f),
@@ -336,7 +331,6 @@ def compute_marginals(
         "log_probability_mean": estimators["log_probability_mean"],
         "log_beads": log_beads,
     }
-
 
 
 def surface_difference_metrics(
@@ -351,7 +345,6 @@ def surface_difference_metrics(
     return count, float(np.sqrt(np.mean(selected**2))), float(np.max(np.abs(selected)))
 
 
-
 def optional_surface_difference_metrics(
     reference: np.ndarray, current: np.ndarray, support: np.ndarray
 ) -> Tuple[int, float | None, float | None]:
@@ -360,7 +353,6 @@ def optional_surface_difference_metrics(
     if count < 2:
         return count, None, None
     return surface_difference_metrics(reference, current, support)
-
 
 
 def diagnostic_gap_metrics(gap: np.ndarray, support: np.ndarray) -> Dict[str, float | None]:

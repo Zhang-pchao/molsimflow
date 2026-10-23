@@ -1,12 +1,16 @@
 """Explicit optional compatibility check against a supplied legacy driver."""
+
 from __future__ import annotations
-import math
-from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
-import numpy as np
+
 import subprocess
 import sys
+from pathlib import Path
+from typing import Dict, List, Mapping, Sequence
+
+import numpy as np
+
 from molsimflow.io.hashes import sha256_file as sha256
+
 from .reporting import portable_artifact_path
 from .units import EV_TO_KCAL_MOL
 
@@ -25,7 +29,6 @@ def adapt_reference_source(source: str) -> str:
     replacement = "x,y=np.meshgrid(grid_cv_x,grid_cv_y,indexing='ij')"
     require(source.count(original) == 1, "unexpected reference meshgrid implementation")
     return source.replace(original, replacement)
-
 
 
 def run_reference(
@@ -89,7 +92,9 @@ def run_reference(
     exact_difference = np.abs(exact_kcal - centroid_kcal)
 
     requested_blocks = int(config.get("blocks", 10))
-    block_reference = output / "qc" / f"fes-from-reweighting-centroid-blocks{requested_blocks}-eV.dat"
+    block_reference = (
+        output / "qc" / f"fes-from-reweighting-centroid-blocks{requested_blocks}-eV.dat"
+    )
     block_command = command_for(block_reference, requested_blocks)
     execute(block_command, output / "qc" / "fes-from-reweighting-blocks.log")
     block_kcal = load_surface(block_reference)

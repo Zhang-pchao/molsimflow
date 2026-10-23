@@ -1,1 +1,1 @@
-"""Complete-path PIMD analysis, with independent observables and estimators."""
+"""Complete-path PIMD analysis with independent observables and estimators."""

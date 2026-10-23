@@ -1,12 +1,18 @@
 """Delete whole frame blocks; beads are not independent uncertainty units."""
+
 from __future__ import annotations
+
 import math
 from typing import Sequence
+
 import numpy as np
-from .types import validate_primary_estimator
-from .weights import normalized_log_weights
+
 from .estimators import bead_density_estimators, quantum_fes_1d
 from .kde import logsumexp, weighted_log_kde_1d, weighted_log_kde_2d
+from .types import (
+    validate_primary_estimator,
+)
+from .weights import normalized_log_weights
 
 
 def require(condition: bool, message: str) -> None:
@@ -37,12 +43,12 @@ def quantum_fes_block_jackknife_1d(
     values = np.asarray(bead_cv, dtype=float)
     weights = np.asarray(log_frame_weights, dtype=float)
     primary = validate_primary_estimator(primary_estimator)
-    full = quantum_fes_1d(
-        values, weights, bin_edges, kbt=kbt, primary_estimator=primary
-    )
+    full = quantum_fes_1d(values, weights, bin_edges, kbt=kbt, primary_estimator=primary)
     _require(
-        isinstance(block_size, (int, np.integer)) and not isinstance(block_size, bool)
-        and block_size > 0, "block_size must be a positive integer",
+        isinstance(block_size, (int, np.integer))
+        and not isinstance(block_size, bool)
+        and block_size > 0,
+        "block_size must be a positive integer",
     )
     block_size = int(block_size)
     frames = len(values)
@@ -51,13 +57,13 @@ def quantum_fes_block_jackknife_1d(
     _require(blocks >= 2, "jackknife requires at least two blocks")
     bins = len(full[primary])
     _require(
-        isinstance(reference_bin, (int, np.integer)) and not isinstance(reference_bin, bool)
-        and 0 <= reference_bin < bins, "invalid reference_bin",
+        isinstance(reference_bin, (int, np.integer))
+        and not isinstance(reference_bin, bool)
+        and 0 <= reference_bin < bins,
+        "invalid reference_bin",
     )
     support_key = (
-        "probability_support"
-        if primary == "probability_mean"
-        else "free_energy_mean_support"
+        "probability_support" if primary == "probability_mean" else "free_energy_mean_support"
     )
     _require(full[support_key][reference_bin], "reference bin has no support")
     estimates = []
@@ -83,8 +89,7 @@ def quantum_fes_block_jackknife_1d(
     standard_error = np.full(bins, np.nan)
     supported = leave_one_out[:, support]
     standard_error[support] = np.sqrt(
-        (blocks - 1) / blocks
-        * np.sum((supported - np.mean(supported, axis=0)) ** 2, axis=0)
+        (blocks - 1) / blocks * np.sum((supported - np.mean(supported, axis=0)) ** 2, axis=0)
     )
     curve = full[primary]
     return {
@@ -97,7 +102,6 @@ def quantum_fes_block_jackknife_1d(
         "blocks": int(blocks),
         "leave_one_block_out": leave_one_out,
     }
-
 
 
 def quantum_kde_block_jackknife(
@@ -193,9 +197,7 @@ def quantum_kde_block_jackknife(
                 for b in range(values.shape[1])
             ]
         bead_logs = np.asarray(logs)
-        estimators = bead_density_estimators(
-            bead_logs, kbt, primary_estimator=primary
-        )
+        estimators = bead_density_estimators(bead_logs, kbt, primary_estimator=primary)
         logp = np.asarray(logsumexp(bead_logs, axis=0)) - math.log(values.shape[1])
         if primary == "probability_mean":
             support = logp - np.max(logp) >= threshold

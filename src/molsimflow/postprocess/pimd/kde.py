@@ -1,7 +1,10 @@
 """Fixed-bandwidth log-space kernels on paired complete-path observations."""
+
 from __future__ import annotations
+
 import math
 from typing import Sequence
+
 import numpy as np
 
 
@@ -22,12 +25,10 @@ def logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray | float
     return np.squeeze(result, axis=axis)
 
 
-
 def _validate_kde_weights(samples: np.ndarray, log_weights: np.ndarray) -> None:
     require(samples.shape[0] > 0 and np.isfinite(samples).all(), "invalid KDE samples")
     require(log_weights.shape == (samples.shape[0],), "KDE frame weight count mismatch")
     require(np.isfinite(log_weights).all(), "non-finite KDE log weights")
-
 
 
 def weighted_log_kde_1d(
@@ -37,15 +38,15 @@ def weighted_log_kde_1d(
     log_weights = np.asarray(log_weights, dtype=float)
     require(samples.ndim == 1, "1D sample shape mismatch")
     _validate_kde_weights(samples, log_weights)
-    require(np.isfinite(bandwidth) and float(bandwidth) > 0.0,
-            "bandwidth must be finite and positive")
-    exponent = log_weights[None, :] - 0.5 * (
-        (grid[:, None] - samples[None, :]) / float(bandwidth)
-    ) ** 2
+    require(
+        np.isfinite(bandwidth) and float(bandwidth) > 0.0, "bandwidth must be finite and positive"
+    )
+    exponent = (
+        log_weights[None, :] - 0.5 * ((grid[:, None] - samples[None, :]) / float(bandwidth)) ** 2
+    )
     return np.asarray(logsumexp(exponent, axis=1)) - math.log(
         float(bandwidth) * math.sqrt(2.0 * math.pi)
     )
-
 
 
 def weighted_log_kde_2d(
@@ -62,11 +63,16 @@ def weighted_log_kde_2d(
     require(samples.ndim == 2 and samples.shape[1] == 2, "2D sample shape mismatch")
     _validate_kde_weights(samples, log_weights)
     hx, hy = (float(value) for value in bandwidth)
-    require(np.isfinite([hx, hy]).all() and hx > 0.0 and hy > 0.0,
-            "bandwidths must be finite and positive")
-    require(isinstance(chunk_points, (int, np.integer))
-            and not isinstance(chunk_points, bool) and chunk_points > 0,
-            "chunk_points must be a positive integer")
+    require(
+        np.isfinite([hx, hy]).all() and hx > 0.0 and hy > 0.0,
+        "bandwidths must be finite and positive",
+    )
+    require(
+        isinstance(chunk_points, (int, np.integer))
+        and not isinstance(chunk_points, bool)
+        and chunk_points > 0,
+        "chunk_points must be a positive integer",
+    )
     xx, yy = np.meshgrid(x_grid, y_grid)
     points = np.column_stack((xx.ravel(), yy.ravel()))
     output = np.empty(points.shape[0], dtype=float)

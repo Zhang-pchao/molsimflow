@@ -19,7 +19,12 @@ from molsimflow.postprocess.pimd.alignment import (
     restart_unique_indices,
     assemble_bead_frames,
 )
-from molsimflow.postprocess.pimd.types import BIAS_MODES, BIAS_MODE_ALIASES, WEIGHT_KINDS, FES_ESTIMATORS
+from molsimflow.postprocess.pimd.types import (
+    BIAS_MODES,
+    BIAS_MODE_ALIASES,
+    WEIGHT_KINDS,
+    FES_ESTIMATORS,
+)
 from molsimflow.postprocess.pimd.estimators import (
     _histogram_log_mass,
     quantum_histogram_masses,

@@ -1,8 +1,11 @@
 """CV transforms and geometric observables, independent of FES estimators."""
+
 from __future__ import annotations
+
 import math
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Dict, Mapping, Sequence, Tuple
+
 import numpy as np
 
 
@@ -15,8 +18,11 @@ _require = require
 
 
 def _validate_logdistance_parameters(
-    switch: float, offset: float, linear_shift: float,
-    log_scale: float, log_reference: float,
+    switch: float,
+    offset: float,
+    linear_shift: float,
+    log_scale: float,
+    log_reference: float,
 ) -> None:
     """Reject noninvertible joins; allow the archived eight-digit shift rounding."""
     parameters = np.asarray([switch, offset, linear_shift, log_scale, log_reference])
@@ -26,7 +32,6 @@ def _validate_logdistance_parameters(
     left = log_scale * math.log((switch + offset) / log_reference)
     right = switch - linear_shift
     require(abs(left - right) <= 5e-8, "discontinuous piecewise-logdistance join")
-
 
 
 def piecewise_logdistance(
@@ -50,7 +55,6 @@ def piecewise_logdistance(
     )
 
 
-
 def inverse_piecewise_logdistance(
     logdistance: Sequence[float] | np.ndarray,
     *,
@@ -69,10 +73,10 @@ def inverse_piecewise_logdistance(
     boundary = float(switch) - float(linear_shift)
     return np.where(
         values < boundary,
-        float(log_reference) * np.exp(np.minimum(values, boundary) / float(log_scale)) - float(offset),
+        float(log_reference) * np.exp(np.minimum(values, boundary) / float(log_scale))
+        - float(offset),
         values + float(linear_shift),
     )
-
 
 
 def piecewise_logdistance_jacobian(
@@ -90,7 +94,6 @@ def piecewise_logdistance_jacobian(
     require(np.isfinite(values).all(), "non-finite iondistance")
     require(np.all(values + float(offset) > 0.0), "iondistance is outside Jacobian domain")
     return np.where(values < float(switch), float(log_scale) / (values + float(offset)), 1.0)
-
 
 
 def transform_piecewise_logdistance_fes(
@@ -128,8 +131,12 @@ def transform_piecewise_logdistance_fes(
         log_reference=log_reference,
     )
     jacobian = piecewise_logdistance_jacobian(
-        iondistance, switch=switch, offset=offset, linear_shift=linear_shift,
-        log_scale=log_scale, log_reference=log_reference
+        iondistance,
+        switch=switch,
+        offset=offset,
+        linear_shift=linear_shift,
+        log_scale=log_scale,
+        log_reference=log_reference,
     )
     correction_shape = [1] * values.ndim
     correction_shape[normalized_axis] = source_grid.size
@@ -137,7 +144,6 @@ def transform_piecewise_logdistance_fes(
     if zero_minimum:
         transformed -= float(np.min(transformed))
     return iondistance, jacobian, transformed
-
 
 
 def validate_piecewise_logdistance_printed(
@@ -157,7 +163,9 @@ def validate_piecewise_logdistance_printed(
     require(source.shape == printed.shape and source.size > 0, "printed transform shape mismatch")
     require(np.isfinite(source).all(), "non-finite printed logdistance")
     require(np.isfinite(printed).all(), "non-finite printed iondistance")
-    require(np.isfinite(tolerance) and float(tolerance) >= 0.0, "invalid printed-transform tolerance")
+    require(
+        np.isfinite(tolerance) and float(tolerance) >= 0.0, "invalid printed-transform tolerance"
+    )
     forward_error = float(
         np.max(
             np.abs(
@@ -199,7 +207,6 @@ def validate_piecewise_logdistance_printed(
     }
 
 
-
 def piecewise_derived_coordinate_spec(
     config: Mapping[str, object] | None,
     cv_names: Sequence[str],
@@ -212,9 +219,7 @@ def piecewise_derived_coordinate_spec(
     source = str(config.get("source", ""))
     target = str(config.get("target", ""))
     printed_column = str(config.get("printed_column", ""))
-    sampling_printed_column = str(
-        config.get("sampling_printed_column", printed_column)
-    )
+    sampling_printed_column = str(config.get("sampling_printed_column", printed_column))
     bead_printed_column = str(config.get("bead_printed_column", printed_column))
     require(source in cv_names, "derived-coordinate source is not a biased CV")
     require(target not in cv_names, "derived coordinate must not be an independent biased CV")
@@ -251,7 +256,6 @@ def piecewise_derived_coordinate_spec(
     }
 
 
-
 def soft_voronoi_occupancies(
     positions: np.ndarray,
     types: np.ndarray,
@@ -277,7 +281,5 @@ def soft_voronoi_occupancies(
     weights = np.exp(-float(kappa) * shifted)
     weights /= np.sum(weights, axis=0, keepdims=True)
     occupancies = np.sum(weights, axis=1)
-    nearest_counts = np.bincount(
-        np.argmin(distances, axis=0), minlength=len(centers)
-    )
+    nearest_counts = np.bincount(np.argmin(distances, axis=0), minlength=len(centers))
     return occupancies, nearest_counts
