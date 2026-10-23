@@ -6,6 +6,7 @@ import math
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
+from .units import EV_TO_KCAL_MOL
 
 from .kde import weighted_log_kde_1d, weighted_log_kde_2d
 from .types import (
@@ -366,3 +367,94 @@ def diagnostic_gap_metrics(gap: np.ndarray, support: np.ndarray) -> Dict[str, fl
             float(np.max(np.abs(selected))) if selected.size else None
         ),
     }
+
+
+def histogram_edges_for_kde_grid(grid: np.ndarray, sigma: float) -> np.ndarray:
+    """Choose unsmoothed bins from a KDE grid and its recorded bandwidth.
+
+    Bin width is close to the selected KDE sigma, with no more bins than grid
+    points. This gives a reproducible direct-count companion without a
+    system-specific numerical scale or any kernel convolution.
+    """
+    values = np.asarray(grid, dtype=float)
+    width = float(sigma)
+    require(values.ndim == 1 and len(values) >= 2, "histogram grid needs two points")
+    require(np.isfinite(values).all() and np.all(np.diff(values) > 0), "invalid histogram grid")
+    require(np.isfinite(width) and width > 0, "histogram reference sigma must be positive")
+    bins = max(2, min(len(values), math.ceil((values[-1] - values[0]) / width)))
+    return np.linspace(values[0], values[-1], bins + 1)
+
+
+
+def weighted_unsmoothed_path_histogram(
+    beads: np.ndarray,
+    raw_log_weights: np.ndarray,
+    edges: Sequence[np.ndarray],
+    kbt_ev: float,
+) -> Dict[str, np.ndarray | float]:
+    """Direct bead-marginal FES from full-frame weights and zero-count gaps.
+
+    The input is frame x bead x CV. All beads in a frame share its normalized
+    weight and contribute 1/P. No pseudocount, KDE, or interpolation is applied.
+    Two-dimensional arrays are returned in (y, x) plotting order.
+    """
+    values = np.asarray(beads, dtype=float)
+    bins = tuple(np.asarray(edge, dtype=float) for edge in edges)
+    require(values.ndim == 3 and values.shape[2] in (1, 2), "histogram CV shape mismatch")
+    require(len(bins) == values.shape[2], "histogram edge dimension mismatch")
+    require(values.shape[0] > 0 and values.shape[1] > 0, "empty histogram input")
+    require(np.isfinite(values).all(), "non-finite histogram CV")
+    require(np.isfinite(kbt_ev) and kbt_ev > 0, "invalid histogram kBT")
+    for edge in bins:
+        require(edge.ndim == 1 and len(edge) >= 3, "histogram needs two bins")
+        require(np.isfinite(edge).all() and np.all(np.diff(edge) > 0), "invalid histogram edges")
+    log_weights = normalized_log_weights(raw_log_weights)
+    require(len(log_weights) == values.shape[0], "histogram frame weight mismatch")
+    shape = tuple(len(edge) - 1 for edge in bins)
+    indices = []
+    valid = np.ones(values.shape[:2], dtype=bool)
+    for axis, edge in enumerate(bins):
+        component = values[:, :, axis]
+        index = np.searchsorted(edge, component, side="right") - 1
+        index = np.where(component == edge[-1], len(edge) - 2, index)
+        valid &= (index >= 0) & (index < len(edge) - 1)
+        indices.append(index)
+    cell_count = math.prod(shape)
+    flat = np.ravel_multi_index(tuple(index[valid] for index in indices), shape)
+    path_logs = np.broadcast_to(
+        log_weights[:, None] - math.log(values.shape[1]), values.shape[:2]
+    )
+    log_mass = np.full(cell_count, -np.inf, dtype=float)
+    np.logaddexp.at(log_mass, flat, path_logs[valid])
+    observed_beads = np.bincount(flat, minlength=cell_count)
+    frame_ids = np.broadcast_to(
+        np.arange(values.shape[0])[:, None], values.shape[:2]
+    )
+    frame_cell_pairs = np.unique(frame_ids[valid] * cell_count + flat)
+    observed_frames = np.bincount(
+        frame_cell_pairs % cell_count, minlength=cell_count
+    )
+    bin_volume = np.ones(shape, dtype=float)
+    for axis, edge in enumerate(bins):
+        broadcast_shape = [1] * len(shape)
+        broadcast_shape[axis] = len(edge) - 1
+        bin_volume *= np.diff(edge).reshape(broadcast_shape)
+    log_density = log_mass.reshape(shape) - np.log(bin_volume)
+    support = np.isfinite(log_density)
+    fes = np.full(shape, np.nan, dtype=float)
+    if np.any(support):
+        raw = -float(kbt_ev) * log_density[support]
+        fes[support] = (raw - np.min(raw)) * EV_TO_KCAL_MOL
+    result = {
+        "fes_kcal_mol": fes,
+        "support": support,
+        "weight_mass": np.exp(log_mass).reshape(shape),
+        "observed_beads": observed_beads.reshape(shape),
+        "observed_complete_frames": observed_frames.reshape(shape),
+        "out_of_grid_weight_mass": float(max(0.0, 1.0 - np.sum(np.exp(log_mass)))),
+    }
+    if len(shape) == 2:
+        for key in ("fes_kcal_mol", "support", "weight_mass",
+                    "observed_beads", "observed_complete_frames"):
+            result[key] = np.asarray(result[key]).T
+    return result

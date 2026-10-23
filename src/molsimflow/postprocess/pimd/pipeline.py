@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from .kde import resolve_bandwidths
-from .reporting import write_kde_uncertainty
+from .reporting import write_kde_uncertainty, write_unsmoothed_histogram
 from pathlib import Path
 from typing import Dict
 
@@ -44,6 +44,10 @@ def analyze(contract_path: Path, output: Path, *, _plotter=None) -> Dict[str, ob
         }, indent=2) + "\n", encoding="utf-8")
     write_kde_uncertainty(output, inputs.reweight, aligned.cv_names, aligned.beads,
                           weighted.raw_log_weights, weighted.kbt_ev)
+    if "histogram" in inputs.reweight:
+        write_unsmoothed_histogram(output, inputs.reweight, aligned.cv_names, aligned.beads,
+                                  weighted.raw_log_weights, weighted.kbt_ev)
+
 
     if len(aligned.cv_names) == 1:
         return finalize_core_1d(

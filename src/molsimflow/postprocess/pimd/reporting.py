@@ -444,3 +444,31 @@ def write_frame_tables(
         filtered_data[selected, tuple(fields).index(bias_column)] = bias_ev
     write_filtered_colvar(filtered_colvar, fields, filtered_data, selected)
     return filtered_colvar
+
+
+def write_unsmoothed_histogram(output, reweight, cv_names, beads, raw_log_weights, kbt_ev):
+    """Write an opt-in direct-count probability-mean companion with explicit bins."""
+    from .estimators import weighted_unsmoothed_path_histogram
+
+    config = reweight["histogram"]
+    require(isinstance(config, dict) and set(config) == {"edges"}, "histogram requires explicit edges")
+    require(set(config["edges"]) == set(cv_names), "histogram edges must match CV names")
+    edges = [np.asarray(config["edges"][name], float) for name in cv_names]
+    result = weighted_unsmoothed_path_histogram(beads, raw_log_weights, edges, kbt_ev)
+    centers = [(edge[:-1] + edge[1:]) / 2 for edge in edges]
+    points = np.column_stack([axis.ravel() for axis in np.meshgrid(*centers)])
+    fields = list(cv_names) + ["probability_mean_kcal_mol", "support", "weight_mass",
+                              "observed_beads", "observed_complete_frames"]
+    rows = []
+    for index, point in enumerate(points):
+        row = dict(zip(cv_names, point))
+        row["probability_mean_kcal_mol"] = result["fes_kcal_mol"].ravel()[index]
+        for key in fields[len(cv_names)+1:]:
+            row[key] = result[key].ravel()[index]
+        rows.append(row)
+    write_csv(output / "tables" / "unsmoothed-path-histogram.csv", rows, fields)
+    (output / "qc" / "unsmoothed-path-histogram.json").write_text(json.dumps({
+        "estimator": "probability_mean", "smoothing": "none", "pseudocount": 0,
+        "edges": config["edges"], "out_of_grid_weight_mass": result["out_of_grid_weight_mass"],
+        "normalization": "All complete paths, including observations outside the grid",
+    }, indent=2) + "\n", encoding="utf-8")

@@ -14,3 +14,18 @@ The rule uses weighted bead dispersion, complete-frame Kish ESS to the power
 `-1/(dimensions + 4)`, and a floor of 1.5 median grid cells. Replicating beads
 does not increase ESS. This is a global heuristic, not a locally adaptive KDE,
 a correlation-adjusted rule, or evidence that a trajectory is converged.
+
+## Unsmoothed direct-count companion
+
+Set `reweight.histogram` to an object containing only `edges`, a mapping from
+each declared CV name to explicit increasing bin edges (at least two bins).
+This writes `tables/unsmoothed-path-histogram.csv` and a separate QC JSON file.
+It does not replace the existing KDE outputs.
+
+The companion reports the probability-mean bead marginal using one normalized
+weight per path and a 1/P bead contribution. It applies no pseudocount, kernel,
+interpolation or in-grid renormalization. Empty bins have false support and NaN
+FES; out-of-grid weight mass is reported. Two-dimensional arrays use (y, x)
+orientation and same-frame/same-bead pairs. Observed bead counts are distinct
+from observed complete-frame counts. Explicit bin widths define the density
+measure. The low-level helper accepts singleton-bead path observables too.
