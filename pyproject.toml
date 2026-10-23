@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "molsimflow"
-version = "0.1.1.dev1"
+version = "0.1.1"
 description = "Reusable molecular-simulation workflow tools for structure preparation, PLUMED generation, and MD analysis."
 readme = "README.md"
 license = { text = "MIT" }
