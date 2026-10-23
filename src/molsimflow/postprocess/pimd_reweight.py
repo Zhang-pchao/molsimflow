@@ -30,6 +30,24 @@ from molsimflow.postprocess.pimd.io import (
     read_thermo,
     dump_frames,
 )
+from molsimflow.postprocess.pimd.kde import (
+    logsumexp,
+    _validate_kde_weights,
+    weighted_log_kde_1d,
+    weighted_log_kde_2d,
+)
+from molsimflow.postprocess.pimd.estimators import (
+    alternate_estimator,
+    estimator_support_masks,
+    compute_surfaces,
+    compute_marginals,
+    surface_difference_metrics,
+    optional_surface_difference_metrics,
+    diagnostic_gap_metrics,
+)
+from molsimflow.postprocess.pimd.uncertainty import (
+    quantum_kde_block_jackknife,
+)
 
 
 from molsimflow.postprocess.pimd_fes import (
@@ -85,46 +103,6 @@ def estimator_plot_labels(bias_mode: str) -> Dict[str, str]:
     return {
         "probability_mean": "Probability-mean bead FES",
         "free_energy_mean": "Free-energy-mean bead FES",
-    }
-
-
-def alternate_estimator(primary_estimator: str) -> str:
-    """Return the estimator reported alongside the selected primary result."""
-
-    primary = validate_primary_estimator(primary_estimator)
-    return "free_energy_mean" if primary == "probability_mean" else "probability_mean"
-
-
-def estimator_support_masks(
-    log_sampling_density: np.ndarray,
-    log_probability_mean: np.ndarray,
-    log_bead_density: np.ndarray,
-    log_relative_threshold: float,
-) -> Dict[str, np.ndarray]:
-    """Build independent and pairwise support masks for all FES comparisons."""
-
-    sampling = np.asarray(log_sampling_density, dtype=float)
-    probability = np.asarray(log_probability_mean, dtype=float)
-    beads = np.asarray(log_bead_density, dtype=float)
-    require(beads.shape[1:] == sampling.shape == probability.shape, "support density shape mismatch")
-    require(np.isfinite(sampling).all() and np.isfinite(probability).all()
-            and np.isfinite(beads).all(), "non-finite KDE density")
-    sampling_support = sampling - np.max(sampling) >= log_relative_threshold
-    probability_support = probability - np.max(probability) >= log_relative_threshold
-    bead_axes = tuple(range(1, beads.ndim))
-    relative_beads = beads - np.max(beads, axis=bead_axes, keepdims=True)
-    free_energy_support = np.all(relative_beads >= log_relative_threshold, axis=0)
-    estimator_common = probability_support & free_energy_support
-    return {
-        "centroid": sampling_support,
-        "probability_mean": probability_support,
-        "free_energy_mean": free_energy_support,
-        # Compatibility name now has the scientifically relevant estimator-pair meaning.
-        "common": estimator_common,
-        "estimator_common": estimator_common,
-        "all_common": sampling_support & estimator_common,
-        "sampling_probability_common": sampling_support & probability_support,
-        "sampling_free_energy_common": sampling_support & free_energy_support,
     }
 
 
@@ -256,53 +234,9 @@ def adapt_reference_source(source: str) -> str:
     return source.replace(original, replacement)
 
 
-def logsumexp(values: np.ndarray, axis: int | None = None) -> np.ndarray | float:
-    values = np.asarray(values, dtype=float)
-    maximum = np.max(values, axis=axis, keepdims=True)
-    result = maximum + np.log(np.sum(np.exp(values - maximum), axis=axis, keepdims=True))
-    if axis is None:
-        return float(result.squeeze())
-    return np.squeeze(result, axis=axis)
-
-
 def normalized_log_weights(raw: Sequence[float]) -> np.ndarray:
     """Normalize frame weights while preserving the workflow keyword API."""
     return _normalized_log_weights(raw)
-
-
-def surface_difference_metrics(
-    reference: np.ndarray, current: np.ndarray, support: np.ndarray
-) -> Tuple[int, float, float]:
-    difference = np.asarray(current, dtype=float) - np.asarray(reference, dtype=float)
-    mask = np.asarray(support, dtype=bool)
-    require(difference.shape == mask.shape, "surface/support shape mismatch")
-    count = int(np.count_nonzero(mask))
-    require(count >= 2, "insufficient surface-comparison support")
-    selected = difference[mask]
-    return count, float(np.sqrt(np.mean(selected**2))), float(np.max(np.abs(selected)))
-
-
-def optional_surface_difference_metrics(
-    reference: np.ndarray, current: np.ndarray, support: np.ndarray
-) -> Tuple[int, float | None, float | None]:
-    """Keep insufficient diagnostic overlap separate from a valid primary FES."""
-    count = int(np.count_nonzero(support))
-    if count < 2:
-        return count, None, None
-    return surface_difference_metrics(reference, current, support)
-
-
-def diagnostic_gap_metrics(gap: np.ndarray, support: np.ndarray) -> Dict[str, float | None]:
-    """Compare the diagnostic using the primary zero, without extrapolated tails."""
-    selected = np.asarray(gap)[np.asarray(support, dtype=bool)]
-    return {
-        "probability_free_energy_mean_rmse_common_support_kcal_mol": (
-            float(np.sqrt(np.mean(selected**2))) if selected.size else None
-        ),
-        "probability_free_energy_mean_max_abs_common_support_kcal_mol": (
-            float(np.max(np.abs(selected))) if selected.size else None
-        ),
-    }
 
 
 def reconstruction_within_tolerance(
@@ -542,193 +476,6 @@ def piecewise_derived_coordinate_spec(
     }
 
 
-def _validate_kde_weights(samples: np.ndarray, log_weights: np.ndarray) -> None:
-    require(samples.shape[0] > 0 and np.isfinite(samples).all(), "invalid KDE samples")
-    require(log_weights.shape == (samples.shape[0],), "KDE frame weight count mismatch")
-    require(np.isfinite(log_weights).all(), "non-finite KDE log weights")
-
-
-def weighted_log_kde_1d(
-    samples: np.ndarray, log_weights: np.ndarray, grid: np.ndarray, bandwidth: float
-) -> np.ndarray:
-    samples = np.asarray(samples, dtype=float)
-    log_weights = np.asarray(log_weights, dtype=float)
-    require(samples.ndim == 1, "1D sample shape mismatch")
-    _validate_kde_weights(samples, log_weights)
-    require(np.isfinite(bandwidth) and float(bandwidth) > 0.0,
-            "bandwidth must be finite and positive")
-    exponent = log_weights[None, :] - 0.5 * (
-        (grid[:, None] - samples[None, :]) / float(bandwidth)
-    ) ** 2
-    return np.asarray(logsumexp(exponent, axis=1)) - math.log(
-        float(bandwidth) * math.sqrt(2.0 * math.pi)
-    )
-
-
-def weighted_log_kde_2d(
-    samples: np.ndarray,
-    log_weights: np.ndarray,
-    x_grid: np.ndarray,
-    y_grid: np.ndarray,
-    bandwidth: Sequence[float],
-    *,
-    chunk_points: int = 128,
-) -> np.ndarray:
-    samples = np.asarray(samples, dtype=float)
-    log_weights = np.asarray(log_weights, dtype=float)
-    require(samples.ndim == 2 and samples.shape[1] == 2, "2D sample shape mismatch")
-    _validate_kde_weights(samples, log_weights)
-    hx, hy = (float(value) for value in bandwidth)
-    require(np.isfinite([hx, hy]).all() and hx > 0.0 and hy > 0.0,
-            "bandwidths must be finite and positive")
-    require(isinstance(chunk_points, (int, np.integer))
-            and not isinstance(chunk_points, bool) and chunk_points > 0,
-            "chunk_points must be a positive integer")
-    xx, yy = np.meshgrid(x_grid, y_grid)
-    points = np.column_stack((xx.ravel(), yy.ravel()))
-    output = np.empty(points.shape[0], dtype=float)
-    for start in range(0, points.shape[0], int(chunk_points)):
-        stop = min(points.shape[0], start + int(chunk_points))
-        current = points[start:stop]
-        exponent = (
-            log_weights[None, :]
-            - 0.5 * ((current[:, 0, None] - samples[None, :, 0]) / hx) ** 2
-            - 0.5 * ((current[:, 1, None] - samples[None, :, 1]) / hy) ** 2
-        )
-        output[start:stop] = np.asarray(logsumexp(exponent, axis=1))
-    output -= math.log(2.0 * math.pi * hx * hy)
-    return output.reshape(len(y_grid), len(x_grid))
-
-
-def quantum_kde_block_jackknife(
-    beads: np.ndarray,
-    raw_log_weights: np.ndarray,
-    grids: Sequence[np.ndarray],
-    bandwidth: Sequence[float],
-    *,
-    kbt: float,
-    block_frames: int,
-    reference_grid_index: Sequence[int],
-    relative_density_support: float,
-    primary_estimator: str = "probability_mean",
-) -> dict[str, object]:
-    """Estimate fixed-bandwidth primary-estimator errors in one or two CVs.
-
-    Grid indices follow CV order; 2D arrays follow the existing (y, x) layout.
-    Whole contiguous frame blocks are deleted. Support must survive every
-    deletion. This estimates sampling error, not KDE smoothing bias.
-    """
-    values = np.asarray(beads, dtype=float)
-    axes = [np.asarray(axis, dtype=float) for axis in grids]
-    widths = np.asarray(bandwidth, dtype=float)
-    dims = len(axes)
-    require(dims in (1, 2), "jackknife requires one or two CV grids")
-    require(
-        values.ndim == 3
-        and values.shape[2] == dims
-        and values.shape[0] > 0
-        and values.shape[1] > 0,
-        "invalid bead shape",
-    )
-    require(np.isfinite(values).all(), "non-finite bead CV")
-    require(
-        all(
-            axis.ndim == 1
-            and len(axis) > 0
-            and np.isfinite(axis).all()
-            and np.all(np.diff(axis) > 0)
-            for axis in axes
-        ),
-        "invalid grid",
-    )
-    require(
-        widths.shape == (dims,) and np.isfinite(widths).all() and np.all(widths > 0),
-        "invalid bandwidth",
-    )
-    require(np.isfinite(kbt) and kbt > 0, "kBT must be finite and positive")
-    require(
-        np.isfinite(relative_density_support) and 0 < relative_density_support <= 1,
-        "invalid relative density support",
-    )
-    weights = np.asarray(raw_log_weights, dtype=float)
-    require(weights.shape == (len(values),), "weight/frame shape mismatch")
-    normalized_log_weights(weights)
-    require(
-        isinstance(block_frames, (int, np.integer))
-        and not isinstance(block_frames, bool)
-        and block_frames > 0,
-        "block_frames must be a positive integer",
-    )
-    size = int(block_frames)
-    require(len(values) % size == 0, "equal blocks must cover all frames")
-    blocks = len(values) // size
-    require(blocks >= 2, "jackknife requires at least two blocks")
-    require(
-        isinstance(reference_grid_index, (list, tuple, np.ndarray)), "invalid reference_grid_index"
-    )
-    index = tuple(reference_grid_index)
-    require(
-        len(index) == dims
-        and all(
-            isinstance(i, (int, np.integer)) and not isinstance(i, bool) and 0 <= i < len(axis)
-            for i, axis in zip(index, axes)
-        ),
-        "invalid reference_grid_index",
-    )
-    array_index = index if dims == 1 else index[::-1]
-    threshold = math.log(relative_density_support)
-    primary = validate_primary_estimator(primary_estimator)
-
-    def curve(keep):
-        selected = values[keep]
-        logw = normalized_log_weights(weights[keep])
-        if dims == 1:
-            logs = [
-                weighted_log_kde_1d(selected[:, b, 0], logw, axes[0], widths[0])
-                for b in range(values.shape[1])
-            ]
-        else:
-            logs = [
-                weighted_log_kde_2d(selected[:, b], logw, axes[0], axes[1], widths)
-                for b in range(values.shape[1])
-            ]
-        bead_logs = np.asarray(logs)
-        estimators = bead_density_estimators(
-            bead_logs, kbt, primary_estimator=primary
-        )
-        logp = np.asarray(logsumexp(bead_logs, axis=0)) - math.log(values.shape[1])
-        if primary == "probability_mean":
-            support = logp - np.max(logp) >= threshold
-        else:
-            bead_axes = tuple(range(1, bead_logs.ndim))
-            relative = bead_logs - np.max(bead_logs, axis=bead_axes, keepdims=True)
-            support = np.all(relative >= threshold, axis=0)
-        require(support[array_index], "reference grid point loses density support")
-        curve_values = np.asarray(estimators[primary], dtype=float)
-        return curve_values - curve_values[array_index], support
-
-    full, support = curve(np.ones(len(values), dtype=bool))
-    estimates = []
-    for block in range(blocks):
-        keep = np.ones(len(values), dtype=bool)
-        keep[block * size : (block + 1) * size] = False
-        current, current_support = curve(keep)
-        estimates.append(current)
-        support &= current_support
-    deleted = np.asarray(estimates)
-    error = np.sqrt(
-        (blocks - 1) / blocks * np.sum((deleted - np.mean(deleted, axis=0)) ** 2, axis=0)
-    )
-    error[~support] = np.nan
-    return {
-        "free_energy_difference": full,
-        "standard_error": error,
-        "support": support,
-        "blocks": blocks,
-        "block_frames": size,
-    }
-
-
 def write_kde_uncertainty(
     output: Path,
     reweight: Mapping[str, object],
@@ -787,84 +534,6 @@ def write_kde_uncertainty(
     (output / "blocks" / "quantum-fes-uncertainty.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
-
-
-def compute_surfaces(
-    beads: np.ndarray,
-    centroid: np.ndarray,
-    raw_log_weights: np.ndarray,
-    x_grid: np.ndarray,
-    y_grid: np.ndarray,
-    bandwidth: Sequence[float],
-    kbt_ev: float,
-    primary_estimator: str = "probability_mean",
-) -> Dict[str, np.ndarray]:
-    beads = np.asarray(beads, dtype=float)
-    centroid = np.asarray(centroid, dtype=float)
-    require(beads.ndim == 3 and beads.shape[2] == 2, "beads must be frame x bead x 2")
-    require(centroid.shape == (beads.shape[0], 2), "centroid/bead shape mismatch")
-    require(np.isfinite(beads).all() and np.isfinite(centroid).all(), "non-finite CV values")
-    log_weights = normalized_log_weights(raw_log_weights)
-    log_beads = np.asarray(
-        [
-            weighted_log_kde_2d(beads[:, bead, :], log_weights, x_grid, y_grid, bandwidth)
-            for bead in range(beads.shape[1])
-        ]
-    )
-    log_centroid = weighted_log_kde_2d(
-        centroid, log_weights, x_grid, y_grid, bandwidth
-    )
-    estimators = bead_density_estimators(
-        log_beads, kbt_ev, primary_estimator=primary_estimator
-    )
-    raw_sampling = -float(kbt_ev) * log_centroid
-    return {
-        "log_weights": log_weights,
-        "weights": np.exp(log_weights),
-        "log_centroid": log_centroid,
-        "log_beads": log_beads,
-        "log_probability_mean": estimators["log_probability_mean"],
-        "raw_centroid": raw_sampling,
-        "raw_probability_mean": estimators["raw_probability_mean"],
-        "raw_free_energy_mean": estimators["raw_free_energy_mean"],
-        "centroid": raw_sampling - np.min(raw_sampling),
-        "probability_mean": estimators["probability_mean"],
-        "free_energy_mean": estimators["free_energy_mean"],
-    }
-
-
-def compute_marginals(
-    beads: np.ndarray,
-    centroid: np.ndarray,
-    raw_log_weights: np.ndarray,
-    grid: np.ndarray,
-    bandwidth: float,
-    component: int,
-    kbt_ev: float,
-    primary_estimator: str = "probability_mean",
-) -> Dict[str, np.ndarray]:
-    log_weights = normalized_log_weights(raw_log_weights)
-    log_beads = np.asarray(
-        [
-            weighted_log_kde_1d(beads[:, bead, component], log_weights, grid, bandwidth)
-            for bead in range(beads.shape[1])
-        ]
-    )
-    log_centroid = weighted_log_kde_1d(
-        centroid[:, component], log_weights, grid, bandwidth
-    )
-    estimators = bead_density_estimators(
-        log_beads, kbt_ev, primary_estimator=primary_estimator
-    )
-    sampling_f = -float(kbt_ev) * log_centroid
-    return {
-        "centroid": sampling_f - np.min(sampling_f),
-        "probability_mean": estimators["probability_mean"],
-        "free_energy_mean": estimators["free_energy_mean"],
-        "log_centroid": log_centroid,
-        "log_probability_mean": estimators["log_probability_mean"],
-        "log_beads": log_beads,
-    }
 
 
 def write_csv(path: Path, rows: Iterable[Mapping[str, object]], fieldnames: Sequence[str]) -> None:
