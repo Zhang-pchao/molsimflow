@@ -31,12 +31,18 @@ def read_sha256_manifest(path: Path) -> list[ChecksumRecord]:
     return records
 
 
-def _sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """Hash the bytes of one file without interpreting its format."""
     digest = sha256()
     with Path(path).open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    """Compatibility wrapper for the original private helper."""
+    return sha256_file(path)
 
 
 def verify_sha256_manifest(

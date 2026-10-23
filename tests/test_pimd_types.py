@@ -22,3 +22,13 @@ def test_legacy_normalization_keywords_and_path_count():
     np.testing.assert_array_equal(pimd_reweight.normalized_log_weights(raw=raw), expected)
     np.testing.assert_array_equal(pimd_fes.normalized_log_weights(values=raw), expected)
     assert expected.shape == raw.shape
+
+
+def test_shared_byte_hash_keeps_legacy_entry_points(tmp_path):
+    import hashlib
+    from molsimflow.io.hashes import sha256_file, _sha256
+    data = bytes(range(256)) * 8193
+    path = tmp_path / "binary-input"
+    path.write_bytes(data)
+    expected = hashlib.sha256(data).hexdigest()
+    assert sha256_file(path) == _sha256(path) == pimd_reweight.sha256(path) == expected
