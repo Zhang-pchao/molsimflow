@@ -393,7 +393,7 @@ def plot_ionization_events(
 
 
 def _compat_plotter():
-    return SimpleNamespace(
+    return SimpleNamespace(save_figure=save_figure,
         plot_fes2d=plot_fes2d,
         plot_fes_differences=plot_fes_differences,
         plot_fes1d=plot_fes1d,

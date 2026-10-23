@@ -65,3 +65,29 @@ def test_histogram_contract_has_separate_opt_in_artifacts(tmp_path, monkeypatch)
     metadata = json.loads((output / "qc/unsmoothed-path-histogram.json").read_text())
     assert metadata["pseudocount"] == 0
     assert metadata["out_of_grid_weight_mass"] == pytest.approx(0., abs=1e-14)
+
+
+@pytest.mark.parametrize("bead_count", [1, 2, 4])
+def test_ionization_plot_handles_small_path_counts(tmp_path, monkeypatch, bead_count):
+    from molsimflow.postprocess import pimd_reweight as legacy
+    figures = []
+    monkeypatch.setattr(legacy, "save_figure", lambda fig, path: figures.append(fig))
+    legacy.plot_ionization_events(tmp_path, np.arange(5.), np.zeros(5),
+                                  np.zeros((5, bead_count)), np.zeros(5), [.5], 2.)
+    assert len(figures) == 1
+
+
+@pytest.mark.parametrize("unit", ["kJ/mol", "kcal/mol"])
+def test_discrete_style_unit_and_support_are_explicit(tmp_path, unit):
+    from molsimflow.postprocess.pimd.plotting import plot_fes2d_discrete
+    grid = np.arange(4.)
+    surface = np.add.outer(grid, grid)
+    surfaces = {key: surface.copy() for key in ("centroid", "probability_mean", "free_energy_mean")}
+    supports = {key: np.ones((4, 4), bool) for key in surfaces}
+    supports["free_energy_mean"][:] = False
+    figures = []
+    plot_fes2d_discrete(tmp_path, grid, grid, surfaces, supports, 6., ["x", "y"],
+                        energy_unit=unit, _save_figure=lambda fig, path: figures.append(fig))
+    assert any(unit in (axis.get_xlabel() + axis.get_ylabel()) for axis in figures[0].axes)
+    assert any("Insufficient support" in text.get_text() for axis in figures[0].axes for text in axis.texts)
+    np.testing.assert_array_equal(surfaces["centroid"], surface)

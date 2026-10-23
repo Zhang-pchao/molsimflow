@@ -29,3 +29,15 @@ FES; out-of-grid weight mass is reported. Two-dimensional arrays use (y, x)
 orientation and same-frame/same-bead pairs. Observed bead counts are distinct
 from observed complete-frame counts. Explicit bin widths define the density
 measure. The low-level helper accepts singleton-bead path observables too.
+
+## Discrete 2D display style
+
+Set `plots.fes2d_style` to `discrete` and optionally set
+`plots.fes2d_energy_unit` to `kJ/mol` (default) or `kcal/mol`. This changes only
+the 2D FES panels. The legacy style and all numerical table units remain
+unchanged. Support masks and unsupported-panel labels are retained. The lower
+level `plot_fes2d_discrete` helper accepts an automatic supported-value display
+cap when `max_kcal` is None; this cap is a display choice, not an FES cutoff.
+
+Ionization time-series plots show up to the first four beads. P1/P2 paths are
+accepted without indexing nonexistent beads.

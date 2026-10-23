@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from .plotting import configure_plotter
 from dataclasses import replace
 from .kde import resolve_bandwidths
 from .reporting import write_kde_uncertainty, write_unsmoothed_histogram
@@ -26,6 +27,7 @@ def analyze(contract_path: Path, output: Path, *, _plotter=None) -> Dict[str, ob
         _plotter = _default_plotting
     contract_path = Path(contract_path)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    _plotter = configure_plotter(_plotter, contract.get("plots", {}))
     profile = analysis_profile(contract)
     output = Path(output)
     require(not output.exists(), f"output exists: {output}")
