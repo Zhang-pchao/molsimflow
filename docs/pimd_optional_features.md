@@ -41,3 +41,26 @@ cap when `max_kcal` is None; this cap is a display choice, not an FES cutoff.
 
 Ionization time-series plots show up to the first four beads. P1/P2 paths are
 accepted without indexing nonexistent beads.
+
+## OPES and route diagnostics
+
+`pimd.opes_state` reads appended frozen OPES_METAD states and evaluates the
+nonperiodic CV field and negative CV gradient. `time_scale_to_fs` explicitly
+converts producer time units (default 1 assumes fs); fractional times are
+preserved. Periodic metadata, changed CV fields and malformed state blocks
+are rejected. Cartesian chain rules and runtime force scaling are separate.
+
+`pimd.opes_deposition` matches KERNELS batches to declared beads and compares
+local deposition log weights with the shared physical path bias. It does not
+infer either convention. Batch times stay in producer units.
+
+`pimd.route_diagnostics` groups distance statistics, regional weight support and
+sampled-frame episodes at full-path granularity. Oxygen assignment is a
+geometric proxy, not a species or transition-state determination. Its selected
+COLVAR reader checks header stability and increasing times and accepts an
+explicit time conversion. Region thresholds and case interpretations remain
+caller inputs. Legacy root import names are retained as facades.
+
+Frozen-state evaluation, deposition auditing and recursive compression-history
+replay have different responsibilities. These modules do not reconstruct an
+adaptive OPES history or replace an independently qualified replay workflow.
