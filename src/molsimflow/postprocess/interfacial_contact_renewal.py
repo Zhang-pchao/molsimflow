@@ -140,3 +140,34 @@ def spatial_contact_budget(before, after, weights, coordinates):
                 centroid_before=cb, centroid_after=ca, centroid_change=ca-cb,
                 gain_centroid_change=gs, loss_centroid_change=ls,
                 centroid_residual=ca-cb-gs-ls, centroid_valid=valid)
+
+
+def endpoint_identity_exchange(before: np.ndarray, after: np.ndarray) -> dict:
+    """Count saved-endpoint identity overlap in caller-defined regions.
+
+    Boolean arrays are N particles by K regions. Both must have identical
+    ordered particle identities. Freeze the same region at both endpoints to
+    attribute membership change to particles; a moving region mixes geometry
+    with motion. This counts endpoint identity overlap, not continuous
+    residence, first exits, crossing multiplicity or a resolved physical flux.
+    Empty denominators return NaN and must remain missing in summaries.
+    """
+    b, a = np.asarray(before), np.asarray(after)
+    if (b.dtype != bool or a.dtype != bool or b.ndim != 2
+            or a.shape != b.shape or not b.shape[1]):
+        raise ValueError("Matching boolean N by K memberships required")
+    n0, n1 = b.sum(axis=0), a.sum(axis=0)
+    retained = (b & a).sum(axis=0)
+    gained, lost = (~b & a).sum(axis=0), (b & ~a).sum(axis=0)
+    gross, net = gained + lost, gained - lost
+
+    def ratio(numerator, denominator):
+        out = np.full(denominator.shape, np.nan, dtype=float)
+        np.divide(numerator, denominator, out=out, where=denominator > 0)
+        return out
+
+    return dict(before=n0, after=n1, retained=retained, gained=gained, lost=lost,
+                net=net, gross=gross,
+                retained_fraction=ratio(retained, n0),
+                replacement_fraction=ratio(gained, n1),
+                cancellation_fraction=1-ratio(abs(net), gross))
