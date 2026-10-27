@@ -630,3 +630,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def components_with_isolated_nodes(
+    nodes: Sequence[str], edges: Sequence[Tuple[str, str]]
+) -> List[List[str]]:
+    """Return deterministic undirected components including explicit isolates.
+
+    Edges encode the caller's physical definition; connectivity alone does not
+    identify chemical bonds, hydrogen bonds, or thermodynamic percolation.
+    """
+    node_set = set(nodes)
+    if len(node_set) != len(nodes) or any(not isinstance(n, str) for n in nodes):
+        raise ValueError("Node IDs must be unique strings")
+    if any(len(e) != 2 or e[0] == e[1] or not set(e) <= node_set for e in edges):
+        raise ValueError("Edges must join two different declared nodes")
+    parts = [sorted(c) for c in _connected_components(node_set, edges)]
+    return sorted(parts, key=lambda c: (-len(c), c))

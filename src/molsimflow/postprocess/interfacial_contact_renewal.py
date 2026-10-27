@@ -108,3 +108,35 @@ def water_surface_hbond_degrees(water, water_oh, surface, surface_oh, bounds, *,
             donor[i] += donor_points_to(water_oh[i], delta, angle_cutoff_deg)
             acceptor[i] += donor_points_to(surface_oh[j], -delta, angle_cutoff_deg)
     return donor, acceptor
+
+
+def spatial_contact_budget(before, after, weights, coordinates):
+    """Exact area and centroid-change budget on fixed, ordered reference sites.
+
+    Coordinates must share ONE unwrapped reference for both endpoint masks.
+    Caller handles periodic images. Site movement is deliberately excluded.
+    Centroids and their decomposition are undefined when either area is zero.
+    No persistence, uncertainty, free energy or transport causality is implied.
+    """
+    b, a = np.asarray(before, dtype=bool), np.asarray(after, dtype=bool)
+    w, x = np.asarray(weights, dtype=float), np.asarray(coordinates, dtype=float)
+    q = site_transition_metrics(b, a, np.zeros_like(b), np.zeros_like(a), w)
+    if x.ndim != 2 or x.shape[0] != len(w) or not x.shape[1] or not np.isfinite(x).all():
+        raise ValueError("Coordinates must be finite N by D reference positions")
+    ab, aa = float(w[b].sum()), float(w[a].sum())
+    gain, loss = a & ~b, b & ~a
+    dmoment = (w[gain, None] * x[gain]).sum(0) - (w[loss, None] * x[loss]).sum(0)
+    moment_residual = (w[a, None] * x[a]).sum(0) - (w[b, None] * x[b]).sum(0) - dmoment
+    valid = ab > 0 and aa > 0
+    cb = (w[b, None] * x[b]).sum(0) / ab if ab > 0 else np.full(x.shape[1], np.nan)
+    ca = (w[a, None] * x[a]).sum(0) / aa if aa > 0 else np.full(x.shape[1], np.nan)
+    gs = (w[gain, None] * (x[gain] - cb)).sum(0) / aa if valid else np.full(x.shape[1], np.nan)
+    ls = -(w[loss, None] * (x[loss] - cb)).sum(0) / aa if valid else np.full(x.shape[1], np.nan)
+    return dict(area_before=ab, area_after=aa, gained_area=q['gas_gained_area'],
+                lost_area=q['gas_lost_area'], retained_area=q['gas_retained_area'],
+                area_change=aa-ab,
+                area_residual=aa-ab-q['gas_gained_area']+q['gas_lost_area'],
+                first_moment_change=dmoment, first_moment_residual=moment_residual,
+                centroid_before=cb, centroid_after=ca, centroid_change=ca-cb,
+                gain_centroid_change=gs, loss_centroid_change=ls,
+                centroid_residual=ca-cb-gs-ls, centroid_valid=valid)
