@@ -171,3 +171,66 @@ def endpoint_identity_exchange(before: np.ndarray, after: np.ndarray) -> dict:
                 retained_fraction=ratio(retained, n0),
                 replacement_fraction=ratio(gained, n1),
                 cancellation_fraction=1-ratio(abs(net), gross))
+
+
+def water_surface_hbond_edges(water, water_oh, surface, surface_oh, bounds, *,
+                             oo_cutoff=3.5, angle_cutoff_deg=30.):
+    """Return identity-resolved directed rows (water index, site index, donor).
+
+    Donor is 0 for water and 1 for surface. Both directions may occur for one
+    oxygen pair; project unique pairs before counting bridging waters.
+    Input oxygen/particle ordering is the caller's persistent identity map.
+    Geometric hydrogen bonds neither quantify bond strength nor causal pinning.
+    """
+    water, surface, bounds = [np.asarray(a, dtype=float) for a in (water, surface, bounds)]
+    if (bounds.shape != (3, 2) or any(a.ndim != 2 or a.shape[1] != 3 for a in
+                                    (water, surface))
+            or len(water_oh) != len(water) or len(surface_oh) != len(surface)):
+        raise ValueError("Matching oxygen coordinates and OH-vector lists required")
+    lengths = bounds[:, 1] - bounds[:, 0]
+    if (not all(np.isfinite(a).all() for a in (water, surface, bounds))
+            or np.any(lengths <= 0) or not np.isfinite(oo_cutoff) or oo_cutoff <= 0
+            or not np.isfinite(angle_cutoff_deg) or not 0 < angle_cutoff_deg < 90):
+        raise ValueError("Invalid box, coordinates or hydrogen-bond cutoffs")
+    for vectors in list(water_oh) + list(surface_oh):
+        a = np.asarray(vectors, dtype=float)
+        if (a.ndim != 2 or a.shape[1] != 3 or not np.isfinite(a).all()
+                or np.any(np.linalg.norm(a, axis=1) <= 0)):
+            raise ValueError("OH vectors must be finite nonzero H by 3 arrays")
+    rows = []
+    if len(water) and len(surface):
+        tree = cKDTree((surface - bounds[:, 0]) % lengths, boxsize=lengths)
+        neighbors = tree.query_ball_point((water - bounds[:, 0]) % lengths, oo_cutoff)
+        for i, sites in enumerate(neighbors):
+            for j in sorted(sites):
+                delta = minimum_image_vectors(surface[j] - water[i], lengths)
+                if donor_points_to(water_oh[i], delta, angle_cutoff_deg):
+                    rows.append((i, j, 0))
+                if donor_points_to(surface_oh[j], -delta, angle_cutoff_deg):
+                    rows.append((i, j, 1))
+    return np.asarray(rows, dtype=np.int64).reshape(-1, 3)
+
+
+def shared_water_site_bridges(directed_edges):
+    """Project water-site edges onto site pairs with one-water bridge counts.
+
+    Duplicate rows and bidirectional H bonds do not multiply a bridging water.
+    Returns sorted site-pair rows and the number of distinct waters per pair.
+    This is a one-water path projection, not a free-energy or percolation test.
+    """
+    from collections import defaultdict
+    from itertools import combinations
+    e = np.asarray(directed_edges)
+    if (e.ndim != 2 or e.shape[1] != 3 or e.dtype.kind not in "iu"
+            or np.any(e < 0) or not np.isin(e[:, 2], [0, 1]).all()):
+        raise ValueError("Nonnegative integer water/site/donor edge rows required")
+    by_water = defaultdict(set)
+    for water, site, _ in e:
+        by_water[int(water)].add(int(site))
+    count = defaultdict(int)
+    for sites in by_water.values():
+        for pair in combinations(sorted(sites), 2):
+            count[pair] += 1
+    pairs = sorted(count)
+    return (np.asarray(pairs, dtype=np.int64).reshape(-1, 2),
+            np.asarray([count[p] for p in pairs], dtype=np.int64))

@@ -363,3 +363,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def hydrogen_bond_pair_edges(oxygen, oh_vectors, bounds, *, oo_cutoff=3.5,
+                             angle_cutoff_deg=30.):
+    """Return unique unordered oxygen pairs with at least one directed H bond.
+
+    May describe water-water or surface-surface pairs when supplied with the
+    corresponding current donors. Caller owns chemical eligibility and stable
+    identities. The definition matches water_water_hbond_count.
+    """
+    from scipy.spatial import cKDTree
+    oxygen, bounds = np.asarray(oxygen, float), np.asarray(bounds, float)
+    if (oxygen.ndim != 2 or oxygen.shape[1] != 3 or bounds.shape != (3, 2)
+            or len(oh_vectors) != len(oxygen)
+            or not np.isfinite(oxygen).all() or not np.isfinite(bounds).all()
+            or np.any(bounds[:, 1] <= bounds[:, 0]) or not np.isfinite(oo_cutoff)
+            or oo_cutoff <= 0 or not np.isfinite(angle_cutoff_deg)
+            or not 0 < angle_cutoff_deg < 90):
+        raise ValueError("Invalid oxygen coordinates, OH list, box or cutoff")
+    for vectors in oh_vectors:
+        a = np.asarray(vectors, float)
+        if (a.ndim != 2 or a.shape[1] != 3 or not np.isfinite(a).all()
+                or np.any(np.linalg.norm(a, axis=1) <= 0)):
+            raise ValueError("OH vectors must be finite and nonzero")
+    lengths = box_lengths(bounds)
+    shifted = (oxygen - bounds[:, 0]) % lengths
+    rows = []
+    for first, second in sorted(cKDTree(shifted, boxsize=lengths).query_pairs(oo_cutoff)):
+        delta = minimum_image_vectors(oxygen[second] - oxygen[first], lengths)
+        if (donor_points_to(oh_vectors[first], delta, angle_cutoff_deg)
+                or donor_points_to(oh_vectors[second], -delta, angle_cutoff_deg)):
+            rows.append((first, second))
+    return np.asarray(rows, dtype=np.int64).reshape(-1, 2)

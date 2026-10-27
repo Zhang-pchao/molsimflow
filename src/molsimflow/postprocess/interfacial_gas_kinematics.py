@@ -103,3 +103,28 @@ def coarse_velocity_field(local_positions, relative_velocities, x_edges, z_edges
     velocity = np.stack([np.histogram2d(*xy.T, bins=edges, weights=v[:, j])[0]
                          for j in range(3)], axis=-1)
     return count, position, velocity
+
+
+def planar_shape_tensor(local_positions):
+    """Return equal-weight XY covariance and principal-axis shape descriptors.
+
+    Supply one consistently unwrapped finite particle cluster. The caller must
+    validate periodic extent. Isotropic clusters have no identifiable axis;
+    collinear clusters have infinite aspect ratio. Neither is silently filled.
+    """
+    x = np.asarray(local_positions, dtype=float)
+    if x.ndim != 2 or x.shape[1] != 2 or len(x) < 3 or not np.isfinite(x).all():
+        raise ValueError("At least three finite unwrapped planar positions required")
+    x = x - x.mean(axis=0)
+    tensor = x.T @ x / len(x)
+    eigenvalues, vectors = np.linalg.eigh(tensor)
+    eigenvalues = np.maximum(eigenvalues[::-1], 0.)
+    total = float(eigenvalues.sum())
+    if total <= 0:
+        raise ValueError("Coincident positions have no spatial extent")
+    anisotropy = float((eigenvalues[0]-eigenvalues[1])/total)
+    axis = vectors[:, -1] if anisotropy > 1e-12 else np.full(2, np.nan)
+    aspect = float(np.sqrt(eigenvalues[0]/eigenvalues[1])) if eigenvalues[1] > 0 else np.inf
+    return dict(tensor=tensor, eigenvalues=eigenvalues, principal_axis=axis,
+                aspect_ratio=aspect, anisotropy=anisotropy,
+                y_variance_fraction=float(tensor[1, 1]/total))
