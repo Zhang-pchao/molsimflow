@@ -68,3 +68,24 @@ def test_isotropic_axis_unidentified_and_zero_extent_rejected():
     assert np.isnan(q['principal_axis']).all()
     assert q['anisotropy']==0
     with pytest.raises(ValueError):planar_shape_tensor(np.zeros((5,2)))
+
+
+from molsimflow.postprocess.interfacial_gas_kinematics import periodic_cluster_winding
+
+def test_periodic_boundary_crossing_is_not_winding():
+    b=np.array([[0.,10.]]*3);x=np.array([[9.,5,5],[0,5,5],[1,5,5]])
+    q=periodic_cluster_winding(x,b,1.1)
+    assert q['components']==1 and not q['winding_axes'].any()
+    unwrapped=x+q['image_shifts']*10
+    assert np.isclose(np.ptp(unwrapped[:,0]),2)
+
+def test_periodic_closed_ring_has_winding():
+    b=np.array([[0.,10.]]*3);x=np.column_stack([np.arange(0.,10,2),np.full(5,5.),np.full(5,5.)])
+    q=periodic_cluster_winding(x,b,2.1)
+    assert q['components']==1 and q['winding_axes'].tolist()==[True,False,False]
+
+def test_disconnected_clusters_reported_and_halfbox_rejected():
+    b=np.array([[0.,10.]]*3);x=np.array([[1.,1,1],[5,5,5]])
+    q=periodic_cluster_winding(x,b,1.)
+    assert q['components']==2 and not q['winding_axes'].any()
+    with pytest.raises(ValueError):periodic_cluster_winding(x,b,5.)

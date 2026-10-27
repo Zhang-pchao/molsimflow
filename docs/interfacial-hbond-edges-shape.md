@@ -26,3 +26,9 @@ shape and gas-body covariance must be kept separate.
 Units, spatial regions, thresholds, temporal support and comparison controls
 belong in consuming-project contracts. No HB count measures bond energy, and
 no gas-site contact count measures adsorption energy or detachment free energy.
+
+A periodic neighbor graph must also be checked for winding cycles.
+The periodic_cluster_winding helper distinguishes ordinary boundary crossing
+from nonzero periodic cycle shifts. In a winding cluster, finite-cluster
+shape moments must be withheld; the effect is cutoff-dependent, not proof
+of a macroscopic phase transition.

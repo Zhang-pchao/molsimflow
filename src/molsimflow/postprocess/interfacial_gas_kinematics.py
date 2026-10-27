@@ -128,3 +128,49 @@ def planar_shape_tensor(local_positions):
     return dict(tensor=tensor, eigenvalues=eigenvalues, principal_axis=axis,
                 aspect_ratio=aspect, anisotropy=anisotropy,
                 y_variance_fraction=float(tensor[1, 1]/total))
+
+
+def periodic_cluster_winding(positions, bounds, cutoff):
+    """Test periodic graph winding and return consistent integer image shifts.
+
+    Neighbor edges use orthorhombic minimum-image distances. A nonzero cycle
+    shift marks winding on that axis: a single finite unwrapped cluster chart
+    then does not exist. Connectivity depends on the supplied physical cutoff.
+    Image shifts remain a spanning-tree convention for winding components.
+    """
+    from scipy.spatial import cKDTree
+    x, b = np.asarray(positions, float), np.asarray(bounds, float)
+    if (x.ndim != 2 or x.shape[1] != 3 or not len(x) or b.shape != (3, 2)
+            or not np.isfinite(x).all() or not np.isfinite(b).all()
+            or not np.isfinite(cutoff)):
+        raise ValueError("Finite nonempty positions and orthorhombic bounds required")
+    lengths = b[:, 1]-b[:, 0]
+    if np.any(lengths <= 0) or not 0 < cutoff < .5*lengths.min():
+        raise ValueError("Cutoff must lie below every half-box length")
+    x = (x-b[:, 0]) % lengths
+    neighbors = [[] for _ in x]
+    for i, j in sorted(cKDTree(x, boxsize=lengths).query_pairs(cutoff)):
+        shift = -np.rint((x[j]-x[i])/lengths).astype(np.int64)
+        neighbors[i].append((j, shift))
+        neighbors[j].append((i, -shift))
+    images = np.zeros((len(x), 3), dtype=np.int64)
+    visited = np.zeros(len(x), dtype=bool)
+    winding = np.zeros(3, dtype=bool)
+    components = 0
+    for root in range(len(x)):
+        if visited[root]:
+            continue
+        components += 1
+        visited[root] = True
+        stack = [root]
+        while stack:
+            i = stack.pop()
+            for j, shift in neighbors[i]:
+                candidate = images[i]+shift
+                if visited[j]:
+                    winding |= candidate != images[j]
+                else:
+                    images[j] = candidate
+                    visited[j] = True
+                    stack.append(j)
+    return dict(winding_axes=winding, image_shifts=images, components=components)
