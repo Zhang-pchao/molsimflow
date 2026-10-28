@@ -234,3 +234,79 @@ def shared_water_site_bridges(directed_edges):
     pairs = sorted(count)
     return (np.asarray(pairs, dtype=np.int64).reshape(-1, 2),
             np.asarray([count[p] for p in pairs], dtype=np.int64))
+
+
+def origin_conditioned_transport(
+    ids_before: np.ndarray,
+    ids_after: np.ndarray,
+    positions_before: np.ndarray,
+    positions_after: np.ndarray,
+    origin_labels: np.ndarray,
+    destination_labels: np.ndarray,
+    frame_displacement: np.ndarray,
+    *,
+    state_count: int,
+) -> dict[str, np.ndarray]:
+    """Accumulate endpoint transitions and displacement moments by origin.
+
+    IDs must be identical ordered unique nonnegative integers. Positions are
+    already unwrapped N by 3 coordinates in a common lab frame; this function
+    never infers periodic images from a minimum-image endpoint displacement.
+    Each particle has one integer state in [0, state_count), with 0 reserved
+    by convention for outside. All initial particles remain in the accounting,
+    including those that leave a region. Origin/destination geometry is owned
+    by the caller; moving-state changes alone do not imply particle motion.
+
+    Return counts[K,K], origin_support[K], destination_support[K] and lab/
+    relative displacement sums and componentwise squared sums[K,K,3].
+    Relative displacement is lab displacement minus frame_displacement.
+    Summing destination axis 1 gives origin-conditioned moments without
+    survivor selection. Empty supports have zero moments, not defined means.
+
+    These endpoint moments do not count intervening crossings or prove
+    continuous residence, a resolved flux, recirculation, or closed paths.
+    """
+    if (not isinstance(state_count, (int, np.integer))
+            or isinstance(state_count, (bool, np.bool_)) or state_count < 1):
+        raise ValueError("state_count must be a positive integer")
+    before_ids, after_ids = np.asarray(ids_before), np.asarray(ids_after)
+    if (before_ids.ndim != 1 or after_ids.shape != before_ids.shape
+            or before_ids.dtype.kind not in "iu" or after_ids.dtype.kind not in "iu"
+            or np.any(before_ids < 0) or np.any(after_ids < 0)
+            or not np.array_equal(before_ids, after_ids)
+            or len(np.unique(before_ids)) != len(before_ids)):
+        raise ValueError("Identical ordered unique nonnegative integer IDs required")
+    labels = [np.asarray(origin_labels), np.asarray(destination_labels)]
+    if any(a.shape != before_ids.shape or a.dtype.kind not in "iu"
+           or np.any(a < 0) or np.any(a >= state_count) for a in labels):
+        raise ValueError("One integer state in [0, state_count) per particle required")
+    raw_positions = [np.asarray(positions_before), np.asarray(positions_after),
+                     np.asarray(frame_displacement)]
+    if any(a.dtype.kind not in "iuf" for a in raw_positions):
+        raise ValueError("Real coordinate and frame-displacement arrays required")
+    x0, x1, shift = [np.asarray(a, dtype=float) for a in raw_positions]
+    if (x0.shape != (len(before_ids), 3) or x1.shape != x0.shape
+            or shift.shape != (3,)
+            or not all(np.isfinite(a).all() for a in (x0, x1, shift))):
+        raise ValueError("Finite N by 3 endpoints and 3-vector frame displacement required")
+
+    origin, destination = [a.astype(np.int64, copy=False) for a in labels]
+    shape = (int(state_count), int(state_count))
+    counts = np.zeros(shape, dtype=np.int64)
+    np.add.at(counts, (origin, destination), 1)
+    result = dict(counts=counts, origin_support=counts.sum(axis=1),
+                  destination_support=counts.sum(axis=0))
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            lab = x1 - x0
+            relative = lab - shift
+            for name, displacement in (("lab", lab), ("relative", relative)):
+                total = np.zeros(shape + (3,), dtype=float)
+                squared = np.zeros_like(total)
+                np.add.at(total, (origin, destination), displacement)
+                np.add.at(squared, (origin, destination), displacement * displacement)
+                result[name + "_displacement_sum"] = total
+                result[name + "_displacement_squared_sum"] = squared
+    except FloatingPointError as exc:
+        raise ValueError("Displacement moment overflow") from exc
+    return result

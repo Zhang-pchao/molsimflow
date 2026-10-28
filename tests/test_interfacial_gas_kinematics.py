@@ -67,3 +67,18 @@ def test_degenerate_motion_and_layers_rejected():
         fit_rigid_motion(np.zeros((3, 3)), np.ones((3, 3)))
     with pytest.raises(ValueError):
         quantile_layer_labels(np.zeros(4), np.ones(4, bool))
+
+
+def test_simple_shear_has_nonzero_rotation_fit_without_closed_paths():
+    # x(t)=x(0)+gamma*z*t, z(t)=z(0): open material paths, not rolling.
+    x = np.array([[a, b, c] for a in (-1., 1.)
+                  for b in (-1., 1.) for c in (-1., 1.)])
+    gamma = 2.
+    v = np.column_stack((gamma*x[:, 2], np.zeros(len(x)), np.zeros(len(x))))
+    fit = fit_rigid_motion(x, v)
+    assert np.allclose(fit["omega"], [0., gamma/2, 0.])
+    assert fit["rotation_energy_fraction"] == pytest.approx(.5)
+    assert fit["residual_rms"] > 0
+    later = x + 10*v
+    assert np.array_equal(later[:, 2], x[:, 2])
+    assert np.all(np.abs(later[:, 0]-x[:, 0]) > 0)

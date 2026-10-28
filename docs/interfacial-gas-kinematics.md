@@ -14,3 +14,8 @@ Positive omega_y corresponds to front-down/rear-up motion for migration along
 noise and does not establish rolling. Examine time blocks, cadence sensitivity,
 coarse fields, and contact-population exchange. A projected XZ velocity field
 averages over Y. It is not a central slice or proof of closed streamlines.
+
+Simple shear provides an explicit counterexample: v_x=gamma*z, v_z=0 has
+nonzero best-fit omega_y (gamma/2 for symmetric isotropic XZ support), while
+material paths remain open with constant z. A nonzero fitted rotation or
+vorticity therefore does not by itself identify rolling or a closed vortex.
