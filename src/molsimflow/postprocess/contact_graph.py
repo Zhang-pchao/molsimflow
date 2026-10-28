@@ -647,3 +647,59 @@ def components_with_isolated_nodes(
         raise ValueError("Edges must join two different declared nodes")
     parts = [sorted(c) for c in _connected_components(node_set, edges)]
     return sorted(parts, key=lambda c: (-len(c), c))
+
+
+def bounded_anchor_hops(
+    node_count: int,
+    edges: np.ndarray,
+    anchors: Iterable[int],
+    max_hops: int = 2,
+) -> Dict[str, np.ndarray]:
+    """Find bounded undirected graph distances to explicit anchor nodes.
+
+    Return integer arrays distance, parent and anchor indexed by node ordinal.
+    Unreached nodes have -1 in each array; an anchor has distance zero and
+    itself as parent. Sorted seeds and neighbors make equal-distance paths
+    deterministic under edge permutation. Edges describe supplied geometry;
+    no chemical eligibility or interaction strength is inferred. The caller
+    maps ordinals back to persistent particle identities.
+    """
+    from numbers import Integral
+
+    for value, name in [(node_count, "node_count"), (max_hops, "max_hops")]:
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+            raise ValueError(name + " must be a non-negative integer")
+    edge_array = np.asarray(edges)
+    if edge_array.size == 0:
+        edge_array = np.empty((0, 2), dtype=np.int64)
+    if edge_array.ndim != 2 or edge_array.shape[1] != 2:
+        raise ValueError("edges must have shape (n, 2)")
+    seed_array = np.asarray(list(anchors))
+    for array, name in [(edge_array, "edges"), (seed_array, "anchors")]:
+        if array.size and (array.dtype.kind not in "iu" or
+                           np.any(array < 0) or np.any(array >= node_count)):
+            raise ValueError(name + " must contain valid integer node ordinals")
+    if seed_array.ndim != 1:
+        raise ValueError("anchors must be one-dimensional")
+    adjacency: Dict[int, Set[int]] = defaultdict(set)
+    for first, second in edge_array:
+        adjacency[int(first)].add(int(second))
+        adjacency[int(second)].add(int(first))
+    distance = np.full(node_count, -1, dtype=np.int64)
+    parent = np.full(node_count, -1, dtype=np.int64)
+    anchor = np.full(node_count, -1, dtype=np.int64)
+    queue = deque(sorted(set(seed_array.tolist())))
+    for seed in queue:
+        distance[seed] = 0
+        parent[seed] = anchor[seed] = seed
+    while queue:
+        node = queue.popleft()
+        if distance[node] >= max_hops:
+            continue
+        for neighbor in sorted(adjacency.get(node, ())):
+            if distance[neighbor] < 0:
+                distance[neighbor] = distance[node] + 1
+                parent[neighbor] = node
+                anchor[neighbor] = anchor[node]
+                queue.append(neighbor)
+    return {"distance": distance, "parent": parent, "anchor": anchor}
