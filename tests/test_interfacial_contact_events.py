@@ -44,3 +44,41 @@ def test_diagonal_periodic_channel():
     assert np.array_equal(periodic_exterior_void(m), ~m)
     shifted = np.roll(np.roll(m, 4, axis=0), 7, axis=1)
     assert np.array_equal(periodic_exterior_void(shifted), ~shifted)
+
+
+from molsimflow.postprocess.interfacial_contact_events import persistent_state_intervals
+
+def test_interval_confirmation_and_long_unknown():
+    states = np.array([1]*5 + [-1]*50 + [0]*5)
+    runs, events = persistent_state_intervals(states, np.arange(60)*10, 10)
+    assert (events[0].left, events[0].right, events[0].confirmed) == (4, 55, 59)
+    assert (events[0].before, events[0].after) == (1, 0)
+    assert len(runs) == 2
+
+def test_same_state_updates_last_support_and_short_runs_stay_uncertain():
+    s = np.array([1]*3 + [-1]*2 + [1]*3 + [0] + [-1]*2 + [0]*3)
+    runs, e = persistent_state_intervals(s, np.arange(len(s)), 1, persistence=3)
+    assert len(runs) == 3 and len(e) == 1
+    assert (e[0].left, e[0].right, e[0].confirmed) == (7, 11, 13)
+
+@pytest.mark.parametrize("gap,epoch", [(True, False), (False, True)])
+def test_interval_never_crosses_native_or_explicit_boundary(gap, epoch):
+    s = np.array([1]*3 + [0]*3); t = np.arange(6)*10
+    if gap:t[3:] += 10
+    segments = np.array([0]*3 + [int(epoch)]*3)
+    _, e = persistent_state_intervals(s, t, 10, persistence=3, segments=segments)
+    assert not e
+
+def test_censored_runs_and_empty_series():
+    runs, e = persistent_state_intervals(np.ones(6, int), np.arange(6), 1)
+    assert len(runs) == 1 and not e
+    assert persistent_state_intervals(np.array([], int), np.array([], int), 1) == ([], [])
+    assert not persistent_state_intervals(np.ones(4, int), np.arange(4), 1)[0]
+
+@pytest.mark.parametrize("s,t,k", [
+    ([0,2], [0,1], 1), ([0,1], [0,0], 1), ([0,1], [0,1], 0),
+    ([0.,1.], [0,1], 1),
+])
+def test_invalid_interval_input(s,t,k):
+    with pytest.raises(ValueError):
+        persistent_state_intervals(np.array(s), np.array(t), 1, persistence=k)

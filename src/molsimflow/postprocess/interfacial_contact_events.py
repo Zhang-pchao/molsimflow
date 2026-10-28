@@ -89,3 +89,75 @@ def saved_contact_states(contact: np.ndarray, timesteps: np.ndarray,
     labels[(b == persistence) & (a == persistence)] = 3
     out[ii] = labels
     return out
+
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SavedStateRun:
+    """A uniform known state at consecutive saved samples (inclusive indices)."""
+    segment: int
+    state: int
+    first: int
+    last: int
+    confirmed: int
+
+
+@dataclass(frozen=True)
+class SavedStateTransition:
+    """Transition bracket, not a precise time or continuous residence."""
+    segment: int
+    before: int
+    after: int
+    left: int
+    right: int
+    confirmed: int
+
+
+def persistent_state_intervals(
+    states: np.ndarray, timesteps: np.ndarray, cadence: int, *,
+    persistence: int = 5, segments: np.ndarray | None = None,
+) -> tuple[list[SavedStateRun], list[SavedStateTransition]]:
+    """Bracket changes between persistent saved binary states.
+
+    States are 0, 1, or unknown -1. Runs require persistence consecutive
+    native samples; unknown values never extend a run. Native gaps and changes
+    in explicit segment identity reset history. Consecutive qualified runs of
+    the same state update the last known support. Opposite qualified runs
+    bracket a transition between the previous run's last sample and the new
+    run's first sample; its confirmation is a separate, later sample.
+
+    Short opposite runs and unknown intervals remain inside the bracket.
+    Unobserved recrossings are not excluded. All qualified runs are returned
+    so callers can retain censored endpoints and nontransition histories.
+    """
+    s, t = np.asarray(states), np.asarray(timesteps)
+    if (s.ndim != 1 or s.dtype.kind not in "iu" or
+            t.ndim != 1 or t.dtype.kind not in "iu" or len(s) != len(t) or
+            np.any(~np.isin(s, [-1, 0, 1])) or np.any(np.diff(t) <= 0) or
+            not isinstance(cadence, (int, np.integer)) or cadence < 1 or
+            not isinstance(persistence, (int, np.integer)) or persistence < 1):
+        raise ValueError("Ordered integer samples, binary/unknown states and positive counts required")
+    seg = np.zeros(len(s), dtype=int) if segments is None else np.asarray(segments)
+    if seg.ndim != 1 or len(seg) != len(s):
+        raise ValueError("One explicit segment identity per sample required")
+    runs, transitions = [], []
+    if not len(s):
+        return runs, transitions
+    reset = np.r_[True, (np.diff(t) != cadence) | (seg[1:] != seg[:-1])]
+    block = np.cumsum(reset) - 1
+    cuts = np.r_[0, np.flatnonzero(reset[1:] | (s[1:] != s[:-1])) + 1, len(s)]
+    previous = None
+    for first, stop in zip(cuts[:-1], cuts[1:]):
+        if s[first] < 0 or stop-first < persistence:
+            continue
+        run = SavedStateRun(int(block[first]), int(s[first]), int(first),
+                            int(stop-1), int(first+persistence-1))
+        runs.append(run)
+        if previous is not None and previous.segment == run.segment and previous.state != run.state:
+            transitions.append(SavedStateTransition(
+                run.segment, previous.state, run.state, previous.last,
+                run.first, run.confirmed))
+        previous = run
+    return runs, transitions
