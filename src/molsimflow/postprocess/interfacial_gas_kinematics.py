@@ -174,3 +174,68 @@ def periodic_cluster_winding(positions, bounds, cutoff):
                     visited[j] = True
                     stack.append(j)
     return dict(winding_axes=winding, image_shifts=images, components=components)
+
+
+def signed_planar_turning(
+    positions, steps, epochs, membership, *,
+    expected_step, axes=(0, 2), minimum_radius=3.0,
+    maximum_increment=np.pi / 2,
+):
+    """Return supported signed angle increments around a supplied moving origin.
+
+    Positions have shape (time, ordered identity, 3) in a caller-qualified
+    finite local chart. The caller owns the center, PBC chart and membership.
+    Every interval must share epoch and cadence, retain the identity, stay
+    outside the minimum axis radius, and pass the sampled angular-increment
+    bound. Missing intervals are NaN, never zero rotation.
+
+    Positive angle in the default XZ plane is opposite positive omega_y.
+    Subsampling can hide arbitrary intervening turns even if this bound passes.
+    Net angle, nonzero vorticity, or a fitted rotation does not prove a closed
+    spatial orbit, coherent circulation, or rolling. Report rejected support,
+    cadence/radius sensitivity, signed cancellation and appropriate controls.
+    """
+    p = np.asarray(positions, dtype=float)
+    step = np.asarray(steps)
+    epoch = np.asarray(epochs)
+    member = np.asarray(membership)
+    if p.ndim != 3 or p.shape[2] != 3 or len(p) < 2:
+        raise ValueError("At least two time-by-identity-by-three positions required")
+    if step.shape != (len(p),) or epoch.shape != step.shape:
+        raise ValueError("One step and epoch per frame required")
+    if step.dtype.kind not in "iu" or epoch.dtype.kind not in "iu":
+        raise ValueError("Integer steps and epochs required")
+    if np.any(np.diff(step) <= 0) or np.any(epoch < 0):
+        raise ValueError("Strictly increasing steps and nonnegative epochs required")
+    if member.shape != p.shape[:2] or member.dtype.kind != "b":
+        raise ValueError("Boolean time-by-identity membership required")
+    if not np.isfinite(p[member]).all():
+        raise ValueError("Present positions must be finite")
+    if (len(axes) != 2 or axes[0] == axes[1]
+            or any(a not in (0, 1, 2) for a in axes)):
+        raise ValueError("Two distinct spatial axes required")
+    if (not isinstance(expected_step, (int, np.integer)) or expected_step <= 0
+            or not np.isfinite(minimum_radius) or minimum_radius <= 0
+            or not np.isfinite(maximum_increment)
+            or not 0 < maximum_increment < np.pi):
+        raise ValueError("Positive cadence/radius and angular bound below pi required")
+    xy = p[..., list(axes)]
+    radius = np.linalg.norm(xy, axis=-1)
+    a, b = xy[:-1], xy[1:]
+    angle = np.arctan2(a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0],
+                      np.sum(a * b, axis=-1))
+    time_ok = (np.diff(step) == expected_step) & (epoch[:-1] == epoch[1:])
+    identity_ok = member[:-1] & member[1:]
+    radius_ok = (radius[:-1] >= minimum_radius) & (radius[1:] >= minimum_radius)
+    finite_ok = np.isfinite(angle)
+    increment_ok = np.abs(angle) <= maximum_increment
+    valid = time_ok[:, None] & identity_ok & radius_ok & finite_ok & increment_ok
+    return dict(
+        angle_increment=np.where(valid, angle, np.nan),
+        valid_interval=valid,
+        time_interval_valid=time_ok,
+        member_interval_valid=identity_ok,
+        radius_interval_valid=radius_ok,
+        increment_interval_valid=increment_ok,
+        planar_radius=radius,
+    )

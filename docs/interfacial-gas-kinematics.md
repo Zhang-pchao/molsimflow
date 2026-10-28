@@ -19,3 +19,5 @@ Simple shear provides an explicit counterexample: v_x=gamma*z, v_z=0 has
 nonzero best-fit omega_y (gamma/2 for symmetric isotropic XZ support), while
 material paths remain open with constant z. A nonzero fitted rotation or
 vorticity therefore does not by itself identify rolling or a closed vortex.
+
+The signed_planar_turning helper returns cadence-, epoch-, membership-, and radius-qualified sampled XZ angle increments. It is a trajectory diagnostic independent of the instantaneous rigid fit. Report rejected support and radius/cadence sensitivity. Opposite individual turns can cancel, and a shear path can turn without closing. Neither a net angle nor a full azimuth revolution alone proves coherent circulation, a closed three-dimensional orbit, or rolling.
