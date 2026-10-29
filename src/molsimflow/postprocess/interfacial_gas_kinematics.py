@@ -239,3 +239,37 @@ def signed_planar_turning(
         increment_interval_valid=increment_ok,
         planar_radius=radius,
     )
+
+def fit_affine_motion(positions, velocities, *, condition_limit=1e8):
+    """Fit v = U + A (x - mean(x)) with equal particle weights.
+
+    Supply a single finite unwrapped geometry and consistent velocity units.
+    A[i,j] is dv_i/dx_j. Return strain and rotation tensors, not a vortex or
+    propulsion classification. Their energies are not generally additive.
+    Degenerate or ill-conditioned geometries raise ValueError.
+    """
+    x, v = np.asarray(positions, float), np.asarray(velocities, float)
+    if x.ndim != 2 or x.shape[1:] != (3,) or v.shape != x.shape or len(x) < 4:
+        raise ValueError("Matching N-by-3 arrays with at least four particles required")
+    if not np.isfinite(x).all() or not np.isfinite(v).all():
+        raise ValueError("Finite coordinates and velocities required")
+    if not np.isfinite(condition_limit) or condition_limit <= 1:
+        raise ValueError("Condition limit must be finite and greater than one")
+    center, translation = x.mean(axis=0), v.mean(axis=0)
+    r, u = x - center, v - translation
+    coefficient, _, rank, singular = np.linalg.lstsq(r, u, rcond=None)
+    condition = float(singular[0] / singular[-1]) if singular[-1] > 0 else np.inf
+    if rank != 3 or condition > condition_limit:
+        raise ValueError("Affine motion is not identifiable in this geometry")
+    gradient = coefficient.T
+    strain = (gradient + gradient.T) / 2
+    rotation = (gradient - gradient.T) / 2
+    residual = u - r @ gradient.T
+    total = float(np.sum(u * u))
+    error = float(np.sum(residual * residual))
+    return dict(center=center, translation=translation, gradient=gradient,
+                strain=strain, rotation=rotation,
+                omega=np.array([rotation[2, 1], rotation[0, 2], rotation[1, 0]]),
+                rank=int(rank), singular_values=singular, condition=condition,
+                residual_rms=float(np.sqrt(error / len(x))),
+                explained_fraction=1 - error / total if total > 1e-24 else 0.)
