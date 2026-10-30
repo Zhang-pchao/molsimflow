@@ -310,3 +310,31 @@ def origin_conditioned_transport(
     except FloatingPointError as exc:
         raise ValueError("Displacement moment overflow") from exc
     return result
+
+
+def sampled_run_support(states: np.ndarray, steps: np.ndarray, *,
+                        span_steps: int, cadence_steps: int) -> np.ndarray:
+    """Mark run END samples having a continuous saved-state span.
+
+    States are time by site. Gaps reset all runs; false samples reset their site.
+    A span requires elapsed time, so a span of four cadences needs five samples.
+    This does not establish continuous residence between saved samples.
+    """
+    s, t = np.asarray(states), np.asarray(steps)
+    if (s.ndim != 2 or s.dtype != bool or t.ndim != 1 or len(t) != len(s)
+            or t.dtype.kind not in "iu" or np.any(np.diff(t) <= 0)
+            or span_steps < 0 or cadence_steps <= 0):
+        raise ValueError("Ordered integer times and boolean time-by-site states required")
+    out = np.zeros_like(s)
+    if not len(t):
+        return out
+    start = np.full(s.shape[1], t[0], dtype=np.int64)
+    previous = np.zeros(s.shape[1], dtype=bool)
+    for i, step in enumerate(t):
+        if i and step-t[i-1] != cadence_steps:
+            previous[:] = False
+        begin = s[i] & ~previous
+        start[begin] = step
+        out[i] = s[i] & (step-start >= span_steps)
+        previous = s[i].copy()
+    return out

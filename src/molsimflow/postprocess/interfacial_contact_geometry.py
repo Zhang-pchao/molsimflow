@@ -200,3 +200,51 @@ def endpoint_occupation_budget(m0x0: np.ndarray, m0x1: np.ndarray,
     delta = n11 - n00
     return dict(before=n00, after=n11, particle=particle, geometry=geometry,
                 delta=delta, residual=delta-particle-geometry)
+
+
+def prescribed_contact_shift(mask: np.ndarray, spacing: np.ndarray,
+                             displacement: float) -> dict:
+    """Conservatively translate a periodic XY footprint along X.
+
+    This is a prospective geometric operation, not an atomic displacement or
+    force calculation. Fractional shifts mix two adjacent integer rolls; holes
+    and components are never filled. Gain and loss are nonnegative cell
+    fractions, not future observed contacts.
+    """
+    m, dx = np.asarray(mask), np.asarray(spacing, dtype=float)
+    if (m.ndim != 2 or not all(m.shape) or m.dtype != bool or dx.shape != (2,)
+            or not np.isfinite(dx).all() or np.any(dx <= 0)
+            or not np.isfinite(displacement)):
+        raise ValueError("Boolean XY mask, positive spacing and finite shift required")
+    shift = displacement / dx[0]
+    k = int(np.floor(shift))
+    fraction = shift - k
+    moved = (1 - fraction) * np.roll(m, k, axis=0) + fraction * np.roll(m, k+1, axis=0)
+    gain, loss = np.maximum(moved - m, 0), np.maximum(m.astype(float) - moved, 0)
+    area = float(np.prod(dx))
+    return dict(shifted=moved, gain=gain, loss=loss,
+                gained_area=float(gain.sum()*area),
+                lost_area=float(loss.sum()*area),
+                area_residual=float((moved.sum()-m.sum())*area))
+
+
+def site_weighted_load(cell_weights: np.ndarray, grid: SurfaceGrid,
+                       site_counts: np.ndarray) -> dict:
+    """Integrate site counts over fractional selected site ownership areas.
+
+    Bounds allow arbitrary unresolved allocation inside each site's cell union.
+    Equivalent counts are uniform-within-site estimates, not exact particles.
+    """
+    w, n = np.asarray(cell_weights, dtype=float), np.asarray(site_counts, dtype=float)
+    if (w.shape != grid.owner.shape or n.shape != (grid.site_count,)
+            or not np.isfinite(w).all() or not np.isfinite(n).all()
+            or np.any(w < 0) or np.any(w > 1) or np.any(n < 0)):
+        raise ValueError("Finite nonnegative counts and cell fractions in [0,1] required")
+    area = np.bincount(grid.owner.ravel(), minlength=grid.site_count)*grid.cell_area
+    selected = np.bincount(grid.owner.ravel(), weights=w.ravel(),
+                           minlength=grid.site_count)*grid.cell_area
+    fraction = np.divide(selected, area, out=np.zeros_like(area), where=area>0)
+    return dict(site_area=area, selected_area=selected, fraction=fraction,
+                equivalent=float(fraction@n),
+                lower=float(n[(fraction >= 1-1e-12) & (area>0)].sum()),
+                upper=float(n[fraction > 1e-12].sum()))
