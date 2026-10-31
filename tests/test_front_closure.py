@@ -1,0 +1,128 @@
+"""Tests for the column-level closure statistics.
+
+These tests pin the definitions that decide whether the chemical pattern
+controls sustained advance. They check the statistics against cases
+with a known answer, and they check that the guard against a sparse
+tail actually damps a sparse column.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from molsimflow.postprocess.front_closure import (
+    area_normalised_rate,
+    closure_test,
+    column_selectivity,
+    permutation_p_value,
+    shrink_ratio_toward_unity,
+    spearman_rank_correlation,
+)
+
+
+def test_spearman_detects_a_monotone_relation():
+    x = np.arange(10, dtype=float)
+    assert spearman_rank_correlation(x, 2.0 * x + 1.0) == pytest.approx(1.0)
+    assert spearman_rank_correlation(x, -3.0 * x) == pytest.approx(-1.0)
+
+
+def test_spearman_is_undefined_for_too_few_pairs():
+    assert np.isnan(spearman_rank_correlation([1.0, 2.0], [1.0, 2.0]))
+
+
+def test_spearman_is_undefined_for_a_constant_series():
+    assert np.isnan(spearman_rank_correlation(np.ones(10), np.arange(10.0)))
+
+
+def test_spearman_drops_non_finite_pairs():
+    x = np.array([1.0, 2.0, 3.0, 4.0, np.nan])
+    y = np.array([1.0, 3.0, 2.0, 4.0, 5.0])
+    # the four finite pairs are not perfectly ordered, but they are
+    # clearly positively related
+    assert spearman_rank_correlation(x, y) == pytest.approx(0.8)
+
+
+def test_permutation_p_is_large_for_a_random_relation():
+    rng = np.random.default_rng(7)
+    a = rng.normal(size=40)
+    b = rng.normal(size=40)
+    rho = spearman_rank_correlation(a, b)
+    assert permutation_p_value(rho, a, b, n_permutations=2000) > 0.05
+
+
+def test_permutation_p_is_small_for_a_strong_relation():
+    a = np.arange(40, dtype=float)
+    b = 3.0 * a + 0.5
+    rho = spearman_rank_correlation(a, b)
+    assert permutation_p_value(rho, a, b, n_permutations=2000) < 0.01
+
+
+def test_area_normalised_rate_removes_the_site_count_factor():
+    # the same contact rate per site, different numbers of sites
+    hits = np.array([60.0, 30.0])
+    area = np.array([10.0, 5.0])
+    rates = area_normalised_rate(hits, area)
+    assert rates[0] == pytest.approx(6.0)
+    assert rates[1] == pytest.approx(6.0)
+
+
+def test_area_normalised_rate_is_nan_without_sites():
+    rates = area_normalised_rate(np.array([3.0, 0.0]), np.array([2.0, 0.0]))
+    assert rates[0] == pytest.approx(1.5)
+    assert np.isnan(rates[1])
+
+
+def test_shrinkage_pulls_a_sparse_ratio_towards_one():
+    # a ratio of ten backed by a single observation
+    sparse = shrink_ratio_toward_unity(10.0, support=1.0, pseudo_count=10.0)
+    assert sparse < 2.0
+    # the same ratio backed by a hundred observations is nearly kept
+    strong = shrink_ratio_toward_unity(10.0, support=100.0, pseudo_count=10.0)
+    assert strong == pytest.approx(10.0 ** (100.0 / 110.0))
+    assert strong > 8.0
+
+
+def test_shrinkage_is_symmetric_in_log_space():
+    # a ratio of ten and its inverse are damped by the same factor
+    up = shrink_ratio_toward_unity(10.0, support=1.0)
+    down = shrink_ratio_toward_unity(0.1, support=1.0)
+    assert up * down == pytest.approx(1.0)
+
+
+def test_shrinkage_leaves_a_ratio_near_one_alone():
+    assert shrink_ratio_toward_unity(1.0, support=1.0) == pytest.approx(1.0)
+
+
+def test_column_selectivity_is_undefined_without_the_denominator_motif():
+    hits = np.array([10.0, 5.0, 0.0])
+    area = np.array([3.0, 3.0, 0.0])
+    assert np.isnan(column_selectivity(hits, area, 0, 2))
+
+
+def test_column_selectivity_uses_area_not_raw_counts():
+    # identical contact rate per site, so no preference
+    hits = np.array([60.0, 30.0])
+    area = np.array([10.0, 5.0])
+    assert column_selectivity(hits, area, 0, 1) == pytest.approx(1.0)
+
+
+def test_column_selectivity_damps_a_sparse_denominator():
+    # the numerator is seen often, the denominator once
+    hits = np.array([1000.0, 1.0])
+    area = np.array([10.0, 3.0])
+    stabilised = column_selectivity(hits, area, 0, 1, pseudo_count=10.0)
+    raw = (hits[0] / area[0]) / (hits[1] / area[1])
+    assert raw == pytest.approx(300.0)
+    # the log-space shrinkage keeps it a ratio but far closer to one
+    assert stabilised == pytest.approx(300.0 ** (1.0 / 11.0))
+    assert stabilised < 30.0
+
+
+def test_closure_test_reports_the_number_of_usable_columns():
+    pref = [1.0, 2.0, 3.0, 4.0, 5.0]
+    adv = [0.1, 0.4, 0.3, 0.8, 0.6]
+    out = closure_test(pref, adv, n_permutations=500)
+    assert out["n_columns"] == 5
+    assert np.isfinite(out["spearman_rho"])
+    assert np.isfinite(out["permutation_p"])
