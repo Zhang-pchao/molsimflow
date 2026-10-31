@@ -15,9 +15,13 @@ from molsimflow.postprocess.front_closure import (
     area_normalised_rate,
     closure_test,
     column_selectivity,
+    exposure_normalised_preference,
+    net_displacement,
     permutation_p_value,
+    seam_depth,
     shrink_ratio_toward_unity,
     spearman_rank_correlation,
+    travel_ordered_pattern_match,
 )
 
 
@@ -126,3 +130,60 @@ def test_closure_test_reports_the_number_of_usable_columns():
     assert out["n_columns"] == 5
     assert np.isfinite(out["spearman_rho"])
     assert np.isfinite(out["permutation_p"])
+
+
+def test_seam_depth_measures_a_distance_not_a_column_index():
+    # three columns starting 1.53 A from the seam, 2.4706 A apart
+    x = [75.47, 77.94, 80.41]
+    assert seam_depth(x, +1, 73.94) == pytest.approx(80.41 - 73.94)
+    assert seam_depth(x, +1, 73.94) == pytest.approx(6.47, abs=0.01)
+
+
+def test_seam_depth_is_signed_by_the_direction_of_travel():
+    # a face the front moves out of is measured the other way round
+    x = [55.71, 60.65, 73.00]
+    assert seam_depth(x, -1, 73.94) == pytest.approx(73.94 - 55.71)
+
+
+def test_net_displacement_is_not_the_span():
+    # the front explores out and comes back
+    x = [10.0, 30.0, 12.0]
+    assert net_displacement(x) == pytest.approx(2.0)
+    assert (max(x) - min(x)) == pytest.approx(20.0)
+
+
+def test_travel_ordered_pattern_match_accepts_a_mirrored_pattern():
+    # the arrival face counts up from the seam, the departure face down
+    a = ["mixed", "dual_oh", "mixed"]
+    b = ["mixed", "dual_oh", "mixed"]
+    out = travel_ordered_pattern_match(a, b, [1.5, 4.0, 6.5], [3.4, 5.9, 8.4])
+    assert out["identical"] is True
+    assert out["n_matched"] == 3
+    assert out["n_mismatch"] == 0
+    assert out["depth_a"] == pytest.approx(6.5)
+    assert out["depth_b"] == pytest.approx(8.4)
+
+
+def test_travel_ordered_pattern_match_reports_the_first_mismatch():
+    a = ["mixed", "dual_oh", "mixed"]
+    b = ["mixed", "mixed", "dual_oh"]
+    out = travel_ordered_pattern_match(a, b, [1.5, 4.0, 6.5], [3.4, 5.9, 8.4])
+    assert out["identical"] is False
+    assert out["n_mismatch"] == 2
+    assert out["mismatch_at"] == 1
+
+
+def test_exposure_normalised_preference_removes_the_exposure():
+    # the same chemistry seen for twice as long has twice the raw rate,
+    # but the preference is unchanged
+    short = exposure_normalised_preference(100.0, 10.0, 50.0, 10.0, 100.0)
+    long = exposure_normalised_preference(200.0, 10.0, 100.0, 10.0, 200.0)
+    assert short == pytest.approx(long)
+    assert short == pytest.approx(2.0)
+
+
+def test_exposure_normalised_preference_is_undefined_without_exposure():
+    assert np.isnan(exposure_normalised_preference(
+        100.0, 10.0, 50.0, 10.0, 0.0))
+    assert np.isnan(exposure_normalised_preference(
+        100.0, 0.0, 50.0, 10.0, 100.0))

@@ -38,6 +38,10 @@ __all__ = [
     "stabilised_site_contact_rate",
     "column_selectivity",
     "closure_test",
+    "travel_ordered_pattern_match",
+    "seam_depth",
+    "net_displacement",
+    "exposure_normalised_preference",
 ]
 
 
@@ -214,3 +218,119 @@ def closure_test(preference: Sequence[float],
         "spearman_rho": rho,
         "permutation_p": permutation_p_value(rho, p, a, n_permutations, seed),
     }
+
+
+def seam_depth(x: Sequence[float], direction: int, seam_x: float) -> float:
+    """Depth of the farthest visited column measured from the seam.
+
+    ``direction`` is ``+1`` for a face the front moves into (the x grows
+    away from the seam) and ``-1`` for a face it moves out of. The depth
+    is a distance along x, so it is always positive and it is measured
+    from the seam rather than from the first column.
+
+    The column index is *not* a distance. The first column stands
+    ``x_first - seam_x`` away from the seam, and the columns are
+    ``column_pitch`` apart, so an index-based reach silently mixes the
+    two offsets. Working with x directly removes that ambiguity.
+    """
+    xs = np.asarray(x, dtype=float)
+    if xs.size == 0:
+        return float("nan")
+    if direction > 0:
+        return float(xs.max() - seam_x)
+    return float(seam_x - xs.min())
+
+
+def travel_ordered_pattern_match(pattern_a: Sequence[str],
+                                 pattern_b: Sequence[str],
+                                 distance_a: Sequence[float],
+                                 distance_b: Sequence[float],
+                                 direction_a: int = 1,
+                                 direction_b: int = 1) -> dict:
+    """Match two faces column by column *in the direction of travel.
+
+    Two faces carry the same chemical pattern when their motif labels
+    agree column by column. That comparison is only physically
+    meaningful when the columns are lined up along the direction the
+    front actually moves: a column the front reaches first must be
+    matched against a column the front reaches first, not against the
+    column with the same index in an unrelated coordinate frame.
+
+    ``pattern_a`` and ``pattern_b`` are the motif labels ordered by
+    increasing x. ``distance_a`` and ``distance_b`` are the distances
+    of those columns from the seam, positive and increasing away from
+    the seam in the direction of travel.
+
+    The result reports how many columns could be matched, whether the
+    matched sequences are identical, and the distance travelled on each
+    face.
+    """
+    pa = list(pattern_a)
+    pb = list(pattern_b)
+    if len(pa) != len(pb):
+        return {"n_matched": min(len(pa), len(pb)), "identical": False,
+                "mismatch_at": None, "n_mismatch": None,
+                "depth_a": float("nan"), "depth_b": float("nan"),
+                "depth_ratio": float("nan")}
+
+    n_mismatch = 0
+    first_mismatch = None
+    for i, (x, y) in enumerate(zip(pa, pb)):
+        if x != y:
+            n_mismatch += 1
+            if first_mismatch is None:
+                first_mismatch = i
+
+    depth_a = float(np.nanmax(distance_a)) if len(distance_a) else float("nan")
+    depth_b = float(np.nanmax(distance_b)) if len(distance_b) else float("nan")
+    ratio = depth_b / depth_a if (np.isfinite(depth_a) and depth_a > 0
+                                  and np.isfinite(depth_b)) else float("nan")
+    return {
+        "n_matched": len(pa),
+        "identical": n_mismatch == 0,
+        "n_mismatch": n_mismatch,
+        "mismatch_at": first_mismatch,
+        "depth_a": depth_a,
+        "depth_b": depth_b,
+        "depth_ratio": ratio,
+    }
+
+
+def net_displacement(x: Sequence[float]) -> float:
+    """Net displacement of a front, from the first to the last sample.
+
+    The span of a front is not a displacement. A front that explores
+    far to one side and comes back has a large span and a small net
+    displacement, and it is the net displacement that measures whether
+    the bubble actually made progress.
+    """
+    xs = np.asarray(x, dtype=float)
+    xs = xs[np.isfinite(xs)]
+    if xs.size < 2:
+        return float("nan")
+    return float(xs[-1] - xs[0])
+
+
+def exposure_normalised_preference(hits_numerator: float,
+                                   area_numerator: float,
+                                   hits_denominator: float,
+                                   area_denominator: float,
+                                   n_frames: float) -> float:
+    """Contact preference per unit exposure, not per unit observation.
+
+    A contact rate computed from raw hit counts grows with the time the
+    bubble spends on the face. Two faces that carry the same pattern
+    but are visited for very different lengths of time therefore have
+    different raw rates even if their chemistry is identical. Dividing
+    by the number of frames in which the face was sampled removes the
+    exposure and leaves the preference.
+    """
+    if not np.isfinite(n_frames) or n_frames <= 0:
+        return float("nan")
+    if area_numerator <= 0 or area_denominator <= 0:
+        return float("nan")
+    num = hits_numerator / area_numerator / n_frames
+    den = hits_denominator / area_denominator / n_frames
+    if den <= 0:
+        return float("nan")
+    return float(num / den)
