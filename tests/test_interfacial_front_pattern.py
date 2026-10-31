@@ -13,6 +13,7 @@ from molsimflow.postprocess.interfacial_front_pattern import (
     footprint_composition,
     hazard_by_label,
     tip_isolation,
+    usable_anchor_connectivity,
     front_tip_track,
     intermittency_ratio,
     motif_selectivity,
@@ -312,8 +313,44 @@ def test_hazard_by_label_drops_fully_censored_labels():
     assert hazard_by_label(rows) == []
 
 
+def test_usable_anchor_connectivity_reports_connected_face():
+    # A square of four sites: everything is connected.
+    xy = np.array([[0.0, 0.0], [2.47, 0.0], [0.0, 2.47], [2.47, 2.47]])
+    mask = np.array([True, True, True, True])
+    motif = np.array([0, 0, 2, 2])
+    res = usable_anchor_connectivity(xy, mask, motif, None)
+    assert res["n_usable"] == 4
+    assert res["largest_fragment"] == 4
+    assert res["connected_fraction"] == pytest.approx(1.0)
+    assert res["n_fragments"] == 1
+
+
+def test_usable_anchor_connectivity_detects_fragmented_sublattice():
+    # Two bare sites far apart, two di-OH sites far apart: selecting bare
+    # leaves two isolated fragments, selecting everything gives one piece.
+    xy = np.array([[0.0, 0.0], [0.0, 20.0], [3.0, 0.0], [3.0, 20.0]])
+    mask = np.array([True, True, True, True])
+    motif = np.array([0, 0, 2, 2])
+    bare = usable_anchor_connectivity(xy, mask, motif, 0)
+    assert bare["n_usable"] == 2
+    assert bare["largest_fragment"] == 1
+    assert bare["connected_fraction"] == pytest.approx(0.5)
+    assert bare["n_fragments"] == 2
+    every = usable_anchor_connectivity(xy, mask, motif, None)
+    assert every["largest_fragment"] == 2
+    assert every["connected_fraction"] == pytest.approx(0.5)
+
+
+def test_usable_anchor_connectivity_handles_empty_usable_set():
+    xy = np.array([[0.0, 0.0]])
+    mask = np.array([True])
+    motif = np.array([2])
+    res = usable_anchor_connectivity(xy, mask, motif, 0)
+    assert res["n_usable"] == 0
+    assert res["n_fragments"] == 0
+
+
 def test_tip_isolation_detects_isolated_leading_contact():
-    # Two parents 10 A apart: the leading one has no contacted neighbour.
     xy = np.array([[0.0, 0.0], [10.0, 0.0]])
     mask = np.array([True, True])
     res = tip_isolation([np.array([0, 1])], xy, mask)

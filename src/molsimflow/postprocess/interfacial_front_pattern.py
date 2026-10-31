@@ -533,6 +533,82 @@ def footprint_coherence(contacted_parents: Sequence[np.ndarray],
     }
 
 
+def usable_anchor_connectivity(parent_xy: np.ndarray, half_mask: np.ndarray,
+                               motif: np.ndarray, preferred_motif: int | None, *,
+                               link_distance_A: float = 5.3) -> dict[str, float]:
+    """Measure how connected the gas-usable part of a face is.
+
+    A gas bubble needs a two-dimensional basal footprint to advance as a
+    body. Whether such a footprint can form depends on two separate
+    questions, and this function answers the second one:
+
+    1. Which sites will the gas use? If the gas has no preference on
+       this face, it may use every site. If it strongly prefers one
+       chemistry, the usable set collapses onto that sublattice.
+    2. Are the usable sites connected to each other?
+
+    The second question is not automatic. On a staggered lattice the
+    nearest-neighbour spacing is set by the *inter-column* offset, so a
+    column can hold chemically identical sites that are 8.56 A apart and
+    therefore share no bond. A sublattice selected by affinity can then
+    shatter into many small fragments, leaving the bubble with no large
+    connected region to anchor on.
+
+    ``preferred_motif`` selects the affinity filter. Pass ``None`` when
+    the face shows no affinity contrast and the whole face is usable.
+    The result reports the size of the largest connected fragment and
+    its fraction of the usable set. A value near one means the face can
+    host a contiguous footprint; a small value means it cannot.
+
+    The link distance must be reported alongside the result: it is a
+    modelling choice, not a measurement.
+    """
+    from scipy.spatial import cKDTree
+
+    xy = np.asarray(parent_xy, dtype=float)
+    mask = np.asarray(half_mask, dtype=bool)
+    motifs = np.asarray(motif, dtype=int)
+
+    if preferred_motif is None:
+        usable = np.where(mask)[0]
+    else:
+        usable = np.where(mask & (motifs == int(preferred_motif)))[0]
+    if usable.size == 0:
+        return {"n_usable": 0, "largest_fragment": 0,
+                "connected_fraction": float("nan"), "n_fragments": 0}
+
+    tree = cKDTree(xy[usable])
+    pairs = tree.query_pairs(link_distance_A, output_type="ndarray")
+    adjacency: dict[int, list[int]] = {}
+    for i, j in pairs:
+        adjacency.setdefault(int(i), []).append(int(j))
+        adjacency.setdefault(int(j), []).append(int(i))
+
+    seen: set[int] = set()
+    sizes: list[int] = []
+    for start in range(usable.size):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        size = 0
+        while stack:
+            node = stack.pop()
+            size += 1
+            for nb in adjacency.get(node, ()):
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        sizes.append(size)
+    largest = max(sizes)
+    return {
+        "n_usable": int(usable.size),
+        "largest_fragment": int(largest),
+        "connected_fraction": float(largest / usable.size),
+        "n_fragments": len(sizes),
+    }
+
+
 def tip_isolation(contacted_parents: Sequence[np.ndarray],
                   parent_xy: np.ndarray, half_mask: np.ndarray, *,
                   link_distance_A: float = 5.3) -> dict[str, float]:
