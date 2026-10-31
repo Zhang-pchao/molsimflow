@@ -42,6 +42,8 @@ __all__ = [
     "seam_depth",
     "net_displacement",
     "exposure_normalised_preference",
+    "envelope_leading_edge",
+    "leading_edge_advance",
 ]
 
 
@@ -334,3 +336,110 @@ def exposure_normalised_preference(hits_numerator: float,
     if den <= 0:
         return float("nan")
     return float(num / den)
+
+
+def envelope_leading_edge(signed_distance: np.ndarray,
+                          x: np.ndarray,
+                          face_mask: np.ndarray,
+                          min_run: int = 3,
+                          gap: float = 3.0) -> np.ndarray:
+    """Leading edge of a gas envelope over a face, per frame.
+
+    This is an observable that is built from the *bulk geometry* of the
+    gas body rather than from a count of atomic contacts, and it is
+    intended as a cross-check on any conclusion that was reached through
+    contact bookkeeping.
+
+    ``signed_distance`` is the signed distance from each surface site to
+    the boundary of the projected gas envelope, positive outside the
+    envelope. A site with a non-positive value lies under the envelope:
+    the gas body reaches over it. The leading edge is then the largest
+    ``x`` at which the envelope still covers the surface.
+
+    Two guards keep a single isolated site from manufacturing a front.
+
+    * ``min_run``: the contiguous covered run must contain at least this
+      many sites, otherwise the frame contributes no edge.
+    * ``gap``: the run is grown leftwards from the rightmost covered
+      site while the next covered site lies within this distance, so a
+      lone outlier far away cannot extend the edge.
+
+    Parameters
+    ----------
+    signed_distance
+        Array of shape ``(n_frames, n_sites)``.
+    x
+        The x coordinate of every site, shape ``(n_sites,)``.
+    face_mask
+        Boolean mask of the sites belonging to the face of interest.
+    min_run
+        Minimum number of sites in the covered run.
+    gap
+        Maximum spacing between neighbouring sites of the run.
+
+    Returns
+    -------
+    An array of shape ``(n_frames,)`` holding the x coordinate of the
+    leading edge, and NaN for the frames that carry no qualifying
+    envelope.
+    """
+    sd = np.asarray(signed_distance, dtype=float)
+    xs = np.asarray(x, dtype=float)
+    mask = np.asarray(face_mask, dtype=bool)
+    if sd.ndim != 2:
+        raise ValueError("signed_distance must be two dimensional")
+    if xs.shape != (sd.shape[1],):
+        raise ValueError("x must have one entry per site")
+    if mask.shape != (sd.shape[1],):
+        raise ValueError("face_mask must have one entry per site")
+    if min_run < 1:
+        raise ValueError("min_run must be at least one")
+
+    sites = np.flatnonzero(mask)
+    edge = np.full(sd.shape[0], np.nan)
+    if sites.size == 0:
+        return edge
+
+    for j in range(sd.shape[0]):
+        covered = sites[sd[j][sites] <= 0.0]
+        if covered.size < min_run:
+            continue
+        ordered = np.sort(xs[covered])
+        # Split the covered sites into contiguous runs, then keep the
+        # rightmost run that is long enough to count as a front. Taking
+        # the rightmost *qualifying* run, rather than growing a run
+        # leftwards from the rightmost covered site, stops a lone
+        # outlier on the far side from setting the edge.
+        breaks = np.flatnonzero(np.diff(ordered) > gap)
+        starts = np.concatenate(([0], breaks + 1))
+        ends = np.concatenate((breaks, [ordered.size - 1]))
+        best = None
+        for lo, hi in zip(starts, ends):
+            if hi - lo + 1 >= min_run:
+                best = max(best if best is not None else -np.inf, ordered[hi])
+        if best is not None:
+            edge[j] = float(best)
+    return edge
+
+
+def leading_edge_advance(edge: np.ndarray,
+                         seam_x: float,
+                         direction: int = 1) -> float:
+    """Advance of a leading edge, measured from the seam.
+
+    The distance is always reported as a positive depth from the seam,
+    while the *advance* is signed by the direction of travel: a front
+    that moves towards increasing x has ``direction`` +1.
+
+    The advance is measured between the first and the last frame that
+    carries an edge, so that a frame without a qualifying envelope does
+    not reset the reference point.
+    """
+    if direction not in (1, -1):
+        raise ValueError("direction must be +1 or -1")
+    values = np.asarray(edge, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < 2:
+        return float("nan")
+    depths = (values - seam_x) if direction > 0 else (seam_x - values)
+    return float(depths[-1] - depths[0])

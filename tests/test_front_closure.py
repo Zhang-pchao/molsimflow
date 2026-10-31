@@ -15,7 +15,9 @@ from molsimflow.postprocess.front_closure import (
     area_normalised_rate,
     closure_test,
     column_selectivity,
+    envelope_leading_edge,
     exposure_normalised_preference,
+    leading_edge_advance,
     net_displacement,
     permutation_p_value,
     seam_depth,
@@ -187,3 +189,85 @@ def test_exposure_normalised_preference_is_undefined_without_exposure():
         100.0, 10.0, 50.0, 10.0, 0.0))
     assert np.isnan(exposure_normalised_preference(
         100.0, 0.0, 50.0, 10.0, 100.0))
+
+
+# --- envelope leading edge -------------------------------------------------
+
+def test_leading_edge_finds_the_rightmost_covered_site():
+    # Four sites, three of them under the envelope (signed distance <= 0).
+    sd = np.array([[-1.0, -1.0, -1.0, 5.0]])
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    mask = np.array([True, True, True, True])
+    edge = envelope_leading_edge(sd, x, mask, min_run=3, gap=3.0)
+    assert edge[0] == pytest.approx(2.0)
+
+
+def test_leading_edge_requires_a_minimum_run():
+    # A single covered site is not a front.
+    sd = np.array([[-1.0, 5.0, 5.0, 5.0]])
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    mask = np.ones(4, dtype=bool)
+    edge = envelope_leading_edge(sd, x, mask, min_run=3, gap=3.0)
+    assert np.isnan(edge[0])
+
+
+def test_leading_edge_ignores_an_isolated_outlier():
+    # Sites 0..2 form a run; site 6 is covered but far away. The gap
+    # guard must stop the edge from jumping to the outlier.
+    sd = np.array([[-1.0, -1.0, -1.0, 5.0, 5.0, 5.0, -1.0]])
+    x = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    mask = np.ones(7, dtype=bool)
+    edge = envelope_leading_edge(sd, x, mask, min_run=3, gap=3.0)
+    assert edge[0] == pytest.approx(2.0)
+
+
+def test_leading_edge_respects_the_face_mask():
+    # The rightmost covered site lies on the other face and must be
+    # excluded from this face's edge.
+    sd = np.array([[-1.0, -1.0, -1.0, -1.0]])
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    mask = np.array([True, True, True, False])
+    edge = envelope_leading_edge(sd, x, mask, min_run=3, gap=3.0)
+    assert edge[0] == pytest.approx(2.0)
+
+
+def test_leading_edge_is_nan_when_nothing_is_covered():
+    sd = np.array([[1.0, 2.0, 3.0]])
+    x = np.array([0.0, 1.0, 2.0])
+    mask = np.ones(3, dtype=bool)
+    edge = envelope_leading_edge(sd, x, mask, min_run=2)
+    assert np.isnan(edge[0])
+
+
+def test_leading_edge_handles_an_empty_face():
+    sd = np.zeros((2, 4))
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    mask = np.zeros(4, dtype=bool)
+    edge = envelope_leading_edge(sd, x, mask)
+    assert np.all(np.isnan(edge))
+
+
+def test_leading_edge_advance_uses_the_first_and_last_valid_frames():
+    # A gap in the middle must not reset the reference points.
+    edge = np.array([10.0, np.nan, 14.0, np.nan, 18.0])
+    assert leading_edge_advance(edge, seam_x=4.0, direction=1) == pytest.approx(8.0)
+
+
+def test_leading_edge_advance_sign_follows_the_direction():
+    edge = np.array([10.0, 6.0])
+    # Towards increasing x the depth from the seam grows from 6 to 4
+    # ... which is a retreat, so the advance is negative.
+    assert leading_edge_advance(edge, seam_x=4.0, direction=1) == pytest.approx(-4.0)
+    # Towards decreasing x the depth from the seam grows from -6 to -2,
+    # so the front came closer to the seam: the advance is positive.
+    assert leading_edge_advance(edge, seam_x=4.0, direction=-1) == pytest.approx(4.0)
+
+
+def test_leading_edge_advance_needs_at_least_two_valid_frames():
+    assert np.isnan(leading_edge_advance(np.array([1.0, np.nan]), seam_x=0.0))
+
+
+def test_leading_edge_rejects_a_mismatched_x_array():
+    sd = np.zeros((1, 4))
+    with pytest.raises(ValueError):
+        envelope_leading_edge(sd, np.zeros(3), np.ones(4, dtype=bool))
