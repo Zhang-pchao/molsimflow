@@ -10,7 +10,9 @@ from molsimflow.postprocess.interfacial_front_pattern import (
     contacted_parent_motif_counts,
     footprint_coherence,
     frame_contacted_parents,
+    footprint_composition,
     hazard_by_label,
+    tip_isolation,
     front_tip_track,
     intermittency_ratio,
     motif_selectivity,
@@ -308,3 +310,45 @@ def test_hazard_by_label_drops_fully_censored_labels():
     rows = [{"label": "dual_oh", "n_evaluable_frames": 0, "n_advanced": 0,
              "right_censored": True}]
     assert hazard_by_label(rows) == []
+
+
+def test_tip_isolation_detects_isolated_leading_contact():
+    # Two parents 10 A apart: the leading one has no contacted neighbour.
+    xy = np.array([[0.0, 0.0], [10.0, 0.0]])
+    mask = np.array([True, True])
+    res = tip_isolation([np.array([0, 1])], xy, mask)
+    assert res["tip_isolated_fraction"] == pytest.approx(1.0)
+    assert res["median_tip_degree"] == pytest.approx(0.0)
+
+
+def test_tip_isolation_detects_connected_leading_contact():
+    # Three contacted parents in a row: the leading one has a neighbour.
+    xy = np.array([[0.0, 0.0], [2.47, 0.0], [4.94, 0.0]])
+    mask = np.array([True, True, True])
+    res = tip_isolation([np.array([0, 1, 2])], xy, mask)
+    assert res["tip_isolated_fraction"] == pytest.approx(0.0)
+    # the leading site of a three-site chain touches the middle site
+    assert res["median_tip_degree"] == pytest.approx(2.0)
+
+
+def test_footprint_composition_separates_pure_and_mixed_footprints():
+    # A footprint touching one motif only has zero composition entropy.
+    xy = np.array([[0.0, 0.0], [2.47, 0.0]])
+    motif = np.array([0, 0])
+    mask = np.array([True, True])
+    res = footprint_composition([np.array([0, 1])], motif, mask, xy)
+    assert res["mean_motif_entropy"] == pytest.approx(0.0)
+    assert res["mean_largest_motif_patch"] == pytest.approx(2.0)
+    assert res["mean_pure_anchor_fraction"] == pytest.approx(1.0)
+
+
+def test_footprint_composition_mixed_footprint_is_pure():
+    # A footprint split between two motifs has a lower pure-anchor fraction.
+    xy = np.array([[0.0, 0.0], [2.47, 0.0], [10.0, 0.0]])
+    motif = np.array([0, 2, 0])
+    mask = np.array([True, True, True])
+    res = footprint_composition([np.array([0, 1, 2])], motif, mask, xy)
+    # two disconnected bare sites and one di-OH site
+    assert res["mean_largest_motif_patch"] == pytest.approx(1.0)
+    assert res["mean_pure_anchor_fraction"] == pytest.approx(1.0 / 3.0)
+    assert res["mean_motif_entropy"] > 0.0

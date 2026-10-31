@@ -533,6 +533,145 @@ def footprint_coherence(contacted_parents: Sequence[np.ndarray],
     }
 
 
+def tip_isolation(contacted_parents: Sequence[np.ndarray],
+                  parent_xy: np.ndarray, half_mask: np.ndarray, *,
+                  link_distance_A: float = 5.3) -> dict[str, float]:
+    """Measure how often the leading contact point is an isolated site.
+
+    The front tip is the most advanced contacted parent on the
+    destination face. For the bubble to advance as a body, that leading
+    contact has to belong to a connected basal patch: a tip that touches
+    the surface at a single, unconnected site is a single molecule
+    momentarily adhering, not the leading edge of a spreading footprint.
+
+    The returned ``tip_isolated_fraction`` is the fraction of occupied
+    frames in which the tip has no other contacted parent within
+    ``link_distance_A``. The sensitivity of this quantity to the link
+    distance must be reported alongside it, because the value depends on
+    the link distance by construction.
+    """
+    from scipy.spatial import cKDTree
+
+    mask = np.asarray(half_mask, dtype=bool)
+    xy = np.asarray(parent_xy, dtype=float)
+
+    pairs = cKDTree(xy).query_pairs(link_distance_A, output_type="ndarray")
+    adjacency: dict[int, list[int]] = {}
+    for i, j in pairs:
+        adjacency.setdefault(int(i), []).append(int(j))
+        adjacency.setdefault(int(j), []).append(int(i))
+
+    isolated: list[int] = []
+    tip_degrees: list[int] = []
+    for contacted in contacted_parents:
+        nodes = [int(p) for p in contacted if mask[int(p)]]
+        if not nodes:
+            continue
+        tip = max(nodes, key=lambda p: (xy[p, 0], xy[p, 1]))
+        degree = sum(1 for nb in adjacency.get(tip, ()) if nb in set(nodes))
+        tip_degrees.append(degree)
+        isolated.append(1 if degree == 0 else 0)
+    if not isolated:
+        return {"n_frames": 0, "tip_isolated_fraction": float("nan"),
+                "median_tip_degree": float("nan")}
+    return {
+        "n_frames": len(isolated),
+        "tip_isolated_fraction": float(np.mean(isolated)),
+        "median_tip_degree": float(np.median(tip_degrees)),
+    }
+
+
+def footprint_composition(contacted_parents: Sequence[np.ndarray],
+                          parent_motif: np.ndarray, half_mask: np.ndarray,
+                          parent_xy: np.ndarray, *,
+                          link_distance_A: float = 5.3) -> dict[str, float]:
+    """Measure whether the basal footprint is chemically segregated.
+
+    A migrating bubble that anchors on a chemically heterogeneous face
+    must spread its contact patch over several site chemistries at once,
+    because a single chemistry is rarely present in one connected piece.
+    This function reports, per frame:
+
+    * ``mean_motif_entropy``: the Shannon entropy of the contacted-parent
+      motif composition, normalised by the entropy of a uniform
+      three-motif split. A value near 1 means the footprint samples all
+      three chemistries in equal proportion; near 0 means it sits on one
+      chemistry.
+    * ``mean_largest_motif_patch``: the size of the largest connected
+      patch that lies entirely within a single chemistry. This is the
+      size of the biggest chemically uniform anchor the bubble could form.
+    * ``mean_pure_anchor_fraction``: the fraction of the footprint that
+      belongs to that single-chemistry patch.
+
+    The comparison that matters is between faces with the same *area
+    fraction* of each chemistry. On a chemically uniform face the
+    composition entropy of a large footprint is a property of the
+    footprint size alone, so it must be read together with the
+    within-column selectivity of the same face.
+    """
+    from scipy.spatial import cKDTree
+
+    motif = np.asarray(parent_motif, dtype=int)
+    mask = np.asarray(half_mask, dtype=bool)
+    xy = np.asarray(parent_xy, dtype=float)
+
+    pairs = cKDTree(xy).query_pairs(link_distance_A, output_type="ndarray")
+    adjacency: dict[int, list[int]] = {}
+    for i, j in pairs:
+        adjacency.setdefault(int(i), []).append(int(j))
+        adjacency.setdefault(int(j), []).append(int(i))
+
+    def largest_patch(nodes: Sequence[int], allowed: np.ndarray) -> int:
+        keep = [n for n in nodes if allowed[n]]
+        if not keep:
+            return 0
+        members = set(keep)
+        seen: set[int] = set()
+        best = 0
+        for start in keep:
+            if start in seen:
+                continue
+            stack = [start]
+            seen.add(start)
+            size = 0
+            while stack:
+                node = stack.pop()
+                size += 1
+                for nb in adjacency.get(node, ()):
+                    if nb in members and nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+            best = max(best, size)
+        return best
+
+    entropies: list[float] = []
+    pure_patches: list[float] = []
+    pure_fractions: list[float] = []
+    for contacted in contacted_parents:
+        nodes = [int(p) for p in contacted if mask[int(p)]]
+        if not nodes:
+            continue
+        counts = np.bincount(motif[nodes], minlength=3).astype(float)
+        total = counts.sum()
+        probabilities = counts[counts > 0] / total
+        entropy = float(-(probabilities * np.log(probabilities)).sum())
+        entropies.append(entropy / np.log(3.0))
+        patch_sizes = [largest_patch(nodes, (motif == k)) for k in range(3)]
+        best = max(patch_sizes)
+        pure_patches.append(float(best))
+        pure_fractions.append(float(best) / float(len(nodes)))
+    if not entropies:
+        return {"n_frames": 0, "mean_motif_entropy": float("nan"),
+                "mean_largest_motif_patch": float("nan"),
+                "mean_pure_anchor_fraction": float("nan")}
+    return {
+        "n_frames": len(entropies),
+        "mean_motif_entropy": float(np.mean(entropies)),
+        "mean_largest_motif_patch": float(np.mean(pure_patches)),
+        "mean_pure_anchor_fraction": float(np.mean(pure_fractions)),
+    }
+
+
 def hazard_by_label(hazard_rows: Sequence[dict]) -> list[dict]:
     """Aggregate the column advance hazard by the chemistry of the column.
 
