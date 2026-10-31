@@ -458,6 +458,118 @@ def column_motif_ratio(rows: Sequence[dict], column: int, *,
     return float(num / den)
 
 
+def footprint_coherence(contacted_parents: Sequence[np.ndarray],
+                        parent_xy: np.ndarray, half_mask: np.ndarray, *,
+                        link_distance_A: float = 5.3) -> dict[str, float]:
+    """Summarise how coherent the basal contact footprint of the gas is.
+
+    For every frame the contacted parents of one half-face form a set of
+    nodes. Two contacted parents are linked when their in-plane distance is
+    below ``link_distance_A``. The default is the nearest-neighbour
+    spacing of the prepared parent lattice (about 4.94 A) plus a small
+    tolerance, so that a link means "these two sites are neighbours on the
+    same basal plane" and not "these two sites happen to be nearby in a
+    coarse sense". The connected components of that graph are the separate
+    basal patches the gas rests on.
+
+    The returned summary separates the *size* of the footprint from its
+    *coherence*: a gas that touches many parents but in disconnected
+    patches is not the same as one that touches few parents in a single
+    patch. Both are reported because the arrest of a migrating bubble is
+    a coherence failure rather than a size failure.
+    """
+    xy = np.asarray(parent_xy, dtype=float)
+    mask = np.asarray(half_mask, dtype=bool)
+    sizes: list[int] = []
+    largest: list[int] = []
+    n_components: list[int] = []
+    for contacted in contacted_parents:
+        nodes = np.asarray(sorted(set(int(p) for p in contacted
+                                      if mask[int(p)])), dtype=int)
+        if nodes.size == 0:
+            continue
+        sizes.append(int(nodes.size))
+        if nodes.size == 1:
+            largest.append(1)
+            n_components.append(1)
+            continue
+        delta = xy[nodes][:, None, :] - xy[nodes][None, :, :]
+        dist = np.sqrt((delta ** 2).sum(-1))
+        adj = (dist <= link_distance_A)
+        np.fill_diagonal(adj, False)
+        # Union-find over the linked pairs.
+        parent = list(range(nodes.size))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i, j in zip(*np.nonzero(np.triu(adj, 1))):
+            ri, rj = find(int(i)), find(int(j))
+            if ri != rj:
+                parent[ri] = rj
+        roots = [find(i) for i in range(nodes.size)]
+        counts: dict[int, int] = {}
+        for r in roots:
+            counts[r] = counts.get(r, 0) + 1
+        n_components.append(len(counts))
+        largest.append(max(counts.values()))
+    if not sizes:
+        return {"n_frames": 0, "median_parents": float("nan"),
+                "median_largest_component": float("nan"),
+                "median_n_components": float("nan"),
+                "mean_largest_fraction": float("nan")}
+    size = np.asarray(sizes, dtype=float)
+    big = np.asarray(largest, dtype=float)
+    comp = np.asarray(n_components, dtype=float)
+    return {
+        "n_frames": int(size.size),
+        "median_parents": float(np.median(size)),
+        "median_largest_component": float(np.median(big)),
+        "median_n_components": float(np.median(comp)),
+        "mean_largest_fraction": float(np.mean(big / size)),
+    }
+
+
+def hazard_by_label(hazard_rows: Sequence[dict]) -> list[dict]:
+    """Aggregate the column advance hazard by the chemistry of the column.
+
+    The hazard of a column is only defined when the trajectory actually
+    left that column. Pooling the numerators and denominators over all
+    columns of the same chemistry therefore compares like with like and
+    does not silently mix censored columns into the denominator.
+
+    The result is deliberately a pooled conditional frequency, not a
+    rate: the frames are correlated samples of a single trajectory.
+    """
+    buckets: dict[str, dict[str, float]] = {}
+    for row in hazard_rows:
+        if row.get("right_censored"):
+            continue
+        evaluated = float(row.get("n_evaluable_frames", 0))
+        if evaluated <= 0:
+            continue
+        label = str(row["label"])
+        bucket = buckets.setdefault(label, {"n_evaluable": 0.0, "n_advanced": 0.0,
+                                            "n_columns": 0.0})
+        bucket["n_evaluable"] += evaluated
+        bucket["n_advanced"] += float(row.get("n_advanced", 0))
+        bucket["n_columns"] += 1.0
+    out: list[dict] = []
+    for label, bucket in sorted(buckets.items()):
+        out.append({
+            "label": label,
+            "n_columns": int(bucket["n_columns"]),
+            "n_evaluable_frames": int(bucket["n_evaluable"]),
+            "n_advanced": int(bucket["n_advanced"]),
+            "pooled_advance_hazard": (float(bucket["n_advanced"] / bucket["n_evaluable"])
+                                      if bucket["n_evaluable"] > 0 else float("nan")),
+        })
+    return out
+
+
 def intermittency_ratio(track: np.ndarray, column_index: np.ndarray) -> dict[str, float]:
     """Summarise how intermittent the tip track is.
 

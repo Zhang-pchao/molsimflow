@@ -8,7 +8,9 @@ from molsimflow.postprocess.interfacial_front_pattern import (
     column_advance_hazard,
     column_motif_ratio,
     contacted_parent_motif_counts,
+    footprint_coherence,
     frame_contacted_parents,
+    hazard_by_label,
     front_tip_track,
     intermittency_ratio,
     motif_selectivity,
@@ -244,9 +246,65 @@ def test_per_column_selectivity_untouched_motif_gives_nan_ratio():
     assert np.isnan(column_motif_ratio(rows, 0))
 
 
-def test_per_column_selectivity_absent_motif_is_nan_ratio():
-    xy = np.array([[10.0, 0.0], [10.0, 4.28]])
-    motif = np.array([0, 0])
+def test_footprint_coherence_separates_size_from_patchiness():
+    # Three contacted parents in a row: one connected patch of size 3.
+    xy = np.array([[0.0, 0.0], [2.47, 0.0], [4.94, 0.0]])
+    mask = np.array([True, True, True])
+    res = footprint_coherence([np.array([0, 1, 2])], xy, mask)
+    assert res["median_parents"] == pytest.approx(3.0)
+    assert res["median_largest_component"] == pytest.approx(3.0)
+    assert res["median_n_components"] == pytest.approx(1.0)
+    assert res["mean_largest_fraction"] == pytest.approx(1.0)
+
+
+def test_footprint_coherence_detects_disconnected_patches():
+    # Two parents 10 A apart touch the gas but do not form one basal patch.
+    xy = np.array([[0.0, 0.0], [10.0, 0.0]])
     mask = np.array([True, True])
-    rows = per_column_motif_selectivity([np.array([0, 1])], motif, xy, half_mask=mask)
-    assert np.isnan(column_motif_ratio(rows, 0))
+    res = footprint_coherence([np.array([0, 1])], xy, mask)
+    assert res["median_parents"] == pytest.approx(2.0)
+    assert res["median_largest_component"] == pytest.approx(1.0)
+    assert res["median_n_components"] == pytest.approx(2.0)
+    assert res["mean_largest_fraction"] == pytest.approx(0.5)
+
+
+def test_footprint_coherence_ignores_other_half():
+    # A parent on the other half-face is excluded from the footprint.
+    xy = np.array([[0.0, 0.0], [0.1, 0.0]])
+    mask = np.array([True, False])
+    res = footprint_coherence([np.array([0, 1])], xy, mask)
+    assert res["median_parents"] == pytest.approx(1.0)
+    assert res["median_largest_component"] == pytest.approx(1.0)
+
+
+def test_footprint_coherence_empty_is_nan():
+    xy = np.array([[0.0, 0.0]])
+    mask = np.array([True])
+    res = footprint_coherence([np.array([], dtype=int)], xy, mask)
+    assert res["n_frames"] == 0
+    assert np.isnan(res["median_parents"])
+
+
+def test_hazard_by_label_pools_over_columns_and_excludes_censored():
+    rows = [
+        {"label": "dual_oh", "n_evaluable_frames": 10, "n_advanced": 2,
+         "right_censored": False},
+        {"label": "dual_oh", "n_evaluable_frames": 10, "n_advanced": 3,
+         "right_censored": False},
+        {"label": "dual_oh", "n_evaluable_frames": 99, "n_advanced": 99,
+         "right_censored": True},
+        {"label": "mixed", "n_evaluable_frames": 20, "n_advanced": 18,
+         "right_censored": False},
+    ]
+    out = {r["label"]: r for r in hazard_by_label(rows)}
+    assert out["dual_oh"]["n_evaluable_frames"] == 20
+    assert out["dual_oh"]["n_advanced"] == 5
+    assert out["dual_oh"]["pooled_advance_hazard"] == pytest.approx(0.25)
+    assert out["dual_oh"]["n_columns"] == 2
+    assert out["mixed"]["pooled_advance_hazard"] == pytest.approx(0.9)
+
+
+def test_hazard_by_label_drops_fully_censored_labels():
+    rows = [{"label": "dual_oh", "n_evaluable_frames": 0, "n_advanced": 0,
+             "right_censored": True}]
+    assert hazard_by_label(rows) == []
