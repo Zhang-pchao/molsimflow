@@ -134,7 +134,6 @@ def build_column_map(parent_xy: np.ndarray, parent_motif: np.ndarray, *,
         raise ValueError("half_mask must match parent_xy rows")
     if tolerance <= 0.0:
         raise ValueError("tolerance must be positive")
-
     selected = np.flatnonzero(mask)
     if selected.size == 0:
         raise ValueError("half_mask selects no parent sites")
@@ -355,6 +354,108 @@ def frame_contacted_parents(gas_edges: np.ndarray, gas_offsets: np.ndarray,
             continue
         out.append(np.unique(pindex[edges[lo:hi, 1]]))
     return out
+
+
+def per_column_motif_selectivity(contacted_parents: Sequence[np.ndarray],
+                                 parent_motif: np.ndarray, parent_xy: np.ndarray,
+                                 *, half_mask: np.ndarray,
+                                 column_tolerance: float = 0.05) -> list[dict]:
+    """Return within-column contacted-versus-area selectivity for each motif.
+
+    This is the sharpest available contrast, because the comparison is
+    made between parent sites that share a column, and therefore share a
+    position along the transport axis and a neighbourhood. A selectivity
+    that differs between two motifs inside one column cannot be explained
+    by how far along the surface the gas happened to reach.
+
+    The statistic is frame weighted: in every frame in which the gas
+    touches a column, each contacted parent contributes one observation.
+    This answers the conditional question "given that the gas is present
+    at this column, which chemistry does it preferentially touch", and is
+    not diluted by how often the gas visits the column.
+
+    Columns are grouped by X with ``column_tolerance``. Motifs with zero
+    area in a column yield ``nan`` because the ratio is undefined.
+    """
+    motif = np.asarray(parent_motif, dtype=int)
+    xy = np.asarray(parent_xy, dtype=float)
+    mask = np.asarray(half_mask, dtype=bool)
+    if motif.shape != xy.shape[:1] or mask.shape != motif.shape:
+        raise ValueError("parent_motif, parent_xy and half_mask must agree")
+
+    selected = np.flatnonzero(mask)
+    if selected.size == 0:
+        return []
+    order = selected[np.argsort(xy[selected, 0], kind="stable")]
+    groups: list[list[int]] = []
+    current: list[int] = []
+    anchor = None
+    for idx in order:
+        x = xy[idx, 0]
+        if anchor is None or abs(x - anchor) <= column_tolerance:
+            current.append(int(idx))
+            if anchor is None:
+                anchor = x
+        else:
+            groups.append(current)
+            current = [int(idx)]
+            anchor = x
+    if current:
+        groups.append(current)
+
+    group_of: dict[int, int] = {}
+    for j, g in enumerate(groups):
+        for p in g:
+            group_of[p] = j
+    hits = np.zeros((len(groups), 3), dtype=float)
+    for parents in contacted_parents:
+        arr = np.asarray(parents, dtype=int)
+        arr = arr[mask[arr]] if arr.size else arr
+        for p in arr:
+            j = group_of.get(int(p))
+            if j is not None:
+                hits[j, motif[p]] += 1.0
+
+    rows: list[dict] = []
+    for j, g in enumerate(groups):
+        members = np.asarray(g, dtype=int)
+        area = [int(np.count_nonzero(motif[members] == k)) for k in range(3)]
+        total = float(hits[j].sum())
+        for k in range(3):
+            value = float("nan")
+            if area[k] > 0 and total > 0:
+                value = float((hits[j, k] / total) / (area[k] / len(members)))
+            rows.append({
+                "column": j,
+                "x_A": float(xy[members, 0].mean()),
+                "motif": MOTIF_NAMES[k],
+                "area_parents": area[k],
+                "contacted_observations": float(hits[j, k]),
+                "selectivity": value,
+            })
+    return rows
+
+
+def column_motif_ratio(rows: Sequence[dict], column: int, *,
+                       numerator: str = "bare",
+                       denominator: str = "dual_oh") -> float:
+    """Return the within-column selectivity ratio of two motifs.
+
+    The ratio is ``nan`` when either motif is absent from the column or
+    was never contacted, because the comparison is then undefined rather
+    than zero.
+    """
+    def pick(name: str) -> float:
+        for row in rows:
+            if row["column"] == column and row["motif"] == name:
+                value = row["selectivity"]
+                return float(value) if value == value else float("nan")
+        return float("nan")
+    num = pick(numerator)
+    den = pick(denominator)
+    if num != num or den != den or den == 0.0:
+        return float("nan")
+    return float(num / den)
 
 
 def intermittency_ratio(track: np.ndarray, column_index: np.ndarray) -> dict[str, float]:

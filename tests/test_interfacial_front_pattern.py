@@ -6,11 +6,13 @@ import pytest
 from molsimflow.postprocess.interfacial_front_pattern import (
     build_column_map,
     column_advance_hazard,
+    column_motif_ratio,
     contacted_parent_motif_counts,
     frame_contacted_parents,
     front_tip_track,
     intermittency_ratio,
     motif_selectivity,
+    per_column_motif_selectivity,
     resolve_to_columns,
 )
 
@@ -203,3 +205,48 @@ def test_intermittency_ratio():
     assert res["contact_fraction"] == pytest.approx(4 / 6)
     assert res["advance_fraction"] == pytest.approx(2 / 3)
     assert res["backtrack_fraction"] == pytest.approx(1 / 3)
+
+
+def test_per_column_selectivity_separates_motifs_in_one_column():
+    # one column at x=10 holding one bare and one dual-OH parent
+    xy = np.array([[10.0, 0.0], [10.0, 4.28]])
+    motif = np.array([0, 2])
+    mask = np.array([True, True])
+    contacted = [np.array([0]), np.array([0, 1])]
+    rows = per_column_motif_selectivity(contacted, motif, xy, half_mask=mask)
+    assert len(rows) == 3
+    by_motif = {r["motif"]: r for r in rows}
+    # frame weighted: bare was touched twice, dual-OH once, over equal areas
+    assert by_motif["bare"]["selectivity"] == pytest.approx(4.0 / 3.0)
+    assert by_motif["dual_oh"]["selectivity"] == pytest.approx(2.0 / 3.0)
+    assert np.isnan(by_motif["single_oh"]["selectivity"])
+    assert column_motif_ratio(rows, 0) == pytest.approx(2.0)
+
+
+def test_per_column_selectivity_absent_motif_is_nan_ratio():
+    xy = np.array([[10.0, 0.0], [10.0, 4.28]])
+    motif = np.array([0, 0])
+    mask = np.array([True, True])
+    rows = per_column_motif_selectivity([np.array([0, 1])], motif, xy, half_mask=mask)
+    assert np.isnan(column_motif_ratio(rows, 0))
+
+
+def test_per_column_selectivity_untouched_motif_gives_nan_ratio():
+    xy = np.array([[10.0, 0.0], [10.0, 4.28]])
+    motif = np.array([0, 2])
+    mask = np.array([True, True])
+    rows = per_column_motif_selectivity([np.array([0]), np.array([0])],
+                                        motif, xy, half_mask=mask)
+    by_motif = {r["motif"]: r for r in rows}
+    assert by_motif["bare"]["selectivity"] == pytest.approx(2.0)
+    assert by_motif["dual_oh"]["selectivity"] == pytest.approx(0.0)
+    # a zero denominator makes the ratio undefined rather than infinite
+    assert np.isnan(column_motif_ratio(rows, 0))
+
+
+def test_per_column_selectivity_absent_motif_is_nan_ratio():
+    xy = np.array([[10.0, 0.0], [10.0, 4.28]])
+    motif = np.array([0, 0])
+    mask = np.array([True, True])
+    rows = per_column_motif_selectivity([np.array([0, 1])], motif, xy, half_mask=mask)
+    assert np.isnan(column_motif_ratio(rows, 0))
