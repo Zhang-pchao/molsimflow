@@ -29,6 +29,18 @@ def test_minimum_image_wraps_only_periodic_axes():
     assert delta[0, 1, 1] == pytest.approx(0.0)
 
 
+def test_minimum_image_can_leave_x_unwrapped():
+    # A slab that spans the full width of its box must not be wrapped in
+    # x, or the two far edges are joined across a gap that does not
+    # exist. This is the junction seam.
+    coords = np.array([[1.0, 0.0, 0.0], [99.0, 0.0, 0.0]])
+    box = [100.0, 50.0, 50.0]
+    delta = minimum_image_delta(coords, box, periodic=[False, True, True])
+    assert delta[0, 1, 0] == pytest.approx(-98.0)
+    wrapped = minimum_image_delta(coords, box, periodic=[True, True, True])
+    assert wrapped[0, 1, 0] == pytest.approx(2.0)
+
+
 def test_periodic_neighbour_matrix_closes_the_box():
     # Two points 9 A apart in a 10 A box are 1 A apart under minimum image.
     coords = np.array([[0.5, 0.0, 0.0], [9.5, 0.0, 0.0]])

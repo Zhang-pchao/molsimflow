@@ -52,32 +52,45 @@ __all__ = [
 ]
 
 
-def minimum_image_delta(coords: np.ndarray, box: Sequence[float]) -> np.ndarray:
+def minimum_image_delta(coords: np.ndarray, box: Sequence[float],
+                        periodic: Sequence[bool] | None = None) -> np.ndarray:
     """Return the minimum-image displacement for every pair of points.
 
     ``coords`` holds an ``(n, 3)`` array of Cartesian coordinates and
-    ``box`` the orthorhombic box lengths. Only the components with a
-    non-zero box length are wrapped, so a non-periodic direction is
-    left untouched.
+    ``box`` the orthorhombic box lengths. ``periodic`` marks which axes
+    are periodic; it defaults to every axis with a non-zero length.
+
+    The default is only safe when every direction really is periodic.
+    A slab that spans the full width of its box in x is *not* periodic
+    in x: wrapping it joins the two far edges across a gap that does
+    not exist physically, and in a junction surface that gap is the
+    chemical seam. Wrap only the directions that are genuinely
+    periodic.
     """
     pts = np.asarray(coords, dtype=float)
     lengths = np.asarray(box, dtype=float)
     if pts.ndim != 2 or pts.shape[1] != lengths.size:
         raise ValueError("coords must be (n, len(box))")
+    if periodic is None:
+        periodic = lengths > 0
+    periodic = np.asarray(periodic, dtype=bool)
+    if periodic.shape != lengths.shape:
+        raise ValueError("periodic must match the box")
     delta = pts[:, None, :] - pts[None, :, :]
     for axis, length in enumerate(lengths):
-        if length > 0:
+        if periodic[axis] and length > 0:
             delta[:, :, axis] = (delta[:, :, axis] + length / 2) % length - length / 2
     return delta
 
 
 def periodic_neighbour_matrix(coords: np.ndarray, box: Sequence[float],
-                              cutoff: float) -> np.ndarray:
+                              cutoff: float,
+                              periodic: Sequence[bool] | None = None) -> np.ndarray:
     """Return the boolean pairwise neighbour matrix under minimum image.
 
     The diagonal is set to ``False``: a site is not its own neighbour.
     """
-    delta = minimum_image_delta(coords, box)
+    delta = minimum_image_delta(coords, box, periodic)
     dist = np.linalg.norm(delta, axis=-1)
     matrix = dist <= cutoff
     np.fill_diagonal(matrix, False)
@@ -99,7 +112,8 @@ def connected_components(adjacency: np.ndarray) -> tuple[int, np.ndarray, np.nda
 
 
 def sublattice_connectivity(coords: np.ndarray, box: Sequence[float],
-                            selection: np.ndarray, cutoff: float) -> dict:
+                            selection: np.ndarray, cutoff: float,
+                            periodic: Sequence[bool] | None = None) -> dict:
     """Measure the connectivity of a selected subset of surface sites.
 
     ``selection`` is a boolean mask over the sites. The returned
@@ -123,7 +137,7 @@ def sublattice_connectivity(coords: np.ndarray, box: Sequence[float],
                 "largest_x_span_A": float("nan"),
                 "largest_y_span_A": float("nan")}
 
-    full = periodic_neighbour_matrix(pts, box, cutoff)
+    full = periodic_neighbour_matrix(pts, box, cutoff, periodic)
     sub = full[np.ix_(ids, ids)]
     n_comp, labels, sizes = connected_components(sub)
     largest_label = int(np.argmax(sizes))
@@ -141,7 +155,8 @@ def sublattice_connectivity(coords: np.ndarray, box: Sequence[float],
 
 def footprint_connectivity(contacted_parents: Sequence[np.ndarray],
                             parent_xyz: np.ndarray, box: Sequence[float],
-                            half_mask: np.ndarray, cutoff: float) -> dict:
+                            half_mask: np.ndarray, cutoff: float,
+                            periodic: Sequence[bool] | None = None) -> dict:
     """Report the footprint geometry on the whole surface and on one face.
 
     The full-surface footprint is what physically holds the bubble down.
@@ -152,7 +167,7 @@ def footprint_connectivity(contacted_parents: Sequence[np.ndarray],
     """
     mask = np.asarray(half_mask, dtype=bool)
     pts = np.asarray(parent_xyz, dtype=float)
-    full = periodic_neighbour_matrix(pts, box, cutoff)
+    full = periodic_neighbour_matrix(pts, box, cutoff, periodic)
 
     sizes_full: list[int] = []
     sizes_half: list[int] = []
@@ -180,7 +195,8 @@ def footprint_connectivity(contacted_parents: Sequence[np.ndarray],
 
 def tip_isolation_full_surface(contacted_parents: Sequence[np.ndarray],
                                parent_xyz: np.ndarray, box: Sequence[float],
-                               half_mask: np.ndarray, cutoff: float) -> dict:
+                               half_mask: np.ndarray, cutoff: float,
+                               periodic: Sequence[bool] | None = None) -> dict:
     """Test whether the leading contact is isolated on the whole surface.
 
     The leading contact is the contacted parent with the largest X on
@@ -192,7 +208,7 @@ def tip_isolation_full_surface(contacted_parents: Sequence[np.ndarray],
     """
     mask = np.asarray(half_mask, dtype=bool)
     pts = np.asarray(parent_xyz, dtype=float)
-    full = periodic_neighbour_matrix(pts, box, cutoff)
+    full = periodic_neighbour_matrix(pts, box, cutoff, periodic)
 
     isolated = 0
     frames = 0
@@ -204,7 +220,10 @@ def tip_isolation_full_surface(contacted_parents: Sequence[np.ndarray],
         on_face = nodes[mask[nodes]]
         if on_face.size == 0:
             continue
-        tip = int(on_face[np.argmax(pts[on_face, 0])])
+        # Break ties in x by y, so that the leading contact is a single
+        # well-defined site. The two conventions differ only on the few
+        # frames where two sites share the same x.
+        tip = int(on_face[np.lexsort((pts[on_face, 1], pts[on_face, 0]))[-1]])
         degree = int(full[tip, nodes].sum())
         degrees.append(degree)
         isolated += 1 if degree == 0 else 0
