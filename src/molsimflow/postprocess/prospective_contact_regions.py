@@ -1,4 +1,6 @@
 """Prospective patch registration and complete-window event families."""
+
+from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
