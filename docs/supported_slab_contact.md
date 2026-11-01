@@ -1,0 +1,3 @@
+# Supported contact on a planar slab
+
+The same_face_slab_contact helper reuses the existing gas distance, molecule, and periodic-component functions. It separates the two slab faces using the current scaffold circular z center, and joins contacting molecules only within one face. Noncontact molecules do not connect disjoint contact groups. A supported observation requires the requested component size; it is not a thermodynamic adsorption state or proof of uninterrupted residence between frames. The caller must qualify the solid atom pool, N2 pairing, planar compact slab and PPP boundary conditions. Face ambiguity remains explicit.
