@@ -214,6 +214,8 @@ def histogram_pmf(
     if reference_coordinate is None:
         free[finite] -= free[finite].min()
     else:
+        if not np.isfinite(reference_coordinate):
+            raise ValueError("Reference coordinate must be finite")
         j = int(np.argmin(abs(centers - reference_coordinate)))
         if not finite[j]:
             raise ValueError("Reference bin has no support")

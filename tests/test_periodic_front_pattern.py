@@ -30,9 +30,9 @@ def test_minimum_image_wraps_only_periodic_axes():
 
 
 def test_minimum_image_can_leave_x_unwrapped():
-    # A slab that spans the full width of its box must not be wrapped in
-    # x, or the two far edges are joined across a gap that does not
-    # exist. This is the junction seam.
+    # Explicitly choose an open X observation chart. The same coordinates
+    # give a different answer under physical X periodicity; neither choice
+    # can be inferred solely from slab shape or the presence of a seam.
     coords = np.array([[1.0, 0.0, 0.0], [99.0, 0.0, 0.0]])
     box = [100.0, 50.0, 50.0]
     delta = minimum_image_delta(coords, box, periodic=[False, True, True])

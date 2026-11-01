@@ -57,6 +57,15 @@ For direct execution from an uninstalled source checkout:
 PYTHONPATH=src python -m molsimflow.cli --help
 ```
 
+## Reusing analysis modules
+
+Start with the [postprocessing architecture and module ownership map](docs/postprocess_architecture.md).
+The [interfacial API guide](docs/interfacial_architecture.md) distinguishes
+geometry, identity, temporal support and historical front definitions.
+Use existing numerical modules directly; keep project paths and thresholds in
+the caller. Tests and CLI help document supported behavior, not scientific
+qualification of a new material or trajectory.
+
 ## Quick examples
 
 Convert an extended XYZ structure to a LAMMPS data file:

@@ -2,10 +2,9 @@
 
 The modules next to this one measure geometry: how the contacted
 footprint is connected, how isolated the leading contact is, how far the
-front advanced. This module adds the missing step, the one that
-decides whether the chemistry is the controlling variable: does the
-contact preference of a column predict whether the front actually gets
-through that column.
+front advanced. This module describes associations between the contact
+preference of a column and subsequent front advance. These associations
+do not decide whether chemistry is a causal controlling variable.
 
 The central difficulty is that a per-column preference is computed from
 the observations that the dynamics happened to produce, and the

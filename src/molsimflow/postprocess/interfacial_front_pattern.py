@@ -1,5 +1,12 @@
 """Chemical-pattern gateway for a migrating gas contact front on a joined surface.
 
+This material-domain adapter preserves historical Si/OH/CH3 labels and
+open-chart statistics for reproducibility. It is not a universal surface
+classifier. For explicit periodic-axis connectivity and complete-window
+advance fractions, use ``periodic_front_pattern``; the denominators differ,
+so those functions are not interchangeable aliases. See
+``docs/interfacial_architecture.md`` for the API selection contract.
+
 The module turns a static surface motif map plus a time-resolved gas/surface
 contact list into three auditable quantities:
 

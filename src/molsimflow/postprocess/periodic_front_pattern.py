@@ -2,7 +2,7 @@
 
 This module supersedes the open-boundary treatment in
 :mod:`molsimflow.postprocess.interfacial_front_pattern`. It exists
-because four separate defects in that module biased the conclusions:
+to make four analysis choices explicit for periodic-front applications:
 
 1. The prepared surface is a periodic slab, but the connectivity
    analysis cut the box open in Y. A sublattice that is actually
@@ -60,22 +60,28 @@ def minimum_image_delta(coords: np.ndarray, box: Sequence[float],
     ``box`` the orthorhombic box lengths. ``periodic`` marks which axes
     are periodic; it defaults to every axis with a non-zero length.
 
-    The default is only safe when every direction really is periodic.
-    A slab that spans the full width of its box in x is *not* periodic
-    in x: wrapping it joins the two far edges across a gap that does
-    not exist physically, and in a junction surface that gap is the
-    chemical seam. Wrap only the directions that are genuinely
-    periodic.
+    The default is only safe when every positive-length direction is
+    periodic. Supply explicit flags from the simulation boundary contract;
+    slab shape or a chemical seam does not establish those flags. An open
+    observation chart must be declared separately from physical periodicity.
+    Nonperiodic axes may have a zero length; periodic axes require a positive
+    length. Coordinates and lengths must be finite.
     """
     pts = np.asarray(coords, dtype=float)
     lengths = np.asarray(box, dtype=float)
-    if pts.ndim != 2 or pts.shape[1] != lengths.size:
-        raise ValueError("coords must be (n, len(box))")
+    if (lengths.ndim != 1 or not lengths.size or pts.ndim != 2
+            or pts.shape[1] != lengths.size):
+        raise ValueError("coords must be (n, len(box)) with a one-dimensional box")
+    if (not np.isfinite(pts).all() or not np.isfinite(lengths).all()
+            or np.any(lengths < 0)):
+        raise ValueError("Finite coordinates and nonnegative box lengths required")
     if periodic is None:
         periodic = lengths > 0
     periodic = np.asarray(periodic, dtype=bool)
     if periodic.shape != lengths.shape:
         raise ValueError("periodic must match the box")
+    if np.any(periodic & (lengths <= 0)):
+        raise ValueError("Periodic axes require positive box lengths")
     delta = pts[:, None, :] - pts[None, :, :]
     for axis, length in enumerate(lengths):
         if periodic[axis] and length > 0:
@@ -90,6 +96,8 @@ def periodic_neighbour_matrix(coords: np.ndarray, box: Sequence[float],
 
     The diagonal is set to ``False``: a site is not its own neighbour.
     """
+    if not np.isfinite(cutoff) or cutoff <= 0:
+        raise ValueError("A finite positive neighbor cutoff is required")
     delta = minimum_image_delta(coords, box, periodic)
     dist = np.linalg.norm(delta, axis=-1)
     matrix = dist <= cutoff
@@ -106,6 +114,10 @@ def connected_components(adjacency: np.ndarray) -> tuple[int, np.ndarray, np.nda
     import scipy.sparse as sp
     from scipy.sparse.csgraph import connected_components as _cc
 
+    adjacency = np.asarray(adjacency)
+    if (adjacency.ndim != 2 or adjacency.shape[0] != adjacency.shape[1]
+            or adjacency.dtype != bool or not np.array_equal(adjacency, adjacency.T)):
+        raise ValueError("A square symmetric boolean adjacency is required")
     n_components, labels = _cc(sp.csr_matrix(adjacency), directed=False)
     sizes = np.bincount(labels)
     return int(n_components), labels, sizes
@@ -247,8 +259,8 @@ def synchronous_tip_bulk_gap(tip_x: np.ndarray, bulk_x: np.ndarray) -> dict:
     """
     tip = np.asarray(tip_x, dtype=float)
     bulk = np.asarray(bulk_x, dtype=float)
-    if tip.shape != bulk.shape:
-        raise ValueError("tip and bulk must have the same length")
+    if tip.ndim != 1 or tip.shape != bulk.shape:
+        raise ValueError("tip and bulk must be paired one-dimensional arrays")
     ok = np.isfinite(tip) & np.isfinite(bulk)
     if not ok.any():
         return {"n_frames": 0, "median_gap_A": float("nan"),
@@ -273,11 +285,17 @@ def complete_window_advance_fraction(column_index: np.ndarray,
     advanced is reported together with the number of windows behind it.
 
     The result is a descriptive forward-window fraction. It is not a
-    hazard, because the windows overlap and are not independent.
+    hazard, because the windows overlap and are not independent. Rows must
+    belong to one uninterrupted, uniformly sampled segment; callers split
+    native gaps and restarts before invoking this function. A -1 denotes an
+    observed absence of a front, not a missing or unread trajectory frame.
     """
-    idx = np.asarray(column_index, dtype=int)
-    if lookahead < 1:
-        raise ValueError("lookahead must be positive")
+    idx = np.asarray(column_index)
+    if idx.ndim != 1 or idx.dtype.kind not in "iu" or np.any(idx < -1):
+        raise ValueError("One-dimensional integer columns with optional -1 absence required")
+    if (not isinstance(lookahead, (int, np.integer))
+            or isinstance(lookahead, (bool, np.bool_)) or lookahead < 1):
+        raise ValueError("lookahead must be a positive integer")
     out: dict[int, dict] = {}
     for column in sorted(set(idx[idx >= 0].tolist())):
         starts = np.flatnonzero(idx == column)
@@ -301,10 +319,9 @@ def selectivity_with_support(selectivity_rows: Sequence[dict],
 
     A median over columns that carry very different numbers of
     observations is not a surface property. This helper reports the
-    pooled ratio, the observation-weighted ratio, the median, and the
-    share of the observations carried by the column that dominates the
-    median, so that a well-supported value can be told apart from one
-    produced by a sparse tail.
+    observation-weighted mean of the supplied ratios, their unweighted
+    median, and the smallest set of columns carrying 80 percent of support.
+    It does not reconstruct a pooled ratio from numerators and denominators.
     """
     rows = [r for r in selectivity_rows
             if r.get("selectivity") is not None
@@ -313,6 +330,8 @@ def selectivity_with_support(selectivity_rows: Sequence[dict],
         return {"n_columns": 0}
     values = np.array([float(r["selectivity"]) for r in rows])
     support = np.array([float(r.get(support_key, 0.0)) for r in rows])
+    if not np.isfinite(support).all() or np.any(support < 0):
+        raise ValueError("Support must be finite and nonnegative")
     total = support.sum()
     if total <= 0:
         return {"n_columns": len(rows), "median": float(np.median(values))}
