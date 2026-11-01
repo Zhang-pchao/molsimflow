@@ -12,6 +12,15 @@ from molsimflow.postprocess.pimd.cli import (
     _add_pimd_bead_convergence_args as _add_pimd_bead_convergence_args,
 )
 
+from molsimflow.postprocess.nanobubble_cli import (
+    register_nanobubble_subcommands,
+    _cmd_postprocess_nanobubble_flow_response as _cmd_postprocess_nanobubble_flow_response,
+    _cmd_postprocess_nanobubble_local_flow as _cmd_postprocess_nanobubble_local_flow,
+    _cmd_postprocess_nanobubble_edge_events as _cmd_postprocess_nanobubble_edge_events,
+    _cmd_postprocess_nanobubble_edge_water as _cmd_postprocess_nanobubble_edge_water,
+    _cmd_postprocess_nanobubble_edge_mechanism as _cmd_postprocess_nanobubble_edge_mechanism,
+)
+
 import argparse
 from pathlib import Path
 
@@ -612,6 +621,8 @@ def _cmd_postprocess_nanobubble_ion_distribution(args: argparse.Namespace) -> in
         "nitrogen_range",
         "solution_range",
         "timestep_fs",
+        "sample_stride_steps",
+        "sampling_origin_step",
         "hydrogen_type",
         "oxygen_type",
         "sodium_type",
@@ -3804,6 +3815,8 @@ def build_parser() -> argparse.ArgumentParser:
     nanobubble_ions.add_argument("--solution-range", required=True)
     nanobubble_ions.add_argument("--stage", action="append", required=True)
     nanobubble_ions.add_argument("--timestep-fs", type=float, default=0.5)
+    nanobubble_ions.add_argument("--sample-stride-steps", type=int, default=1)
+    nanobubble_ions.add_argument("--sampling-origin-step", type=int, default=0)
     nanobubble_ions.add_argument("--hydrogen-type", type=int, default=1)
     nanobubble_ions.add_argument("--oxygen-type", type=int, default=2)
     nanobubble_ions.add_argument("--sodium-type", type=int, default=4)
@@ -4419,6 +4432,7 @@ def build_parser() -> argparse.ArgumentParser:
     fes_reweight.set_defaults(func=_cmd_postprocess_fes_reweight)
 
     register_pimd_subcommands(postprocess_subparsers)
+    register_nanobubble_subcommands(postprocess_subparsers)
 
     fes2d_grid = postprocess_subparsers.add_parser(
         "fes2d-grid",

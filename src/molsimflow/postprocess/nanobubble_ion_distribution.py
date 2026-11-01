@@ -119,6 +119,14 @@ def stage_names(stages: Sequence[Stage], time_ns: float) -> tuple[str, ...]:
     return tuple(stage.name for stage in stages if stage.contains(time_ns))
 
 
+def is_sampled_step(step: int, stride_steps: int, origin_step: int = 0) -> bool:
+    """Return whether a trajectory step belongs to an explicit sampling grid."""
+
+    if stride_steps <= 0:
+        raise ValueError("sampling stride must be positive")
+    return (step - origin_step) % stride_steps == 0
+
+
 def top_surface_si_ids(
     elements: np.ndarray,
     coordinates: np.ndarray,
@@ -590,6 +598,10 @@ def run_analysis(args: argparse.Namespace) -> dict:
         ):
             raw_frames += 1
             raw_steps.add(frame.step)
+            if not is_sampled_step(
+                frame.step, args.sample_stride_steps, args.sampling_origin_step
+            ):
+                continue
             if not np.allclose(box_lengths(frame.bounds), reference_lengths):
                 raise ValueError("Reference structure and trajectory cell lengths differ")
             time_ns = frame.step * args.timestep_fs / 1.0e6
@@ -633,6 +645,8 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "unique_raw_frames": len(raw_steps),
         "unique_staged_frames_before_drop": len(records),
         "analyzed_frames": len(frames),
+        "sample_stride_steps": args.sample_stride_steps,
+        "sampling_origin_step": args.sampling_origin_step,
         "first_step": steps[0],
         "last_step": steps[-1],
         "frames_per_stage": dict(sorted(frames_per_stage.items())),
@@ -660,6 +674,8 @@ def run_analysis(args: argparse.Namespace) -> dict:
         "nitrogen_atom_range": list(args.nitrogen_range),
         "solution_atom_range": list(args.solution_range),
         "stages": [stage.__dict__ for stage in args.stage],
+        "sample_stride_steps": args.sample_stride_steps,
+        "sampling_origin_step": args.sampling_origin_step,
         "restart_policy": "later trajectory replaces earlier frame at duplicate timestep",
         "drop_first_frame_policy": (
             "drop the earliest raw timestep only when it is inside a requested stage"
@@ -710,6 +726,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--solution-range", type=parse_range, required=True)
     parser.add_argument("--stage", type=parse_stage, action="append", required=True)
     parser.add_argument("--timestep-fs", type=float, default=0.5)
+    parser.add_argument("--sample-stride-steps", type=int, default=1)
+    parser.add_argument("--sampling-origin-step", type=int, default=0)
     parser.add_argument("--hydrogen-type", type=int, default=1)
     parser.add_argument("--oxygen-type", type=int, default=2)
     parser.add_argument("--sodium-type", type=int, default=4)
@@ -730,6 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if min(
         args.timestep_fs,
+        args.sample_stride_steps,
         args.cluster_cutoff_A,
         args.oh_cutoff_A,
         args.ch_cutoff_A,
@@ -737,6 +756,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.surface_depth_A,
     ) <= 0:
         raise ValueError("Time step, cutoffs, surface window, and depth must be positive")
+    if args.sampling_origin_step < 0:
+        raise ValueError("sampling origin step must be non-negative")
     if args.trajectory_max_step and len(args.trajectory_max_step) != len(args.trajectory):
         raise ValueError("--trajectory-max-step must be supplied once per --trajectory")
     if args.trajectory_max_step and min(args.trajectory_max_step) < 0:

@@ -11,6 +11,7 @@ from molsimflow.postprocess.nanobubble_ion_distribution import (
     Stage,
     _selected_steps,
     build_ion_samples,
+    is_sampled_step,
     iter_ion_frames,
     main,
     parse_stage,
@@ -37,6 +38,14 @@ def test_drop_first_frame_applies_before_stage_filtering():
     records = {20: ({}, []), 40: ({}, [])}
     assert _selected_steps(records, {0, 20, 40}, True) == [20, 40]
     assert _selected_steps({0: ({}, []), **records}, {0, 20, 40}, True) == [20, 40]
+
+
+def test_sampling_grid_uses_an_explicit_origin():
+    assert is_sampled_step(30_000_000, 2_000, 30_000_000)
+    assert is_sampled_step(30_002_000, 2_000, 30_000_000)
+    assert not is_sampled_step(30_000_200, 2_000, 30_000_000)
+    with pytest.raises(ValueError, match="positive"):
+        is_sampled_step(0, 0)
 
 
 def test_dump_selection_and_bubble_coordinates(tmp_path: Path):
@@ -247,11 +256,17 @@ def test_cli_exposes_nanobubble_ion_distribution(tmp_path: Path):
             "late:0:1",
             "--terminal-surface-z-A",
             "5",
+            "--sample-stride-steps",
+            "2000",
+            "--sampling-origin-step",
+            "30000000",
         ]
     )
     assert args.postprocess_command == "nanobubble-ion-distribution"
     assert args.terminal_surface_z_A == 5.0
     assert args.trajectory_max_step is None
+    assert args.sample_stride_steps == 2000
+    assert args.sampling_origin_step == 30000000
 
 
 def test_trajectory_max_steps_must_pair_with_trajectories(tmp_path: Path):

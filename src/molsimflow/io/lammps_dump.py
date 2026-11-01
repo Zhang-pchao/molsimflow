@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 from typing import TextIO
 
@@ -79,6 +80,8 @@ def open_lammps_dump_text(dump_path: Path) -> Iterator[TextIO]:
 def _iter_lammps_dump_records(
     dump_path: Path,
     maximum_timestep: int | None = None,
+    *,
+    accept_timestep: Callable[[int], bool] | None = None,
 ) -> Iterator[LammpsDumpFrame]:
     """Iterate dump rows, stopping before an out-of-window frame body."""
 
@@ -113,23 +116,30 @@ def _iter_lammps_dump_records(
             atom_fields = tuple(atom_header.split()[2:])
             if not atom_fields:
                 raise ValueError(f"LAMMPS dump has no atom columns at timestep {timestep}")
+            accepted = accept_timestep is None or bool(accept_timestep(timestep))
             rows = []
             for _ in range(atom_count):
-                parts = tuple(handle.readline().split())
+                line = handle.readline()
+                if not accepted:
+                    if not line:
+                        raise ValueError(f"LAMMPS dump ended inside timestep {timestep}")
+                    continue
+                parts = tuple(line.split())
                 if len(parts) != len(atom_fields):
                     raise ValueError(
                         f"Atom column count mismatch at timestep {timestep}: "
                         f"expected {len(atom_fields)}, got {len(parts)}"
                     )
                 rows.append(parts)
-            yield LammpsDumpFrame(
-                frame_index=frame_index,
-                timestep=timestep,
-                bounds=bounds,
-                box_header=box_header,
-                atom_fields=atom_fields,
-                atom_rows=tuple(rows),
-            )
+            if accepted:
+                yield LammpsDumpFrame(
+                    frame_index=frame_index,
+                    timestep=timestep,
+                    bounds=bounds,
+                    box_header=box_header,
+                    atom_fields=atom_fields,
+                    atom_rows=tuple(rows),
+                )
             frame_index += 1
 
 
@@ -161,6 +171,98 @@ def iter_lammps_dump_records_until(
     """
 
     yield from iter_lammps_dump_records(dump_path, maximum_timestep)
+
+
+def iter_lammps_dump_records_selected(
+    dump_path: Path,
+    *,
+    accept_timestep: Callable[[int], bool] | None = None,
+    stop_after_timestep: int | None = None,
+) -> Iterator[LammpsDumpFrame]:
+    """Select frames with the existing parser and inclusive stopping contract.
+
+    Rejected atom rows are consumed without tokenization; frame headers and EOF
+    are still checked. This does not validate the contents of rejected rows.
+    ``frame_index`` remains the index in the native stream, before selection.
+    """
+    try:
+        yield from _iter_lammps_dump_records(
+            dump_path, stop_after_timestep, accept_timestep=accept_timestep)
+    except _MaximumTimestepReached:
+        return
+
+
+def iter_synchronized_lammps_dump_records(
+    dump_paths: Sequence[Path],
+    *,
+    accept_timestep: Callable[[int], bool] | None = None,
+    stop_after_timestep: int | None = None,
+) -> Iterator[LammpsDumpFrame]:
+    """Join one or more atom streams written at a common saved-frame cadence.
+
+    A single input uses the same selection and ID validation as a join. Rows
+    are sorted by ID and frame indices enumerate accepted frames from zero.
+    Multiple inputs are streamed independently, so a faster source
+    can be downsampled by ``accept_timestep`` before synchronization. All
+    accepted frames must have identical timesteps, box bounds, boundary
+    headers, and atom columns; atom IDs must be disjoint across sources. The
+    merged rows are sorted by ID without materializing a second trajectory on
+    disk.
+    """
+
+    paths = tuple(Path(path) for path in dump_paths)
+    if not paths:
+        raise ValueError("Synchronized dump input requires at least one path")
+    streams = [
+        iter_lammps_dump_records_selected(
+            path,
+            accept_timestep=accept_timestep,
+            stop_after_timestep=stop_after_timestep,
+        )
+        for path in paths
+    ]
+    for frame_index, frames in enumerate(zip_longest(*streams)):
+        if any(frame is None for frame in frames):
+            counts = ["ended" if frame is None else str(frame.timestep) for frame in frames]
+            raise ValueError(
+                "Synchronized dump accepted-frame counts differ: " + ", ".join(counts)
+            )
+        complete = tuple(frame for frame in frames if frame is not None)
+        reference = complete[0]
+        for path, frame in zip(paths[1:], complete[1:]):
+            if frame.timestep != reference.timestep:
+                raise ValueError(
+                    f"Synchronized dump timestep mismatch at {path}: "
+                    f"{frame.timestep} != {reference.timestep}"
+                )
+            if frame.atom_fields != reference.atom_fields:
+                raise ValueError(
+                    f"Synchronized dump atom columns differ at step {frame.timestep}"
+                )
+            if frame.box_header != reference.box_header or not np.allclose(
+                frame.bounds, reference.bounds, atol=1.0e-8, rtol=0.0
+            ):
+                raise ValueError(
+                    f"Synchronized dump box differs at step {frame.timestep}"
+                )
+        if "id" not in reference.atom_fields:
+            raise ValueError("Synchronized dumps require an id atom column")
+        id_index = reference.atom_fields.index("id")
+        rows = [row for frame in complete for row in frame.atom_rows]
+        rows.sort(key=lambda row: int(row[id_index]))
+        ids = [int(row[id_index]) for row in rows]
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                f"Synchronized dump atom IDs overlap at step {reference.timestep}"
+            )
+        yield LammpsDumpFrame(
+            frame_index=frame_index,
+            timestep=reference.timestep,
+            bounds=reference.bounds,
+            box_header=reference.box_header,
+            atom_fields=reference.atom_fields,
+            atom_rows=tuple(rows),
+        )
 
 
 def _validate_dump_identity(

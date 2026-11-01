@@ -215,6 +215,15 @@ def _validate_contract(raw: Mapping[str, object]) -> None:
         raise ValueError("minimum_effect_mps must be non-negative")
     if _float(raw.get("classification_sigma_multiplier", 1.0)) < 0.0:
         raise ValueError("classification_sigma_multiplier must be non-negative")
+    for key in ("analysis_start_ps", "analysis_end_ps"):
+        if key in raw and not math.isfinite(_float(raw[key])):
+            raise ValueError(f"{key} must be finite")
+    if (
+        "analysis_start_ps" in raw
+        and "analysis_end_ps" in raw
+        and _float(raw["analysis_end_ps"]) <= _float(raw["analysis_start_ps"])
+    ):
+        raise ValueError("analysis_end_ps must be greater than analysis_start_ps")
     identities: list[tuple[str, str]] = []
     baselines: dict[str, int] = defaultdict(int)
     for entry in cases:
@@ -414,6 +423,8 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
     acf_max_lag_ps = _float(raw["acf_max_lag_ps"])
     minimum_effect_mps = _float(raw.get("minimum_effect_mps", 0.05))
     sigma_multiplier = _float(raw.get("classification_sigma_multiplier", 1.0))
+    analysis_start_ps = _float(raw.get("analysis_start_ps"), -math.inf)
+    analysis_end_ps = _float(raw.get("analysis_end_ps"), math.inf)
     columns = {
         "step": "TimeStep",
         "x": "v_dxrel",
@@ -430,6 +441,19 @@ def run_contract(contract_path: Path, output_dir: Path) -> dict[str, object]:
         )
         for entry in raw["cases"]
     ]
+    for branch in branches:
+        time_ps = np.asarray(branch["time_ps"], dtype=float)
+        mask = (
+            (time_ps >= analysis_start_ps - 1.0e-9)
+            & (time_ps <= analysis_end_ps + 1.0e-9)
+        )
+        if int(np.sum(mask)) < 2:
+            raise ValueError(
+                f"Analysis window has fewer than two samples for "
+                f"{branch['case_id']}/{branch['branch_id']}"
+            )
+        for key in ("step", "time_ps", "x_A", "y_A"):
+            branch[key] = np.asarray(branch[key])[mask]
     baseline_by_case = {
         str(branch["case_id"]): branch
         for branch in branches

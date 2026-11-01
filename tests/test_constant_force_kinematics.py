@@ -123,6 +123,23 @@ def test_run_contract_writes_paired_blocks_and_classes(tmp_path):
     assert (output / "input_manifest.tsv").is_file()
 
 
+def test_run_contract_applies_common_analysis_window(tmp_path):
+    contract = _contract(tmp_path)
+    raw = json.loads(contract.read_text(encoding="utf-8"))
+    raw["analysis_start_ps"] = 1000.0
+    raw["analysis_end_ps"] = 3000.0
+    contract.write_text(json.dumps(raw), encoding="utf-8")
+    output = tmp_path / "output"
+    run_contract(contract, output)
+    rows = {row["branch_id"]: row for row in _read_tsv(output / "branch_summary.tsv")}
+    assert float(rows["fx"]["time_start_ps"]) == 1000.0
+    assert float(rows["fx"]["time_end_ps"]) == 3000.0
+    assert int(rows["fx"]["samples"]) == 9
+    assert float(rows["fx"]["excess_axis_velocity_full_mps"]) == pytest.approx(1.0)
+    blocks = [row for row in _read_tsv(output / "block_velocity.tsv") if row["branch_id"] == "fx"]
+    assert len(blocks) == 2
+
+
 def test_run_contract_requires_one_baseline_per_case(tmp_path):
     contract = _contract(tmp_path)
     raw = json.loads(contract.read_text(encoding="utf-8"))

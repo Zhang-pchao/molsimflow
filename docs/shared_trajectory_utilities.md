@@ -58,3 +58,22 @@ scale = infer_timestep_time_scale([0, 1000, 2000], colvar_rows, tolerance=0.001)
 
 The helpers operate on row dictionaries with a time column, defaulting to
 `time_ns`.
+
+
+## Selective and synchronized dump streams
+
+`iter_lammps_dump_records_selected` uses the same parser as the complete and
+bounded record readers. It accepts a timestep predicate and an inclusive stop.
+Rejected atom rows are streamed without tokenization; their contents are not
+validated. Native frame indices remain unchanged. A safe endpoint must come
+from a separate source audit; bounded reading does not qualify an unread tail.
+
+`iter_synchronized_lammps_dump_records` applies selection independently to each
+input before joining frames. Accepted times, fields, boundary headers and box
+bounds must agree, and atom IDs must be disjoint. Counts and frame mismatches
+fail rather than silently truncating the join. This joins simultaneous atom
+subsets; it is not a restart-segment concatenator or a PIMD bead aligner.
+
+`iter_lammps_dump_records_selected` preserves native frame indices; the
+synchronized join enumerates accepted frames from zero and sorts atoms by ID,
+including for a single input. Do not interchange these index conventions.
