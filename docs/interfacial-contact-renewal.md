@@ -1,0 +1,3 @@
+# Interfacial contact renewal
+
+`interfacial_contact_renewal` provides weighted same-site endpoint transitions, moving face-owned regions, and directed water/surface hydrogen-bond degrees. It reuses the periodic geometry, nearest valid O/C hydrogen assignment (by callers), and donor-angle semantics of the existing modules. Contact arrays must share ordered site identities. Water-neighbor recovery is not a film or detachment criterion. Regions use gas q05/q95 and nearest terminal-site outward height; callers must preserve material identity and coordinate continuity. Directed HB counts must not be called unique oxygen-pair counts. Temporal subsampling limits event and lifetime claims.

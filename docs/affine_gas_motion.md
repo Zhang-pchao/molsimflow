@@ -1,0 +1,3 @@
+# Affine gas motion
+The `fit_affine_motion` helper fits the full velocity gradient on a locally unwrapped, finite three-dimensional particle cloud. The caller supplies identity, membership and units. It returns the translation at the cloud mean, gradient, symmetric strain, antisymmetric rotation, conditioning and residual.
+Simple shear contains both strain and rotation. An angular component does not establish closed material trajectories, a rolling contact or propulsion. Average signed tensor entries over declared time blocks before interpretation; norms of instantaneous thermal fits have positive noise bias. Retain insufficient rank and poor conditioning as unsupported geometries.
