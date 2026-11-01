@@ -6,6 +6,10 @@ release state: a short-lived feature joins `devel`, and a qualified release join
 
 ## Find an owner before implementing
 
+The generated [module catalog](module_catalog.md) lists all package modules and
+public definitions without loading optional dependencies. Regenerate it after
+adding or moving an API; CI checks that it matches the source.
+
 | Task | Starting point | More detail |
 | --- | --- | --- |
 | Trajectory/structure formats and hashes | `molsimflow.io` | `shared_trajectory_utilities.md` |
@@ -14,6 +18,11 @@ release state: a short-lived feature joins `devel`, and a qualified release join
 | PIMD estimators, alignment, path weights and reports | `postprocess.pimd` | `pimd_architecture.md`, `pimd_reweight.md`, `pimd_optional_features.md` |
 | Fixed-umbrella free energies | `postprocess.umbrella_wham` | `umbrella_wham.md` |
 | Contact geometry, identities, transport and front observables | Existing `postprocess.interfacial_*` owners | `interfacial_architecture.md` |
+| Sampled contact states, turnover, residence and reconstruction | `surface_contact_*`, `surface_water_renewal`, `surface_state_persistence` | `contact_state_module_map.md`; endpoint recurrence, sampled survival and historical outcome thresholds are distinct |
+| Local geometry, registered references and bounded placement | `local_density_front`, `curved_density_front`, `scaffold_reference`, `molecular_placement` | Owning geometry contracts; material-specific reference adapters remain explicit |
+| Driven nanobubble observers | `nanobubble_flow_response`, `nanobubble_local_flow`, `nanobubble_edge_*`, `junction_release` | Explicit contracts and original material identities; temporal causal filters are not causal identification |
+| Offline OPES replay and path coverage | `opes_replay`, `cv_coverage`, `glycine_states` | `opes_replay.md`; keep recorded-kernel replay separate from frozen-state evaluation and geometric state candidates |
+| Frozen input and archive primitives | `io.live_snapshot`, `io.archive_lifecycle` | `live_junction_species.md`, `archive_lifecycle.md`; no implicit cleanup or host discovery |
 | Constant-force and event-table analysis | `postprocess.constant_force_*`, `contact_graph` | Owning docs/tests; distinguish a recorded intervention from an equilibrium estimator |
 | Plotting and media | `molsimflow.plotting`, `molsimflow.media` | Keep numerical estimators outside presentation adapters |
 | CLI/configuration/workflow composition | `cli.py`, `config`, `workflows` | Parse and compose; numerical kernels belong in their domain |
@@ -64,3 +73,9 @@ elsewhere. Removing a worktree additionally requires preserved untracked/ignored
 payloads, no active writer/reader, and no remaining consumer path dependency.
 Branch names themselves consume negligible space; worktree files and environments
 account for storage. See [CONTRIBUTING.md](../CONTRIBUTING.md) for release checks.
+
+Constant-force kinematics accepts one common start/end analysis window. Ion
+distribution sampling accepts an explicit step stride and origin. These are
+selection contracts, not changes to estimator normalization. Nanobubble CLI
+handlers live in `postprocess.nanobubble_cli`; material-specific defaults remain
+visible and must be reviewed by each consuming project.

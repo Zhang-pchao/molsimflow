@@ -22,6 +22,7 @@ running the checks on Python 3.9 and 3.12:
 
 ```bash
 python scripts/audit_public_repo.py
+python scripts/generate_module_catalog.py --check
 python -m compileall -q src scripts tests
 PYTHONPATH=src python -m pytest -q
 ```
@@ -34,3 +35,9 @@ New non-trivial numerical or parsing behavior should include one small
 synthetic test. Prefer descriptive module and function names, explicit user
 inputs, standard-library features, and existing package helpers over new
 frameworks or parallel implementations.
+
+Before adding an analysis, inspect `docs/module_catalog.md`, its owning tests and
+`docs/postprocess_architecture.md`. Record why an existing owner does or does not
+fit its units, identities, PBC, temporal support and schema. Keep material adapters
+explicit. After adding or moving public definitions, regenerate the catalog with
+`python scripts/generate_module_catalog.py` and review the changed rows.

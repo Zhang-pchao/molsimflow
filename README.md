@@ -21,11 +21,14 @@ The project follows three rules:
 
 ## Installation
 
-Install the core package from a checkout:
+Install the core package from a qualified checkout or release artifact:
 
 ```bash
-python -m pip install -e .
+python -m pip install .
 ```
+
+For development in an isolated environment, use `python -m pip install -e .`.
+Scientific runs should record the selected release artifact and import origin.
 
 Install only the optional groups you need:
 
