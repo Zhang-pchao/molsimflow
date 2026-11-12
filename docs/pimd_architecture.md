@@ -64,3 +64,8 @@ from outside source directories, and distribute the same artifact. Deployment
 must not copy a Git worktree or install editable source. Retain the previous
 installation for rollback. Private cached-data qualification and host-specific
 installation receipts belong outside this public repository.
+
+Fixed mixed-bead topology and native dump admission are documented in
+[pimd_mixed_beads.md](pimd_mixed_beads.md). Quantization metadata is independent
+of bias/contraction/estimator choices; the existing FES pipeline rejects a
+heterogeneous nuclear ensemble until its output contract is qualified.

@@ -153,6 +153,19 @@ def prepare_inputs(contract: Mapping[str, object], output: Path, profile: str) -
     from .alignment import time_scale_to_fs
 
     source = contract["source"]
+    if "nuclear_quantization" in source:
+        from .mixed_beads import MixedBeadTopology
+
+        topology = MixedBeadTopology.from_metadata(source["nuclear_quantization"])
+        require(
+            not topology.is_mixed,
+            "mixed-bead FES requires an explicit mixed-ensemble output contract; "
+            "the existing quantum-FES pipeline accepts uniform beads only",
+        )
+        require(
+            len(source["bead_colvars"]) == topology.partitions,
+            "nuclear quantization partition count must match bead_colvars",
+        )
     selection = contract["selection"]
     reweight = contract["reweight"]
     # Resolve names before mode-specific admission, preserving the input contract
