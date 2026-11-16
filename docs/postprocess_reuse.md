@@ -58,3 +58,14 @@ completed branch name is retired.
 Revisit the intake during future feature work and release reviews. Keep changing
 candidate lists and project-specific evidence in engineering records so this
 page stays short and reusable.
+
+## Supplied observation units for mean bootstrap
+
+`postprocess.resampling.bootstrap_mean(values, samples, rng)` resamples the
+supplied units with equal weight and returns their mean and percentile interval.
+Supply independent observations or already constructed block means according to
+the analysis. Construct blocks and select missing values explicitly in the
+consumer. Unequal-length block means receive equal weight, which differs from
+resampling rows or weighting blocks by length. The legacy
+`tpcl_renewal_rewiring.bootstrap_mean` import re-exports the same implementation
+and retains Generator state progression and non-finite propagation.

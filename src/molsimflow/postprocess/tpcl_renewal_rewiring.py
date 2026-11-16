@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from molsimflow.postprocess.resampling import bootstrap_mean
+
 
 def read_rows(path: Path) -> list[dict[str, str]]:
     with Path(path).open(newline="", encoding="utf-8") as handle:
@@ -80,16 +82,6 @@ def collect_block_rows(
             }
         )
     return block_rows
-
-
-def bootstrap_mean(
-    values: np.ndarray, samples: int, rng: np.random.Generator
-) -> tuple[float, float, float]:
-    if not len(values):
-        raise ValueError("cannot summarize an empty block series")
-    draws = rng.choice(values, size=(samples, len(values)), replace=True).mean(axis=1)
-    low, high = np.quantile(draws, [0.025, 0.975])
-    return float(np.mean(values)), float(low), float(high)
 
 
 def summarize_lags(

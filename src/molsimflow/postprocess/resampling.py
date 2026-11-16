@@ -89,3 +89,21 @@ def bh_qvalues(pvalues: np.ndarray) -> np.ndarray:
     result = np.empty(len(values))
     result[order] = np.minimum(1, adjusted)
     return result
+
+
+def bootstrap_mean(
+    values: np.ndarray, samples: int, rng: np.random.Generator
+) -> tuple[float, float, float]:
+    """Bootstrap the mean of caller-supplied observation units.
+
+    Supply independent units or precomputed block means as required by the
+    analysis. Each supplied value has equal weight. The caller owns missing
+    data selection, block construction and the Generator state. Non-finite
+    values propagate through the original calculation. Return mean and the
+    2.5/97.5 percentile interval, preserving the historical TPCL API.
+    """
+    if not len(values):
+        raise ValueError("cannot summarize an empty block series")
+    draws = rng.choice(values, size=(samples, len(values)), replace=True).mean(axis=1)
+    low, high = np.quantile(draws, [0.025, 0.975])
+    return float(np.mean(values)), float(low), float(high)

@@ -40,3 +40,35 @@ def test_block_bootstrap_is_reproducible_with_unequal_blocks():
     assert a == b and a["blocks"] == 3 and a["bootstrap_valid"] == 80
     with pytest.raises(ValueError):
         block_bootstrap_partial_spearman(x, y, control, labels, samples=0)
+
+
+def test_bootstrap_mean_preserves_facade_draws_and_generator_state():
+    from molsimflow.postprocess.resampling import bootstrap_mean
+    from molsimflow.postprocess.tpcl_renewal_rewiring import bootstrap_mean as legacy
+
+    assert legacy is bootstrap_mean
+    values = np.array([1.0, 1.0, 3.0, 9.0])
+    expected_rng = np.random.default_rng(12)
+    actual_rng = np.random.default_rng(12)
+    draws = expected_rng.choice(values, size=(101, len(values)), replace=True).mean(axis=1)
+    low, high = np.quantile(draws, [0.025, 0.975])
+    assert bootstrap_mean(values, 101, actual_rng) == (float(values.mean()), float(low), float(high))
+    assert actual_rng.bit_generator.state == expected_rng.bit_generator.state
+
+
+@pytest.mark.parametrize("values", [np.array([4.0]), np.array([1.0, np.nan])])
+def test_bootstrap_mean_keeps_single_unit_and_nonfinite_behavior(values):
+    from molsimflow.postprocess.resampling import bootstrap_mean
+
+    result = bootstrap_mean(values, 100, np.random.default_rng(2))
+    if np.isfinite(values).all():
+        assert result == (4.0, 4.0, 4.0)
+    else:
+        assert np.isnan(result).all()
+
+
+def test_bootstrap_mean_keeps_empty_input_error():
+    from molsimflow.postprocess.resampling import bootstrap_mean
+
+    with pytest.raises(ValueError, match="empty block series"):
+        bootstrap_mean(np.array([]), 100, np.random.default_rng(2))
