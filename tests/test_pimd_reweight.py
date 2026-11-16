@@ -705,6 +705,22 @@ def test_core_profile_runs_one_generic_cv_with_declared_weights(
         )
         np.testing.assert_allclose(frames["time_ps"], times / 1000.0)
 
+        if weight_kind == "precomputed" and bias_mode == "bead_mean":
+            from molsimflow.postprocess.pimd.mixed_beads import MixedBeadTopology
+
+            contract["source"]["nuclear_quantization"] = MixedBeadTopology(
+                (1, 2), (2, 2), 2,
+            ).to_metadata()
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            explicit_output = root / "analysis-explicit-uniform"
+            explicit_summary = analyze(contract_path, explicit_output)
+            assert explicit_summary["status"] == "PASS"
+            for relative in (
+                "tables/frame-series.csv", "fes1d/coordination.csv",
+                "blocks/quantum-fes-uncertainty.csv",
+            ):
+                assert (explicit_output / relative).read_bytes() == (output / relative).read_bytes()
+
 
 @pytest.mark.parametrize("bias_mode", [
     "centroid_coord", "bead_mean", "bead_density_shared",
