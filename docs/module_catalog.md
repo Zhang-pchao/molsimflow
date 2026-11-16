@@ -21,6 +21,7 @@ The names column lists top-level public definitions, or explicit facade re-expor
 | [molsimflow.io.hashes](../src/molsimflow/io/hashes.py) | Read and verify portable SHA256 manifests with explicit path substitutions. | `ChecksumRecord`, `read_sha256_manifest`, `sha256_file`, `verify_sha256_manifest` |
 | [molsimflow.io.lammps_data](../src/molsimflow/io/lammps_data.py) | LAMMPS data-file conversion helpers. | `read_extxyz_atoms`, `orthorhombic_bounds_from_lattice`, `write_lammps_atomic_data`, `convert_extxyz_to_lammps_atomic_data` |
 | [molsimflow.io.lammps_dump](../src/molsimflow/io/lammps_dump.py) | Small LAMMPS dump readers and periodic geometry helpers. | `LammpsFrame`, `LammpsDumpFrame`, `open_lammps_dump_text`, `iter_lammps_dump_records`, `iter_lammps_dump_records_until`, `iter_lammps_dump_records_selected`, `iter_synchronized_lammps_dump_records`, `validate_lammps_dump_bundle`, `write_lammps_dump_frame`, `iter_lammps_dump_frames`, `box_lengths`, `minimum_image_vectors`, `wrap_point_to_box`, `periodic_center`, `midpoint_minimum_image`, `cylinder_membership` |
+| [molsimflow.io.lammps_table](../src/molsimflow/io/lammps_table.py) | Named scalar tables emitted by LAMMPS fix ave/time. | `read_fix_ave_time_table` |
 | [molsimflow.io.live_snapshot](../src/molsimflow/io/live_snapshot.py) | Bounded snapshots of growing LAMMPS trajectories. | `copy_prefix`, `last_complete_stream`, `extract_prefix_snapshot` |
 | [molsimflow.io.poscar](../src/molsimflow/io/poscar.py) | Minimal POSCAR lattice parsing utilities. | `read_poscar_lattice` |
 

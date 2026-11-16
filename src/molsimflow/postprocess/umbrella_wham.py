@@ -16,6 +16,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from molsimflow.postprocess.fes_analysis import read_plumed_numeric_table
+from molsimflow.io.lammps_table import read_fix_ave_time_table
 
 
 @dataclass(frozen=True)
@@ -235,23 +236,70 @@ def load_window(
     cv_field: str = "dz.z",
     bias_field: str = "umb.bias",
     bias_tolerance: float = 1e-4,
+    input_format: str = "plumed",
+    time_field: Optional[str] = None,
+    time_scale: float = 1.0,
+    bias_energy_scale: float = 1.0,
+    expected_samples: Optional[int] = None,
+    expected_time_spacing: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Reuse the strict PLUMED reader, retaining discard_time < t <= end_time.
+    """Retain discard_time < scaled_time <= end_time and audit harmonic energy.
 
-    Time and coordinates retain input units. Bias tolerance is in the energy
-    unit of kappa. No duplicate or non-monotonic production times are accepted.
+    PLUMED input remains the default. LAMMPS scalar fix-ave/time tables use
+    named columns and default to TimeStep. time_scale converts the raw clock;
+    bias_energy_scale converts recorded energies to the unit of kappa and kBT.
     """
 
-    table = read_plumed_numeric_table(path, deduplicate_time=False)
-    t = table.data[:, table.fields.index("time")]
-    q = table.data[:, table.fields.index(cv_field)]
-    bias = table.data[:, table.fields.index(bias_field)]
+    if input_format == "plumed":
+        table = read_plumed_numeric_table(path, deduplicate_time=False)
+        fields, data = table.fields, table.data
+        clock = time_field or "time"
+    elif input_format == "lammps_fix_ave_time":
+        fields, data = read_fix_ave_time_table(path)
+        clock = time_field or "TimeStep"
+    else:
+        raise ValueError(f"Unsupported umbrella input format: {input_format}")
+    if len(set(fields)) != len(fields):
+        raise ValueError("Duplicate umbrella table columns")
+    for name in (clock, cv_field, bias_field):
+        if name not in fields:
+            raise ValueError(f"Missing umbrella table column: {name}")
+    if not np.isfinite(data).all():
+        raise ValueError("Nonfinite umbrella table values")
+    for value in (time_scale, bias_energy_scale):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError("Time and bias energy scales must be finite and positive")
+    if not np.isfinite(discard_time) or (
+        end_time is not None and (not np.isfinite(end_time) or end_time <= discard_time)
+    ):
+        raise ValueError("Invalid umbrella time selection")
+    if not np.isfinite(bias_tolerance) or bias_tolerance < 0:
+        raise ValueError("Bias tolerance must be finite and nonnegative")
+    t = data[:, fields.index(clock)] * time_scale
+    q = data[:, fields.index(cv_field)]
+    bias = data[:, fields.index(bias_field)] * bias_energy_scale
+    if not np.isfinite(t).all() or not np.isfinite(bias).all():
+        raise ValueError("Nonfinite converted umbrella values")
     keep = t > discard_time
     if end_time is not None:
         keep &= t <= end_time
     t, q, bias = t[keep], q[keep], bias[keep]
     if not len(t) or np.any(np.diff(t) <= 0):
         raise ValueError("Empty window or non-increasing production time")
+    if expected_samples is not None:
+        if (
+            isinstance(expected_samples, bool)
+            or not isinstance(expected_samples, (int, np.integer))
+            or expected_samples < 1
+        ):
+            raise ValueError("Expected sample count must be a positive integer")
+        if len(t) != expected_samples:
+            raise ValueError("Window sample count disagrees with expected_samples")
+    if expected_time_spacing is not None:
+        if not np.isfinite(expected_time_spacing) or expected_time_spacing <= 0:
+            raise ValueError("Expected time spacing must be finite and positive")
+        if not np.allclose(np.diff(t), expected_time_spacing, rtol=1e-9, atol=1e-12):
+            raise ValueError("Window timestamps disagree with expected_time_spacing")
     expected = harmonic_bias_matrix(q, [center], [kappa])[0]
     if not np.allclose(bias, expected, atol=bias_tolerance, rtol=0):
         raise ValueError("Recorded bias disagrees with supplied harmonic potential")
@@ -271,20 +319,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     kbt = float(config["kbt"])
     windows = config["windows"]
     samples, centers, kappas = [], [], []
-    for row in windows:
+    options = (
+        "discard_time", "end_time", "cv_field", "bias_field", "bias_tolerance",
+        "input_format", "time_field", "time_scale", "bias_energy_scale",
+        "expected_samples", "expected_time_spacing",
+    )
+    identities, source_paths = set(), set()
+    inputs = []
+    for index, row in enumerate(windows):
         path = Path(row["colvar"])
         if not path.is_absolute():
             path = args.manifest.parent / path
-        _, q = load_window(
-            path, row["center"], row["kappa"],
-            discard_time=config.get("discard_time", 10),
-            end_time=config.get("end_time"),
-            cv_field=config.get("cv_field", "dz.z"),
-            bias_field=config.get("bias_field", "umb.bias"),
-        )
+        identity = str(row.get("id", index))
+        source_identity = (path.stat().st_dev, path.stat().st_ino)
+        if identity in identities or source_identity in source_paths:
+            raise ValueError("Duplicate umbrella window identity or input file")
+        identities.add(identity)
+        source_paths.add(source_identity)
+        selection = {
+            key: row.get(key, config.get(key))
+            for key in options
+            if key in row or key in config
+        }
+        t, q = load_window(path, row["center"], row["kappa"], **selection)
         samples.append(q)
         centers.append(row["center"])
         kappas.append(row["kappa"])
+        inputs.append({
+            "id": identity, "colvar": str(path), "center": row["center"],
+            "kappa": row["kappa"], "samples": len(q),
+            "first_time": float(t[0]), "last_time": float(t[-1]),
+            "input_format": selection.get("input_format", "plumed"),
+            "selection": selection,
+        })
     result = fit_harmonic_umbrellas(samples, centers, kappas, kbt)
     if not result.converged:
         raise RuntimeError(f"WHAM failed numerical convergence: {result.score_residual}")
@@ -297,7 +364,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args.output.mkdir(parents=True, exist_ok=False)
     np.savetxt(args.output / "pmf.csv", np.column_stack((profile.centers, profile.free_energy, profile.density, profile.raw_counts, profile.weight_ess_iid)), delimiter=",", header="q,pmf,density,raw_count,weight_ess_iid", comments="")
     np.savetxt(args.output / "overlap.csv", result.overlap_matrix, delimiter=",")
-    metadata = {"method": "binless WHAM", "counts": result.counts.tolist(), "converged": result.converged, "iterations": result.iterations, "score_residual": result.score_residual, "kbt": kbt, "equilibrium_qualified": False, "uncertainty": "not estimated", "jacobian_applied": False}
+    metadata = {
+        "method": "binless WHAM", "counts": result.counts.tolist(),
+        "converged": result.converged, "iterations": result.iterations,
+        "score_residual": result.score_residual, "kbt": kbt,
+        "equilibrium_qualified": False, "uncertainty": "not estimated",
+        "jacobian_applied": False, "windows": inputs,
+    }
     (args.output / "solver.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return 0
 

@@ -15,6 +15,8 @@ from typing import Optional
 
 import numpy as np
 
+from molsimflow.io.lammps_table import read_fix_ave_time_table
+
 from molsimflow.io.lammps_dump import (
     LammpsDumpFrame,
     box_lengths,
@@ -270,15 +272,7 @@ def _write_tsv(
 def read_fix_ave_table(path: Path) -> tuple[list[str], np.ndarray]:
     """Read a LAMMPS fix-ave/time style table with a named second header line."""
 
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-    headers = [line for line in lines if line.startswith("#")]
-    if len(headers) < 2:
-        raise ValueError(f"Expected two comment headers in {path}")
-    columns = headers[1].lstrip("# ").split()
-    data = np.loadtxt(path, comments="#", ndmin=2)
-    if data.shape[1] != len(columns):
-        raise ValueError(f"Column mismatch in {path}: {data.shape[1]} != {len(columns)}")
-    return columns, data
+    return read_fix_ave_time_table(path)
 
 
 def stitch_motion_tables(

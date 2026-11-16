@@ -1,8 +1,8 @@
 # Fixed-bias umbrella PMF analysis
 
 `molsimflow.postprocess.umbrella_wham` implements binless WHAM for pooled
-same-temperature umbrella samples. It reuses the strict PLUMED table reader in
-`fes_analysis`. It is separate from adaptive-bias reweighting: one cannot obtain
+same-temperature umbrella samples. Input adapters accept PLUMED tables and
+named scalar LAMMPS `fix ave/time` tables. It is separate from adaptive-bias reweighting: one cannot obtain
 a multi-window PMF by pooling `exp(beta * bias)` weights without solving window
 normalizations.
 
@@ -77,6 +77,72 @@ times are rejected; they are not silently dropped. The bias field defaults to
 `umb.bias`, and the CV field to `dz.z`; both can be overridden. Presence of
 additional unmodeled biases remains the caller's responsibility.
 
+## LAMMPS scalar window inputs
+
+The format is explicit. Use `input_format="lammps_fix_ave_time"` with named
+`cv_field` and `bias_field` columns. The raw clock defaults to `TimeStep`.
+`time_scale` multiplies that clock before applying the exclusive start and
+inclusive end selection. `bias_energy_scale` multiplies the recorded energy
+into the energy unit of kappa and kBT. Both scales default to one.
+
+```python
+t, q = load_window(
+    path, center=0.0, kappa=10.0,
+    input_format="lammps_fix_ave_time", cv_field="v_q", bias_field="f_bias",
+    time_scale=0.0005, discard_time=10.0, end_time=110.0,
+    bias_energy_scale=96.48533212331002, bias_tolerance=0.03,
+    expected_samples=2000, expected_time_spacing=0.05,
+)
+```
+
+This example assumes raw steps, a 0.0005 ps timestep, coordinates in angstrom,
+recorded bias in eV, and kappa/kBT in kJ/mol. Its tolerance is in kJ/mol and must
+reflect the actual printed precision. All values are caller declarations.
+`expected_samples` and `expected_time_spacing` are optional admission checks,
+with spacing expressed in the converted clock unit. Sparse output can be used
+by declaring its actual spacing. No interpolation or duplicate removal occurs.
+The adapter requires finite values and strictly increasing selected timestamps.
+
+The shared `molsimflow.io.lammps_table.read_fix_ave_time_table` owns raw scalar
+parsing. The original `constant_force_events.read_fix_ave_table` remains a facade
+with its existing parsing policy. Chunk/vector tables need a separate adapter.
+The umbrella adapter supplies strict numeric, time and harmonic-bias checks.
+
+### Portable manifest with per-window overrides
+
+```json
+{
+  "kbt": 2.743772664,
+  "input_format": "lammps_fix_ave_time",
+  "time_scale": 0.0005,
+  "cv_field": "v_q",
+  "bias_field": "f_bias",
+  "bias_energy_scale": 96.48533212331002,
+  "bias_tolerance": 0.03,
+  "expected_samples": 2000,
+  "expected_time_spacing": 0.05,
+  "windows": [
+    {"id": "left", "colvar": "left/COLVAR.dat", "center": 0.0, "kappa": 10.0,
+     "discard_time": 10.0, "end_time": 110.0},
+    {"id": "right", "colvar": "right/COLVAR.dat", "center": 1.0, "kappa": 10.0,
+     "discard_time": 120.0, "end_time": 220.0}
+  ]
+}
+```
+
+Run the same manifest command below. Each window can override any input,
+selection or audit option, including the format and column names. This handles
+serial windows with different native step origins. IDs default to their list
+indices. Repeated IDs or input files, including hard links, are rejected.
+`solver.json` adds the retained window IDs, formats, parameters, clock ranges,
+counts and supplied selection options. Existing CSV columns and filenames remain.
+
+Project orchestration supplies the actual centers and fixed biases, completed
+window selection, common Hamiltonian/temperature/atom identities, restart lineage
+and any manifest authentication. A file name or successful harmonic-energy
+check cannot establish these campaign-specific facts. Use the numerical API for
+arbitrary fixed potentials or additional differing bias terms.
+
 The lower-level `solve_wham(reduced_biases, sample_counts)` supports arbitrary
 known fixed biases. Its matrix has shape `(windows, pooled samples)`.
 
@@ -131,3 +197,7 @@ histograms. It does not adopt the legacy quick independent-frame error proxy,
 a default thinning factor, hidden wall parameters or a hard-coded CV range.
 Legacy-source comparisons belong in consuming-project records; no private
 trajectory, model, host path or case result belongs in this repository.
+
+The window-input tests also cover LAMMPS clock/energy conversion, selected counts
+and spacing, mixed input formats, per-window overrides, duplicate identities and
+input aliases, malformed data and the legacy constant-force reader facade.
