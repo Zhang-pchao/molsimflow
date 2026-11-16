@@ -27,6 +27,9 @@ adding or moving an API; CI checks that it matches the source.
 | Plotting and media | `molsimflow.plotting`, `molsimflow.media` | Keep numerical estimators outside presentation adapters |
 | CLI/configuration/workflow composition | `cli.py`, `config`, `workflows` | Parse and compose; numerical kernels belong in their domain |
 
+Use [the array-based analysis helpers](reusable_analysis_primitives.md) for lightweight
+time series, interface observables, geometry, resampling and structure drawing.
+
 Use [the reuse intake](postprocess_reuse.md) when extracting private project scripts.
 
 Search relevant modules and their callers, then compare units, atom/frame

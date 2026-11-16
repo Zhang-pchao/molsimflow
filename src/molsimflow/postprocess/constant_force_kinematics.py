@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from molsimflow.postprocess.timeseries import normalized_autocorrelation, positive_acf_time_ps
+
 from molsimflow.postprocess.constant_force_events import (
     _resolve_path,
     _sha256,
@@ -125,38 +127,8 @@ def _sample_velocity(
     return midpoint, velocity_mps
 
 
-def normalized_autocorrelation(values: np.ndarray, max_lag: int) -> np.ndarray:
-    """Return a mean-subtracted, overlap-normalized autocorrelation."""
-
-    values = np.asarray(values, dtype=float)
-    finite = values[np.isfinite(values)]
-    if len(finite) < 2:
-        return np.array([math.nan])
-    centered = finite - float(np.mean(finite))
-    variance = float(np.dot(centered, centered) / len(centered))
-    maximum = min(int(max_lag), len(centered) - 1)
-    if variance <= np.finfo(float).eps:
-        result = np.full(maximum + 1, math.nan)
-        result[0] = 1.0
-        return result
-    correlation = np.correlate(centered, centered, mode="full")[len(centered) - 1 :]
-    overlap = np.arange(len(centered), 0, -1, dtype=float)
-    correlation = correlation / overlap / variance
-    return correlation[: maximum + 1]
 
 
-def positive_acf_time_ps(acf: np.ndarray, sample_ps: float) -> float:
-    """Integrate the positive ACF lobe with a trapezoidal endpoint at lag zero."""
-
-    values = np.asarray(acf, dtype=float)
-    if not len(values) or not math.isfinite(float(values[0])):
-        return math.nan
-    positive: list[float] = []
-    for value in values[1:]:
-        if not math.isfinite(float(value)) or value <= 0.0:
-            break
-        positive.append(float(value))
-    return sample_ps * (0.5 + float(np.sum(positive)))
 
 
 def classify_response(

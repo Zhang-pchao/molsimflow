@@ -226,6 +226,24 @@ def histogram_pmf(
     return HistogramPmf(centers, free, density, raw_counts, ess)
 
 
+def histogram_overlap(left: np.ndarray, right: np.ndarray, edges: np.ndarray) -> float:
+    """Observed probability overlap on common caller-supplied bins.
+
+    Every observation must lie inside the grid. This empirical overlap differs
+    from the fitted WHAM state-overlap matrix and uses no numerical threshold.
+    """
+    a, b, bins = (np.asarray(value, dtype=float) for value in (left, right, edges))
+    if any(x.ndim != 1 or not len(x) or not np.isfinite(x).all() for x in (a, b, bins)):
+        raise ValueError("Finite nonempty vectors are required")
+    if len(bins) < 2 or np.any(np.diff(bins) <= 0):
+        raise ValueError("Common histogram edges must increase")
+    if min(a.min(), b.min()) < bins[0] or max(a.max(), b.max()) > bins[-1]:
+        raise ValueError("Histogram edges must cover both observation sets")
+    pa = np.histogram(a, bins)[0] / len(a)
+    pb = np.histogram(b, bins)[0] / len(b)
+    return float(np.minimum(pa, pb).sum())
+
+
 def load_window(
     path: Path,
     center: float,
